@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fluid Lab — static</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; height: 100%; background: #0a0c10; color: #cdd6e4;
+        font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+
+      /* ── Toolbar ── */
+      #toolbar { display: flex; gap: 8px; align-items: center; padding: 8px 12px;
+        user-select: none; flex-wrap: wrap; }
+      #toolbar strong { margin-right: auto; }
+      #toolbar button { background: #1b2130; color: #cdd6e4; border: 1px solid #2a3142;
+        padding: 5px 12px; border-radius: 5px; cursor: pointer; font: inherit; }
+      #toolbar button:hover { background: #232b3d; }
+      #toolbar button.btn-active { border-color: #4ade80; color: #4ade80; }
+
+      /* ── Stage ── */
+      #stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+      canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+      /* ── Side panels shared ── */
+      .side-panel {
+        position: absolute;
+        top: 10px;
+        bottom: 10px;
+        width: 296px;
+        background: rgba(17, 20, 27, 0.92);
+        border: 1px solid #2a3142;
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+        z-index: 10;
+        pointer-events: auto;
+      }
+      .side-panel .panel-header {
+        padding: 9px 12px 8px;
+        background: #181d28;
+        border-bottom: 1px solid #2a3142;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #8fd0ff;
+        flex-shrink: 0;
+        user-select: none;
+      }
+      .side-panel .panel-body {
+        flex: 1;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 8px 0 12px;
+        scrollbar-width: thin;
+        scrollbar-color: #2a3142 transparent;
+      }
+      .side-panel .panel-body::-webkit-scrollbar { width: 5px; }
+      .side-panel .panel-body::-webkit-scrollbar-track { background: transparent; }
+      .side-panel .panel-body::-webkit-scrollbar-thumb { background: #2a3142; border-radius: 3px; }
+
+      #config-panel  { left: 10px; }
+      #profiler-panel { right: 10px; }
+
+      /* ── Config panel internals ── */
+      .cfg-section { margin-bottom: 4px; }
+      .cfg-section-heading {
+        padding: 5px 12px 3px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #6b7689;
+        border-bottom: 1px solid #1d2230;
+        margin-bottom: 2px;
+      }
+      .cfg-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        grid-template-rows: auto auto;
+        gap: 2px 8px;
+        padding: 5px 12px 4px;
+        border-bottom: 1px solid rgba(29,34,48,0.5);
+        transition: background 0.1s;
+      }
+      .cfg-row:hover { background: rgba(255,255,255,0.03); }
+      .cfg-label-wrap {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        grid-column: 1 / -1;
+        min-width: 0;
+      }
+      .cfg-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        cursor: help;
+      }
+      .cfg-label {
+        font-size: 12px;
+        color: #cdd6e4;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .cfg-controls {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        grid-column: 1 / -1;
+        padding-left: 13px;
+      }
+      .cfg-slider {
+        flex: 1;
+        height: 3px;
+        accent-color: #4a9eff;
+        cursor: pointer;
+        min-width: 0;
+      }
+      .cfg-number {
+        width: 58px;
+        background: #0f1219;
+        border: 1px solid #2a3142;
+        border-radius: 4px;
+        color: #cdd6e4;
+        font: inherit;
+        font-size: 11px;
+        padding: 2px 4px;
+        text-align: right;
+        flex-shrink: 0;
+      }
+      .cfg-number:focus { outline: none; border-color: #4a9eff; }
+      .cfg-select {
+        flex: 1;
+        min-width: 0;
+        background: #0f1219;
+        border: 1px solid #2a3142;
+        border-radius: 4px;
+        color: #cdd6e4;
+        font: inherit;
+        font-size: 11px;
+        padding: 3px 4px;
+        cursor: pointer;
+      }
+      .cfg-select:focus { outline: none; border-color: #4a9eff; }
+      .cfg-reset-btn {
+        flex-shrink: 0;
+        width: 22px;
+        height: 22px;
+        display: grid;
+        place-items: center;
+        background: #0f1219;
+        border: 1px solid #2a3142;
+        border-radius: 4px;
+        color: #8a93a6;
+        font-size: 13px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 0;
+      }
+      .cfg-reset-btn:hover { background: #232b3d; color: #cdd6e4; border-color: #3a4456; }
+      .cfg-reset-btn:focus { outline: none; border-color: #4a9eff; }
+      .cfg-badge {
+        display: inline-block;
+        font-size: 10px;
+        padding: 1px 5px;
+        border-radius: 3px;
+        white-space: nowrap;
+        grid-column: 1 / -1;
+        margin-left: 13px;
+        width: fit-content;
+      }
+      .badge-reset  { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
+      .badge-reload { background: rgba(248,113,113,0.15); color: #f87171; border: 1px solid rgba(248,113,113,0.3); }
+
+      .cfg-actions {
+        display: flex;
+        gap: 8px;
+        padding: 10px 12px 4px;
+        flex-wrap: wrap;
+      }
+      .panel-btn {
+        flex: 1;
+        background: #1b2130;
+        color: #cdd6e4;
+        border: 1px solid #2a3142;
+        padding: 5px 8px;
+        border-radius: 5px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .panel-btn:hover { background: #232b3d; }
+
+      .panel-empty {
+        padding: 16px 12px;
+        color: #6b7689;
+        font-size: 12px;
+      }
+
+      /* ── Profiler panel internals ── */
+      .prof-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding: 3px 12px;
+        gap: 8px;
+      }
+      .prof-key {
+        color: #6b7689;
+        font-size: 11px;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .prof-val {
+        color: #cdd6e4;
+        font-size: 11px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .prof-fps { color: #6b7689; font-size: 10px; }
+      .prof-dominant { font-size: 9px; color: #f87171; letter-spacing: 0.04em; }
+      .prof-pressure-row .prof-val { color: #f87171; font-weight: 600; }
+      .prof-total-row .prof-val { color: #8fd0ff; }
+      .prof-header-row .prof-val { font-weight: 600; }
+
+      .prof-divider {
+        height: 1px;
+        background: #1d2230;
+        margin: 5px 0;
+      }
+      .prof-section-label {
+        padding: 3px 12px 1px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #6b7689;
+      }
+
+      .prof-pressure-bar-wrap {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 12px 4px 28px;
+      }
+      .prof-pressure-bar {
+        height: 5px;
+        max-width: calc(100% - 70px);
+        background: linear-gradient(to right, #b91c1c, #f87171);
+        border-radius: 3px;
+        min-width: 2px;
+        transition: width 0.2s;
+      }
+      .prof-pressure-pct {
+        font-size: 10px;
+        color: #f87171;
+        white-space: nowrap;
+      }
+      .prof-note {
+        padding: 8px 12px;
+        font-size: 11px;
+        color: #fbbf24;
+        line-height: 1.5;
+      }
+
+      /* ── Mode buttons ── */
+      #mode-bar { position:absolute; bottom:16px; left:50%; transform:translateX(-50%);
+        display:flex; gap:10px; z-index:20; }
+      .mode-btn { width:44px; height:44px; border-radius:50%; background:rgba(17,20,27,0.92);
+        border:1px solid #2a3142; color:#8a93a6; display:grid; place-items:center; cursor:pointer;
+        backdrop-filter:blur(6px); box-shadow:0 2px 12px rgba(0,0,0,0.5); transition:all .12s; }
+      .mode-btn:hover { color:#cdd6e4; border-color:#3a4456; }
+      .mode-btn.mode-active { color:#4ade80; border-color:#4ade80; }
+
+      /* ── Unsupported overlay ── */
+      #unsupported { position: fixed; inset: 0; display: none; place-items: center;
+        background: #0a0c10; padding: 24px; }
+      #unsupported .card { max-width: 560px; background: #11141b;
+        border: 1px solid #2a3142; border-radius: 10px; padding: 24px; }
+      #unsupported h1 { margin: 0 0 12px; font-size: 18px; color: #f0f4fa; }
+      #unsupported code { color: #8fd0ff; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="toolbar">
+        <strong>Fluid Lab</strong>
+        <button id="btn-pause">Pause</button>
+        <button id="btn-reset">Reset</button>
+        <button id="btn-mesh">Mesh</button>
+        <button id="btn-config">Config</button>
+        <button id="btn-profiler">Profiler</button>
+      </div>
+      <div id="stage">
+        <canvas id="gpu-canvas"></canvas>
+
+        <!-- Config panel (left) -->
+        <div id="config-panel" class="side-panel">
+          <div class="panel-header">Config</div>
+          <div class="panel-body"></div>
+        </div>
+
+        <!-- Profiler panel (right) -->
+        <div id="profiler-panel" class="side-panel">
+          <div class="panel-header">Profiler</div>
+          <div class="panel-body"></div>
+        </div>
+
+        <!-- Mode buttons (bottom-center) -->
+        <div id="mode-bar">
+          <button id="mode-camera" class="mode-btn mode-active" title="Camera — drag to orbit the view">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="13" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+          </button>
+          <button id="mode-rotate" class="mode-btn" title="Rotate — drag to rotate the tank (and its gravity)">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M19 12a7 7 0 1 1-2-4.9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19 5v4h-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+          </button>
+          <button id="mode-rotate-roll" class="mode-btn" title="(3) Rotate roll/pitch — drag to roll the tank + gravity">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M5 12a7 7 0 1 1 2 4.9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 19v-4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+          </button>
+          <button id="mode-slosh" class="mode-btn" title="(4) Move — drag to move the tank; the water sloshes (inertia)">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="unsupported">
+      <div class="card">
+        <h1>WebGPU is not available</h1>
+        <p>This 3D fluid lab runs entirely on the GPU via <strong>WebGPU</strong>, which
+           this browser doesn't expose. Try a recent <strong>Chrome or Edge</strong>
+           (desktop) with <code>navigator.gpu</code> available.</p>
+        <p class="hint">It's a real-time hybrid particle/grid (FLIP/PIC) liquid
+           simulation — a portfolio demo, not a validated CFD solver.</p>
+        <p id="unsupported-detail" class="hint"></p>
+      </div>
+    </div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

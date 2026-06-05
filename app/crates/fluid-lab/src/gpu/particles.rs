@@ -1,0 +1,158 @@
+//! Particle billboard renderer (Phase 0.3). Draws the simulation's particle
+//! position buffer directly as instanced camera-facing quads — no readback.
+
+use glam::{Mat4, Vec3};
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CameraUniform {
+    view_proj: [[f32; 4]; 4],
+    right: [f32; 4], // xyz = right, w = particle radius
+    up: [f32; 4],
+}
+
+pub struct ParticleRenderer {
+    pipeline: wgpu::RenderPipeline,
+    camera_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    base_radius: f32,
+    radius_scale: f32,
+    speed_scale: f32,
+}
+
+impl ParticleRenderer {
+    pub fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+        positions: &wgpu::Buffer,
+        radius: f32,
+    ) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("particles shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/particles.wgsl").into()),
+        });
+
+        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("particle camera uniform"),
+            size: std::mem::size_of::<CameraUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("particles bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("particles bind group"),
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: positions.as_entire_binding(),
+                },
+            ],
+        });
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("particles layout"),
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("particles pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: depth_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            camera_buffer,
+            bind_group,
+            base_radius: radius,
+            radius_scale: 1.0,
+            speed_scale: 4.0,
+        }
+    }
+
+    pub fn set_radius_scale(&mut self, s: f32) {
+        self.radius_scale = s;
+    }
+
+    pub fn set_speed_scale(&mut self, s: f32) {
+        self.speed_scale = s;
+    }
+
+    pub fn update_camera(&self, queue: &wgpu::Queue, view_proj: &Mat4, right: Vec3, up: Vec3) {
+        let u = CameraUniform {
+            view_proj: view_proj.to_cols_array_2d(),
+            right: [right.x, right.y, right.z, self.base_radius * self.radius_scale],
+            up: [up.x, up.y, up.z, self.speed_scale],
+        };
+        queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&u));
+    }
+
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, particle_count: u32) {
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        // 6 vertices per particle, instanced.
+        pass.draw(0..6, 0..particle_count);
+    }
+}

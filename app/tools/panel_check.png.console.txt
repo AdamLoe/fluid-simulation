@@ -1,0 +1,50 @@
+[harness] navigating to http://localhost:5184/static.html
+[console:warn] The powerPreference option is currently ignored when calling requestAdapter() on Windows. See https://crbug.com/369219127
+[console:log] ==================== [fluid-lab] WebGPU boot diagnostics ====================
+[console:log] adapter   :  (vendor=0x0 device=0x0 type=Other)
+[console:log] backend   : BrowserWebGpu   driver:  
+[console:log] limits    : max_storage_buffers_per_shader_stage=16
+[console:log]             max_compute_invocations_per_workgroup=1024 max_compute_workgroup_size=(1024,1024,64)
+[console:log]             max_buffer_size=2147483648 max_storage_buffer_binding_size=2147483644
+[console:log] timestamp-query available : true  (real per-pass GPU timing usable in 0.3)
+[console:log] canvas    : 1280x754 device_pixel_ratio=1
+[console:log] ============================================================================
+[console:log] [fluid-lab][smoke] PASS — atomicAdd result 4096 == expected 4096 (64 workgroups x 64)
+[console:log] [fluid-lab][gpu] fluid init: dims=64x64x64 h=0.0312 particles=247500 cells=262144 press_iters=30
+[console:log] [fluid-lab] FluidApp created — Phase 0.1 shell ready.
+[console:log] [fluid-lab] shell running (static).
+[console:error] Failed to load resource: the server responded with a status of 404 (File not found)
+[console:log] ┌─ [fluid-lab] profiler ─────────────────────────────────
+│ config : grid=64x64x64 particles=247500 dt=0.008333334 press_iters=30 mode=particles+pressure tick=195 run=Running
+│ timing : gpu-timestamp
+│ frame  : avg=35.53ms (~28 fps)  p50=16.80 p95=20.90 p99=38.60  frames=86  substeps=2
+│ GPU (real timestamps, ms/step):
+│   sim total          7.597   render   0.182
+│     prep (clear/mark/P2G/forces)   1.012
+│     pressure (divergence+jacobi)    4.030
+│     finish (gradient/G2P/advect)    2.555
+│   liquid cells     30271
+│ CPU scopes (encode time, ms/frame over window):
+│   update               0.542 ms   x86
+│     simulation           0.534 ms   x86
+│   render               0.197 ms   x86
+└────────────────────────────────────────────────────────
+[harness] EVAL -> "{\"cfg\":true,\"prof\":true,\"settings\":true,\"body\":true,\"rows\":8,\"fluid\":true}"
+[console:log] ┌─ [fluid-lab] profiler ─────────────────────────────────
+│ config : grid=64x64x64 particles=247500 dt=0.008333334 press_iters=30 mode=particles+pressure tick=558 run=Running
+│ timing : gpu-timestamp
+│ frame  : avg=18.92ms (~53 fps)  p50=20.70 p95=20.90 p99=20.90  frames=158  substeps=3
+│ GPU (real timestamps, ms/step):
+│   sim total          3.503   render   0.573
+│     prep (clear/mark/P2G/forces)   0.357
+│     pressure (divergence+jacobi)    3.020
+│     finish (gradient/G2P/advect)    0.126
+│   liquid cells     35260
+│ CPU scopes (encode time, ms/frame over window):
+│   update               0.397 ms   x158
+│     simulation           0.392 ms   x158
+│   render               0.169 ms   x158
+└────────────────────────────────────────────────────────
+[harness] screenshot written: panel_check.png
+[harness] navigator.gpu present: true
+[harness] UA: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/148.0.0.0 Safari/537.36

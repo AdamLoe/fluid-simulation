@@ -1,0 +1,9 @@
+{
+  "name": "fluid-lab-tools",
+  "private": true,
+  "type": "module",
+  "description": "Windows-side browser capture harness (real-GPU Chrome via puppeteer-core).",
+  "dependencies": {
+    "puppeteer-core": "^23.0.0"
+  }
+}
