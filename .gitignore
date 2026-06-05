@@ -1,0 +1,4 @@
+captures/**
+app/target/** 
+app/web/node_modules/**
+app/tools/node_modules/**
