@@ -1,27 +1,12 @@
-# Cloudflare Pages headers. Copied verbatim into the deploy dir by cf-build.sh.
-#
-# iframe embedding: we intentionally do NOT send X-Frame-Options, and we scope
-# framing with CSP frame-ancestors. 'self' keeps the standalone pages.dev URL
-# working; the adamloe.com entries let you embed it on your site (e.g. an
-# <iframe> on adamloe.com/fluid-lab). frame-ancestors only restricts FRAMING —
-# loading the random pages.dev URL directly in a tab is unaffected. Widen this
-# list (or delete the CSP line to allow framing anywhere) as needed.
 /*
   Content-Security-Policy: frame-ancestors 'self' https://adamloe.com https://www.adamloe.com https://*.adamloe.com
   X-Content-Type-Options: nosniff
-  # Cross-origin isolation (SharedArrayBuffer / WASM threads). NOT required by the
-  # current single-threaded GPU sim, but enabled per request. Caveat: with
-  # require-corp, any future CROSS-ORIGIN subresource must send CORP/CORS headers
-  # or it will be blocked. All current assets are same-origin, so unaffected.
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: cross-origin
 
-# The wasm-bindgen glue + binary aren't content-hashed, but Cloudflare serves
-# each deployment immutably and revalidates via ETag, so a short cache is safe
-# and a redeploy is picked up promptly.
 /pkg/*
   Cache-Control: public, max-age=3600
 
-# Never cache the entry document, so a redeploy is visible on the next reload.
 /index.html
   Cache-Control: no-cache
