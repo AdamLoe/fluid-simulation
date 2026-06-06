@@ -12,7 +12,7 @@ The GPU-native render/debug-view layer draws the wireframe tank and the active r
 
 ## What it owns
 
-`app/crates/fluid-lab/src/gpu/mod.rs → GpuContext` holds and orchestrates all renderer instances. It owns the surface, the depth texture, and the `mesh_enabled` / `slice_enabled` flags that gate per-mode work each frame. The model matrix `translate(box_pos) · from_quat(box_orient)` is folded into view-projection in `app/crates/fluid-lab/src/lib.rs → FluidApp::frame` before being passed to all renderers; no renderer recomputes it.
+`app/crates/fluid-lab/src/gpu/mod.rs → GpuContext` holds and orchestrates all renderer instances. It owns the surface, the depth texture, and the `mesh_enabled` / `slice_enabled` flags that gate per-mode work each frame. For the water (mesh) path it also owns screen-sized offscreen targets — `scene_color`, `water_back_depth` — and a fullscreen `blit::Blitter`; these are recreated on `resize` and unused by the default path. The model matrix `translate(box_pos) · from_quat(box_orient)` is folded into view-projection in `app/crates/fluid-lab/src/lib.rs → FluidApp::frame` before being passed to all renderers; no renderer recomputes it.
 
 ```
 frame()
@@ -20,7 +20,11 @@ frame()
   vp       = camera.view_proj(aspect) · model
   eye_local = box_orient⁻¹ · (camera.eye − box_pos)   ← eye in tank-local space
   GpuContext::step(n)             ← sim + optional MC extract
-  GpuContext::render(vp, …, eye_local)  ← all draw calls in one render pass
+  GpuContext::render(vp, …, eye_local)
+    ├─ default path:  one pass → swapchain (wireframe + particles/slice)
+    └─ water path:    opaque pass → scene_color(+depth);
+                      depth-only back-face prepass → water_back_depth;
+                      water pass → swapchain (blit bg, then volume-shaded water)
 ```
 
 The MC vertices live in **tank-local** space (the model matrix is baked into `vp`
@@ -35,7 +39,7 @@ therefore stays correct while the tank is moved or rotated.
 |------|---------|----------|--------|
 | Wireframe tank | always on | `app/crates/fluid-lab/src/gpu/renderer.rs → WireframeRenderer` | inline WGSL in `renderer.rs` |
 | Particles | on when mesh off | `app/crates/fluid-lab/src/gpu/particles.rs → ParticleRenderer` | `app/crates/fluid-lab/src/gpu/shaders/particles.wgsl` |
-| Mesh (MC surface) | off (`dev.mesh_enabled=0`, lazily allocated) | `app/crates/fluid-lab/src/gpu/mesh.rs → MeshExtractor` | `app/crates/fluid-lab/src/gpu/shaders/mesh.wgsl` (translucent, alpha-blended) |
+| Mesh (MC surface) | off (`dev.mesh_enabled=0`, lazily allocated) | `app/crates/fluid-lab/src/gpu/mesh.rs → MeshExtractor` | `app/crates/fluid-lab/src/gpu/shaders/mesh.wgsl` (opaque volume: absorption + refraction + reflection) |
 | Grid-slice debug | off (`slice_enabled=false`) | `app/crates/fluid-lab/src/gpu/slice.rs → SliceRenderer` | `app/crates/fluid-lab/src/gpu/shaders/slice.wgsl` |
 
 Mesh and particles are mutually exclusive: `GpuContext::render` draws `mesh` when `mesh_enabled`, otherwise `particles`. Slice is additive — drawn after either, when `slice_enabled`. Cost summary: wireframe is a fixed 24-vertex line-list; particles are instanced quads (one per particle, 6 verts); mesh uses an indirect draw from a pre-built vertex buffer; slice draws `nx*ny` instanced quads for the mid-depth XY cross-section.
@@ -68,12 +72,18 @@ density.wgsl   occupancy → scalar[] (light blur); MAC velocities → speed[] (
 blur.wgsl      ×N ping-pong (scalar↔scalar2) smoothing  ← render.mesh_smooth
 mc.wgsl        (nx-1)·(ny-1)·(nz-1) cubes → verts[] (pos, normal, nrm.w=foam) + atomic counter
 mc_args.wgsl   counter → indirect draw args
-mesh.wgsl      translucent glassy water render (storage-buffer vertex fetch)
+mesh.wgsl      opaque volume water render (storage-buffer vertex fetch)
 ```
 
 The density source is the `occupancy` buffer from `GpuFluid` (i32 per cell, populated by the P2G classify pass); `density.wgsl` also samples the staggered `u/v/w_vel` buffers into a cell-centered `speed[]` field that drives **velocity foam** (the mesh whitens only where the water moves fast, mirroring the particle speed→white cue). `blur.wgsl` runs `render.mesh_smooth` ping-pong iterations (each = two passes, `scalar→scalar2→scalar`) so the raw per-cell occupancy blobs round off into a smooth surface — the fix for the lumpy-surface problem. `MeshExtractor::record_extract` is called inside `GpuContext::step` after the final substep, gated by `mesh_enabled`. The vertex buffer is allocated at `MAX_VERTS = 2_400_000` (~73 MB, dominating; plus three cell-sized `scalar`/`scalar2`/`speed` buffers) only when the extractor is constructed; the atomic counter is cleared each frame and the indirect-draw arg buffer is written by `mc_args.wgsl`.
 
-**Glassy water shading** (`app/crates/fluid-lab/src/gpu/shaders/mesh.wgsl`): a translucent blue body, Schlick-Fresnel reflection toward a sky tint (more reflective/opaque at grazing angles), a tight white sun specular, and white foam only where `nrm.w` (the per-vertex speed foam) is high. The render pipeline uses **alpha blending** with depth-test+write (`app/crates/fluid-lab/src/gpu/mesh.rs → render_pl`, `wgpu::BlendState::ALPHA_BLENDING`), so the tank/background reads through the surface. Normals are flipped toward the camera in the fragment shader to neutralize MC's ambiguous winding. The water look is tuned Live via `render.mesh_opacity` / `render.mesh_fresnel` / `render.mesh_foam` (carried in the camera uniform) and `render.mesh_iso`; `MeshLook` preserves these across (re)allocation.
+**Volume water shading** (`app/crates/fluid-lab/src/gpu/shaders/mesh.wgsl`): the water reads as a *volume*, not a thin shell. It is drawn **opaque** (`wgpu::BlendState` = `None`) over a blit of `scene_color`, compositing the background itself:
+
+- **Absorption (depth tint).** A depth-only back-face prepass (`MeshExtractor::draw_back`, `back_pl`, compare `Greater`, clear 0.0) writes the water's *farthest* surface into `water_back_depth`. The fragment reconstructs that position via `inv_view_proj` and takes `thickness = |back − front|`; per-channel Beer-Lambert `transmittance = exp(−σ·thickness)` (with `σ = water_absorb·(1 − tint)`, so red absorbs most) tints the refracted background toward the water color. Thick water deepens to blue-green; thin films stay clear — the fix for the old "clear glass" look.
+- **Refraction.** The background (`scene_color`) is sampled at a screen-space UV offset along the screen-projected surface normal (`view_proj`-projected, no scene reconstruction), scaled by `water_refract` and thickness.
+- **Reflection.** A procedural sky gradient + sun disc (no cubemap) mixed in by Schlick-Fresnel, replacing the old flat sky constant; plus a tight sun specular and `nrm.w` velocity foam.
+
+The render pipeline depth-tests+writes against the wireframe depth (occlusion + nearest-water resolution come for free; no manual test needed). Normals are flipped toward the camera to neutralize MC's ambiguous winding. The look is tuned Live via `render.mesh_opacity` / `render.mesh_fresnel` / `render.mesh_foam` / `render.water_absorb` / `render.water_refract` (carried in the camera uniform) and `render.mesh_iso`; `MeshLook` preserves these across (re)allocation. The `MeshCamera` uniform carries `view_proj`, `inv_view_proj`, eye, sun, the look knobs, and the render-target resolution; the render bind group adds `scene_color` (binding 2) and `water_back_depth` (binding 3), rebuilt by `MeshExtractor::rebuild_render_bg` on resize.
 
 Both the density blur and the MC march are per-axis: `MeshParams` carries `dims: [u32;4] = [nx, ny, nz, 0]` and `origin: [f32;4]`, with `h = crate::sim::H` and `cell_count = nx·ny·nz`. The MC cube grid is `(nx-1)·(ny-1)·(nz-1)`; `density.wgsl`/`mc.wgsl` decompose the per-axis cell index, so the mesh extracts correctly on a non-cubic tank.
 
@@ -87,8 +97,9 @@ The host reference lives in `app/crates/fluid-lab/src/sim/marching_cubes.rs → 
 
 - **No normal-frame readback.** `GpuContext::render` never calls `map_async` or copies buffers to the CPU on the hot path. The only readback is in `timing::GpuTimers::map_readback`, which is throttled and opt-in.
 - **Tank model matrix is baked into `view_proj`.** All renderers receive a single pre-multiplied matrix; none is aware of `box_pos`/`box_orient` separately. If you add a renderer that needs the raw model matrix, thread it through `GpuContext::render`.
-- **Mesh and particles share the same render pass.** There is only one `begin_render_pass` call per frame. Switching modes does not split the pass.
-- **The mesh is translucent (alpha-blended).** Unlike the opaque wireframe/particles, the mesh pipeline blends. It is drawn after the wireframe (so the tank reads through it) and writes depth, so overlapping water resolves to the nearest surface rather than over-accumulating. Foam/opacity ramp with Fresnel and the per-vertex speed (`nrm.w`).
+- **The default path is single-pass; the water path is multi-pass.** With the mesh off (particles/slice/default) there is exactly one `begin_render_pass` straight to the swapchain. With the mesh on, `render` runs three passes in one encoder (opaque → `scene_color`; depth-only back-face → `water_back_depth`; water → swapchain) because volume shading must sample a background the water can't read from the swapchain it is drawing into. The two branches are explicit arms in `GpuContext::render`.
+- **The mesh is opaque and composites its own background.** The water pipeline no longer alpha-blends; it samples the blitted `scene_color` and outputs a final opaque color (absorption + refraction + reflection). It depth-tests+writes, so overlapping water resolves to the nearest surface. The background blit (`Blitter`) runs first in the water pass with depth compare `Always`/no-write so it never disturbs the loaded wireframe depth.
+- **Water thickness comes from a back-face depth prepass, not scene depth.** The tank is wireframe-only — there is no opaque backdrop behind the water — so absorption is driven by the water's own front-to-back extent (`water_back_depth`, compare `Greater`), not the distance to the background. Reconstruction uses `inv_view_proj` and the resolution passed in the camera uniform.
 - **MC extract happens in `step`, not `render`.** `record_extract` submits its own command encoder via `queue.submit`. The render pass then reads the already-written vertex buffer. If `step` is skipped (paused, no pending steps), the stale vertex buffer from the prior frame is drawn.
 - **Slice bind group references live GPU buffers.** If `recreate_fluid` is called (on reset), `SliceRenderer` is rebuilt entirely — the old bind group becomes invalid. `GpuContext::recreate_fluid` rebuilds all sub-renderers atomically — including `WireframeRenderer` (tank box dimensions can change) and the `MeshExtractor` (`Some/None` per the current flag) — and preserves live settings (`slice_mode`, `particle_size`, `mesh_iso`).
 - **MC vertex buffer is STORAGE only, not VERTEX.** `mesh.wgsl` fetches vertices by index from a storage binding, not via the vertex pipeline. Cull mode is `None` because MC winding can be ambiguous.
@@ -100,7 +111,8 @@ The host reference lives in `app/crates/fluid-lab/src/sim/marching_cubes.rs → 
 - The grid buffers or occupancy layout change → update `SliceRenderer::new` and `MeshExtractor::new` bind group entries.
 - Box transform is exposed to shaders → thread the model matrix separately into `GpuContext::render`.
 - MC tables change → regenerate both `app/crates/fluid-lab/src/sim/marching_cubes.rs` tables and the embedded constants in `app/crates/fluid-lab/src/gpu/shaders/mc.wgsl`; the three host unit tests must pass.
-- The water look (color/opacity/Fresnel/foam) or the smoothing/foam fields change → update the "Marching cubes" section here and the `render.mesh_*` entries owned by `settings.md`; the velocity-foam path spans `density.wgsl` (speed) → `mc.wgsl` (`nrm.w`) → `mesh.wgsl`.
+- The water look (color/opacity/Fresnel/foam/absorption/refraction) or the smoothing/foam fields change → update the "Volume water shading" section here and the `render.mesh_*` / `render.water_*` entries owned by `settings.md`; the velocity-foam path spans `density.wgsl` (speed) → `mc.wgsl` (`nrm.w`) → `mesh.wgsl`.
+- The water render-pass structure or offscreen targets change (`scene_color`, `water_back_depth`, the `Blitter`, the back-face prepass) → update the `frame()` sketch, the "Volume water shading" section, and the multi-pass invariant here; the targets are created in `GpuContext` and recreated in `resize`, and the mesh bind group is re-pointed via `MeshExtractor::rebuild_render_bg`.
 - The MC lazy-allocation lifecycle changes (e.g., mesh becomes always-on) → update the "Marching cubes" section and the `gpu-resources.md` "Lazy mesh" invariant.
 
 ## See also

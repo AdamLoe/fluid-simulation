@@ -44,6 +44,39 @@ immediately. The web toolbar Mesh button is wired through the same lazy-alloc pa
 
 **Applies to** — `architecture/rendering.md`, `architecture/gpu-resources.md`.
 
+## The marching-cubes water is shaded as a volume (absorption + refraction + reflection)
+
+**Decision** — The MC water surface reads as a *volume*, not a thin glass shell. Its
+color is driven by Beer-Lambert **absorption** over the per-pixel water thickness
+(deeper water tints more), **screen-space refraction** of the rendered background, and a
+procedural-sky **Fresnel reflection**. This requires the water (mesh) render path to be
+**multi-pass** with offscreen targets (`scene_color`, `water_back_depth`) and a
+background `Blitter`; the default particle/slice path stays single-pass.
+
+**Why** — With only a surface shell + constant opacity, a long path through water tinted
+the background no more than a thin film — it looked like clear glass. Thickness-driven
+absorption is the dominant cue that makes water read as water; refraction and a
+structured reflection complete the look. The cost (extra passes + two screen-sized
+targets) lands only when the dev-only mesh view is on.
+
+**Tradeoffs / scope** — Thickness comes from the water's own front-to-back surfaces (a
+depth-only back-face prepass), **not** scene depth, because the tank is wireframe-only
+with no opaque backdrop. This is a single-volume approximation: it does not model
+nested air pockets or refraction of geometry outside the frame (screen-space limits).
+Refraction is visually subtle against the empty tank background (little structure to
+bend). This decision deliberately pushes against *"visual realism subordinate to
+observability"* (below) — justified narrowly: the MC mesh is the one cinematic surface
+view, opt-in and off by default, so polishing it does not compromise the inspectable
+default path.
+
+**Code anchors** — `app/crates/fluid-lab/src/gpu/mod.rs → GpuContext::render` (the
+two-branch pass structure, `scene_color`/`water_back_depth`/`blit`);
+`app/crates/fluid-lab/src/gpu/mesh.rs` (`back_pl`, `rebuild_render_bg`, `MeshCamera`);
+`app/crates/fluid-lab/src/gpu/blit.rs`; `app/crates/fluid-lab/src/gpu/shaders/mesh.wgsl`,
+`blit.wgsl`. Live knobs `render.water_absorb` / `render.water_refract`.
+
+**Applies to** — `architecture/rendering.md`, `architecture/settings.md`.
+
 ## Render/debug modes are centrally organized, each with a cost contract
 
 **Decision** — Render/debug modes are registered/organized rather than scattered as

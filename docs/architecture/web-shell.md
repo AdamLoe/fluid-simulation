@@ -11,9 +11,9 @@ long_lived:    true
 The browser front-end is intentionally thin — no React, no framework — intentionally thin vanilla ES modules. Its job is to mount the WASM module, hand an `HTMLCanvasElement` to Rust, ferry pointer/keyboard input in, and render two observability panels driven entirely by the WASM JS bridge. A headless Puppeteer harness (`tools/capture.mjs`) runs real-GPU Chrome on the Windows host and provides the only acceptance signal that cannot be faked.
 
 ```
-static.html  ──loads──▶  main.js  ──imports──▶  panels.js
-                              │
-                              └──▶  ./pkg/fluid_lab.js  (wasm-bindgen glue)
+index.html  ──loads──▶  main.js  ──imports──▶  panels.js
+                             │
+                             └──▶  ./pkg/fluid_lab.js  (wasm-bindgen glue)
 ```
 
 ## What it owns
@@ -21,34 +21,25 @@ static.html  ──loads──▶  main.js  ──imports──▶  panels.js
 - Feature-detecting `navigator.gpu` and showing `#unsupported` if absent.
 - Calling `FluidApp.create(canvas)` and exposing the result as `window.__fluid`.
 - Owning `requestAnimationFrame`; calling `app.frame(dtMs)` each tick.
-- Wiring header toolbar buttons (Pause / Reset / Mesh / Settings), four interaction modes (camera / rotate / rotateRoll / slosh), keyboard shortcuts (1–4 select modes, `r` resets the sim), pointer drag dispatch, and wheel zoom.
-- URL params `?pressure=off`, `?paused=1`, `?flip=N`, `?slice=1`, `?mesh=1`, `?panels=off` for scripted capture.
+- Wiring header toolbar buttons (Pause / Reset / Mesh / Config / Profiler), four interaction modes (camera / rotate / rotateRoll / slosh), keyboard shortcuts (1–4 select modes, `r` resets the sim), pointer drag dispatch, and wheel zoom.
+- URL params `?pressure=off`, `?paused=1`, `?flip=N`, `?slice=1`, `?mesh=1`, `?panels=on` for scripted capture (panels start closed; `?panels=on` opens both on load).
 - Calling `initPanels(app)` once after WASM init — panels own everything after that.
 
-## Two entry paths (IMPORTANT gotcha)
+## The canonical shell — and one orphaned stub
 
-There are two distinct HTML+JS stacks and they are **not equivalent**:
+There is **one** shell: `web/index.html` → `web/main.js` → `web/panels.js`. Because the canonical file is named `index.html`, the bare `/` serves it under *any* server (it is the default directory index), so there is no `/`-remap and no second filename to type. This used to be two divergent files — `static.html` (canonical) and `index.html` (a stale Vite stub whose toolbar lacked the `btn-config`/`btn-profiler` buttons). When a browser reached `/index.html` instead of `/`, it loaded the stub: same fresh WASM, but `initPanels` bailed (`Panel DOM elements not found`) and both panels rendered empty. That trap is gone — `static.html` was promoted to `index.html` and the old stub deleted.
 
-| | Verified / canonical | Stale / incomplete |
-|---|---|---|
-| HTML | `web/static.html` | `web/index.html` |
-| JS | `web/main.js` + `web/panels.js` | `web/src/main.ts` (compiled by Vite) |
-| Server | `python3 -m http.server 5184` (fixed port — see below) | `npm run dev` → strict port 5184 |
-| Panels | Yes — config + profiler | No — panels absent |
-| Interaction modes | 4 modes + keyboard shortcuts | Camera-only |
-| Reliability | Verified working | npm/Vite unreliable on dev machine |
+What remains stale is the orphaned **`web/src/main.ts`** (the old Vite/TS entry, a Phase 0.1 subset with no panels). **Nothing loads it** — `index.html` imports `./main.js`, not `src/main.ts`. `vite.config.ts` still binds 5184 with `strictPort: true`, but `run.sh` does not use Vite; treat `src/main.ts` as dead until it is brought to parity or deleted.
 
-**Always use the static path.** The Vite/TS path (`web/src/main.ts`) is a Phase 0.1 stub that was superseded and never updated to include panels or the expanded interaction model. It still compiles but its UI is a strict subset. The `vite.config.ts` binds port 5184 with `strictPort: true`; if npm is unavailable the whole path fails.
+**Port convention:** the shell is served on the fixed port **5184** by `app/run.sh` (procedure in [`../agent-context/build-run.md`](../agent-context/build-run.md)), which rebuilds the WASM, frees the port, and serves `web/` with no-cache headers. That port collides with the orphaned Vite path's `strictPort` 5184, so a stray process found on 5184 is usually a stale Vite dev server — `run.sh` kills it before serving. Open `http://localhost:5184/`; you never reference a filename in the URL.
 
-**Port convention:** the static instance is served on the fixed port **5184** (procedure in [`../agent-context/build-run.md`](../agent-context/build-run.md)). That collides with the Vite path's `strictPort` 5184, so a stray process found on 5184 is usually a stale Vite dev server to kill before serving the static shell.
-
-The capture harness defaults to `http://localhost:5173/` in its argv but should be pointed at the static server — `http://localhost:5184/static.html`.
+The capture harness defaults to `http://localhost:5173/` in its argv but should be pointed at the static server — the bare `http://localhost:5184/`.
 
 ## The rendered panels
 
 `web/panels.js` → `initPanels` drives both side panels. Neither panel hardcodes any settings — they are built from WASM bridge calls:
 
-- **Config panel (left):** calls `app.config_json()` once on init, groups settings by `category`, renders each as a slider+number-input (f32) or dropdown (enum). Changes call `app.set_setting(id, value)` and persist to `localStorage` under key `fluidlab.config.v1`. The `apply` field on each setting determines the dot color and badge:
+- **Config panel (left):** calls `app.config_json()` once on init, groups settings by `category`, renders each as a slider+number-input (f32/u32) or dropdown (enum). A setting carrying `slider_scale: "log2"` (currently only `particles.count`) gets a log-scaled slider that runs in exponent space — each notch doubles the value — while its number input still spans the full `[min, max]` for exact entry (`buildSettingRow` → `toSlider`/`fromSlider`). Changes call `app.set_setting(id, value)` and persist to `localStorage` under key `fluidlab.config.v1`. The `apply` field on each setting determines the dot color and badge:
   - `live` (green dot) — takes effect immediately in the running sim.
   - `reset` (amber dot + badge) — takes effect after `app.reset()`.
   - `reload` (red dot + badge) — requires a full page reload.
@@ -58,7 +49,7 @@ The capture harness defaults to `http://localhost:5173/` in its argv but should 
 
 - **Profiler panel (right):** polls `app.stats_json()` at 4 Hz via `setInterval(250)` and rebuilds its DOM each tick. Always-on rows: FPS, timing mode (`gpu-timestamp` vs CPU fallback), grid resolution, total/liquid cells, particle count, GPU buffer memory, frame avg / p50/p95/p99, substeps this frame, dropped sim time (per-frame and cumulative total), dispatches per frame and per substep. When `stats.gpu` is present: prep / pressure / finish / render pass times (frame totals); pressure flagged dominant with a progress bar. When `stats.gpu.sections` is present (detailed dev mode): per-section list (`FINE_SECTIONS`) and a CG block showing total/avg-per-iter, SpMV, reductions, updates, and scalars.
 
-Both panels respect `?panels=off` and the header **Settings** toolbar button (`#btn-settings`). That button toggles both side panels together via `setPanelsVisible`; its label stays the constant "Settings" and it conveys open/closed state only through the `btn-active` class (it does not relabel itself).
+Both panels **start closed**; `?panels=on` opens both on load. Each panel has its own header toolbar button — **Config** (`#btn-config`) and **Profiler** (`#btn-profiler`) — toggled independently via `setConfigVisible` / `setProfVisible`. The buttons keep constant labels and convey open/closed state only through the `btn-active` class (they do not relabel themselves).
 
 ## Capture harness
 
@@ -91,7 +82,7 @@ The harness reports `navigator.gpu` presence in the console log — if `hasGpu: 
 ## Update when
 
 - A new WASM bridge method is added or removed (`config_json`, `stats_json`, `set_setting`, `FluidApp.*`) — update the panels section.
-- The two-entry-path situation is resolved (static path becomes the sole path, or Vite path is brought to parity) — rewrite the entry-paths section.
+- The orphaned `web/src/main.ts` is deleted or brought to parity (panels + interaction model) — update the canonical-shell section.
 - The capture harness gains new env hooks or output artefacts.
 - A new interaction mode is added to `main.js` → `modeOrder`.
 

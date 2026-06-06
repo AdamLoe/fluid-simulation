@@ -207,9 +207,9 @@ impl Default for Registry {
                 value: Value::U32(254_144),
                 validation: Validation::U32Range {
                     min: 1_024,
-                    max: 1_000_000,
+                    max: 134_217_728,
                 },
-                tooltip: "How much liquid the sim starts with: more particles make the fluid look smoother and more detailed, fewer make it chunkier and faster. — Number of particles seeded into the initial liquid block; higher counts slow down every step, and it is Reset-class so it takes effect after Reset rebuilds the sim with the new count.",
+                tooltip: "How much liquid the sim starts with: more particles make the fluid look smoother and more detailed, fewer make it chunkier and faster. — Number of particles seeded into the initial liquid block; higher counts slow down every step, and it is Reset-class so it takes effect after Reset rebuilds the sim with the new count. The slider runs 1,024 → 134,217,728 in ×2 steps (each notch doubles the count); type an exact number into the box for any value in between (heavy — large buffer allocation, may exceed device limits).",
                 apply: ApplyClass::Reset,
             },
             Setting {
@@ -409,6 +409,26 @@ impl Default for Registry {
                 apply: ApplyClass::Live,
             },
             Setting {
+                id: "render.water_absorb",
+                label: "Water depth tint",
+                category: Category::Render,
+                default: Value::F32(2.5),
+                value: Value::F32(2.5),
+                validation: Validation::F32Range { min: 0.0, max: 8.0 },
+                tooltip: "How strongly the water colours with depth: 0 is clear glass (a long path through water does nothing), higher makes thick water deepen toward blue-green while thin films stay clear. — Beer-Lambert absorption coefficient applied over the per-pixel water thickness (front-to-back surface distance); mesh view only. Applied Live.",
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.water_refract",
+                label: "Water refraction",
+                category: Category::Render,
+                default: Value::F32(0.6),
+                value: Value::F32(0.6),
+                validation: Validation::F32Range { min: 0.0, max: 2.0 },
+                tooltip: "How much the background bends as it shows through the water: 0 looks through cleanly, higher distorts the view behind the surface like real water. — Screen-space refraction offset strength along the surface normal; mesh view only. Applied Live.",
+                apply: ApplyClass::Live,
+            },
+            Setting {
                 id: "render.fps_target",
                 label: "FPS target",
                 category: Category::Render,
@@ -422,8 +442,8 @@ impl Default for Registry {
                 id: "camera.rot_x",
                 label: "Camera pitch",
                 category: Category::Camera,
-                default: Value::F32(0.4),
-                value: Value::F32(0.4),
+                default: Value::F32(-0.2),
+                value: Value::F32(-0.2),
                 validation: Validation::F32Range { min: -3.14159, max: 3.14159 },
                 tooltip: "Tilts the starting view up or down: positive looks down onto the tank from above, negative looks up at it from below. — Initial camera pitch, rotation around the X axis in radians; applied Live and restored on Reset.",
                 apply: ApplyClass::Live,
@@ -596,7 +616,7 @@ impl Registry {
         self.get("render.fps_target").map(|s| s.as_u32()).unwrap_or(60)
     }
     pub fn camera_rot_x(&self) -> f32 {
-        self.get("camera.rot_x").map(|s| s.as_f32()).unwrap_or(0.4)
+        self.get("camera.rot_x").map(|s| s.as_f32()).unwrap_or(-0.2)
     }
     pub fn camera_rot_y(&self) -> f32 {
         self.get("camera.rot_y").map(|s| s.as_f32()).unwrap_or(0.6)
@@ -630,6 +650,12 @@ impl Registry {
     }
     pub fn mesh_fresnel(&self) -> f32 {
         self.get("render.mesh_fresnel").map(|s| s.as_f32()).unwrap_or(1.0)
+    }
+    pub fn water_absorb(&self) -> f32 {
+        self.get("render.water_absorb").map(|s| s.as_f32()).unwrap_or(2.5)
+    }
+    pub fn water_refract(&self) -> f32 {
+        self.get("render.water_refract").map(|s| s.as_f32()).unwrap_or(0.6)
     }
     pub fn mesh_foam(&self) -> f32 {
         self.get("render.mesh_foam").map(|s| s.as_f32()).unwrap_or(0.8)
@@ -696,6 +722,11 @@ impl Registry {
             out.push_str(&format!(r#","max":{}"#, fmt_f64(s.max_as_f64())));
             out.push_str(&format!(r#","apply":{}"#, json_quote(s.apply.as_str())));
             out.push_str(&format!(r#","tooltip":{}"#, json_quote(s.tooltip)));
+            // Optional non-linear slider scale (e.g. "log2": each notch doubles
+            // the value). The number input still spans the full [min, max].
+            if let Some(scale) = slider_scale(s.id) {
+                out.push_str(&format!(r#","slider_scale":{}"#, json_quote(scale)));
+            }
             // Enum-valued settings carry a list of option labels so the panel can
             // render a dropdown instead of a slider. The value is the option index.
             if let Some(opts) = enum_options(s.id) {
@@ -721,6 +752,18 @@ impl Registry {
 fn enum_options(id: &str) -> Option<&'static [&'static str]> {
     match id {
         "scene.preset" => Some(&["Falling blob", "Dam break", "Double splash"]),
+        _ => None,
+    }
+}
+
+/// Optional non-linear scale for a setting's *slider*. `"log2"` makes each slider
+/// notch double the value (powers of two from `min` to `max`), keeping a slider
+/// usable across a huge range; the number input still accepts any exact value in
+/// `[min, max]`. Both `min` and `max` should be powers of two for clean stepping
+/// (`particles.count` runs 2^10 .. 2^27). Returns `None` for linear sliders.
+fn slider_scale(id: &str) -> Option<&'static str> {
+    match id {
+        "particles.count" => Some("log2"),
         _ => None,
     }
 }

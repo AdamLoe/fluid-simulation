@@ -53,11 +53,11 @@ app/
         profiler/       Hierarchical, config-tagged, timing-honest profiler.
 
   web/                  Thin TS/HTML web shell.
-    static.html         The canonical no-bundler page.
+    index.html          The canonical no-bundler page (served at the bare /).
     main.js             Canonical bootstrap: mounts the wasm, wires panels.
     panels.js           Rendered config + profiler side panels (from the WASM bridge).
     pkg/                wasm-pack output (generated; fluid_lab_bg.wasm + glue).
-    index.html, src/main.ts, vite.config.ts   Stale Vite/TS path (do not verify against).
+    src/main.ts, vite.config.ts   Orphaned Vite/TS stub (nothing loads it; do not verify against).
 
   tools/
     capture.mjs         Headless real-GPU Chrome screenshot + console capture.

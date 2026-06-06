@@ -12,13 +12,12 @@
 
       /* ── Toolbar ── */
       #toolbar { display: flex; gap: 8px; align-items: center; padding: 8px 12px;
-        background: #11141b; border-bottom: 1px solid #1d2230; user-select: none; flex-wrap: wrap; }
+        user-select: none; flex-wrap: wrap; }
+      #toolbar strong { margin-right: auto; }
       #toolbar button { background: #1b2130; color: #cdd6e4; border: 1px solid #2a3142;
         padding: 5px 12px; border-radius: 5px; cursor: pointer; font: inherit; }
       #toolbar button:hover { background: #232b3d; }
       #toolbar button.btn-active { border-color: #4ade80; color: #4ade80; }
-      #toolbar .spacer { flex: 1; }
-      #toolbar .hint { color: #6b7689; }
 
       /* ── Stage ── */
       #stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
@@ -152,6 +151,23 @@
         cursor: pointer;
       }
       .cfg-select:focus { outline: none; border-color: #4a9eff; }
+      .cfg-reset-btn {
+        flex-shrink: 0;
+        width: 22px;
+        height: 22px;
+        display: grid;
+        place-items: center;
+        background: #0f1219;
+        border: 1px solid #2a3142;
+        border-radius: 4px;
+        color: #8a93a6;
+        font-size: 13px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 0;
+      }
+      .cfg-reset-btn:hover { background: #232b3d; color: #cdd6e4; border-color: #3a4456; }
+      .cfg-reset-btn:focus { outline: none; border-color: #4a9eff; }
       .cfg-badge {
         display: inline-block;
         font-size: 10px;
@@ -279,14 +295,11 @@
     <div id="app">
       <div id="toolbar">
         <strong>Fluid Lab</strong>
-        <span class="hint" title="A real-time hybrid particle/grid (FLIP/PIC) liquid sim on a staggered MAC grid with GPU Conjugate-Gradient pressure projection. Portfolio demo — not a validated CFD solver.">Rust · WASM · WebGPU — 3D FLIP/PIC fluid</span>
         <button id="btn-pause">Pause</button>
-        <button id="btn-step">Step</button>
         <button id="btn-reset">Reset</button>
         <button id="btn-mesh">Mesh</button>
-        <button id="btn-panels">Hide Panels</button>
-        <span class="spacer"></span>
-        <span class="hint">mode buttons = interact &middot; wheel = zoom &middot; console = diagnostics</span>
+        <button id="btn-config">Config</button>
+        <button id="btn-profiler">Profiler</button>
       </div>
       <div id="stage">
         <canvas id="gpu-canvas"></canvas>
@@ -308,7 +321,7 @@
           <button id="mode-camera" class="mode-btn mode-active" title="Camera — drag to orbit the view">
             <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="13" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
           </button>
-          <button id="mode-rotate" class="mode-btn" title="(2) Rotate yaw/pitch — drag to rotate the tank + gravity">
+          <button id="mode-rotate" class="mode-btn" title="Rotate — drag to rotate the tank (and its gravity)">
             <svg viewBox="0 0 24 24" width="20" height="20"><path d="M19 12a7 7 0 1 1-2-4.9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19 5v4h-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
           </button>
           <button id="mode-rotate-roll" class="mode-btn" title="(3) Rotate roll/pitch — drag to roll the tank + gravity">

@@ -44,11 +44,13 @@ struct MeshParams {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct MeshCamera {
-    view_proj: [[f32; 4]; 4],
+    view_proj:     [[f32; 4]; 4],
+    inv_view_proj: [[f32; 4]; 4], // reconstruct tank-local pos from pixel+depth (thickness)
     cam_pos:   [f32; 4], // xyz = eye position IN TANK-LOCAL space (for fresnel/specular)
     sun_dir:   [f32; 4], // xyz = sun direction (normalized in shader), w = 0
-    water:     [f32; 4], // opacity, fresnel_strength, foam_strength, _
-    tint:      [f32; 4], // rgb base water color, _
+    water:     [f32; 4], // opacity, fresnel_strength, foam_strength, absorb_strength
+    tint:      [f32; 4], // rgb base water color, w = refract_strength
+    misc:      [f32; 4], // xy = render-target resolution (px), zw = _
 }
 
 /// Tunable look of the water surface, preserved across mesh (re)allocation and
@@ -58,6 +60,8 @@ pub struct MeshLook {
     pub opacity: f32,
     pub fresnel: f32,
     pub foam: f32,
+    pub absorb: f32, // Beer-Lambert absorption strength (depth-tint per unit thickness)
+    pub refract: f32, // screen-space refraction offset strength
     pub tint: [f32; 3],
     pub smooth_iters: u32,
 }
@@ -68,6 +72,8 @@ impl Default for MeshLook {
             opacity: 0.55,
             fresnel: 1.0,
             foam: 0.8,
+            absorb: 2.5,
+            refract: 0.6,
             tint: [0.10, 0.32, 0.55],
             smooth_iters: 2,
         }
@@ -101,8 +107,12 @@ pub struct MeshExtractor {
     mc_pl:       wgpu::ComputePipeline,
     mc_args_pl:  wgpu::ComputePipeline,
 
-    // --- render pipeline ---
-    render_pl: wgpu::RenderPipeline,
+    // --- render pipelines ---
+    render_pl: wgpu::RenderPipeline,     // shaded water (samples scene_color + back_depth)
+    back_pl:   wgpu::RenderPipeline,     // depth-only prepass → water_back_depth (far surface)
+
+    // --- render bind-group layout (rebuilt each resize for scene targets) ---
+    render_bgl: wgpu::BindGroupLayout,
 
     // --- bind groups ---
     density_bg:  wgpu::BindGroup,
@@ -110,7 +120,8 @@ pub struct MeshExtractor {
     blur_bg_ba:  wgpu::BindGroup, // scalar2 → scalar
     mc_bg:       wgpu::BindGroup,
     mc_args_bg:  wgpu::BindGroup,
-    render_bg:   wgpu::BindGroup,
+    render_bg:   wgpu::BindGroup, // camera + verts + scene_color + back_depth
+    back_bg:     wgpu::BindGroup, // camera + verts (depth-only prepass)
 }
 
 impl MeshExtractor {
@@ -129,6 +140,8 @@ impl MeshExtractor {
         origin: [f32; 3],
         look: MeshLook,
         isolevel: f32,
+        scene_color: &wgpu::TextureView, // offscreen background (refraction source)
+        back_depth: &wgpu::TextureView,  // water far-surface depth (thickness source)
     ) -> Self {
         let h = crate::sim::H;
         let origin = [origin[0], origin[1], origin[2], 0.0];
@@ -182,10 +195,12 @@ impl MeshExtractor {
         let sun_dir = [0.4, 1.0, 0.3, 0.0];
         let camera_uniform = MeshCamera {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             cam_pos: [0.0; 4],
             sun_dir,
-            water: [look.opacity, look.fresnel, look.foam, 0.0],
-            tint: [look.tint[0], look.tint[1], look.tint[2], 0.0],
+            water: [look.opacity, look.fresnel, look.foam, look.absorb],
+            tint: [look.tint[0], look.tint[1], look.tint[2], look.refract],
+            misc: [1.0, 1.0, 0.0, 0.0],
         };
         let camera_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mesh_camera"),
@@ -221,29 +236,53 @@ impl MeshExtractor {
         let mc_args_bg = make_bg(device, "mc_args_bg", &mc_args_pl,
             &[counter_buf.as_entire_binding(), indirect_args_buf.as_entire_binding()]);
 
-        // ── Render pipeline (explicit layout, two bindings) ──────────────────────
+        // ── Render pipeline (explicit layout) ────────────────────────────────────
+        // binding 0: camera uniform · 1: verts storage · 2: scene_color (refraction)
+        // · 3: water back-surface depth (thickness).
+        let cam_entry = wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let verts_entry = wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let render_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mesh_render_bgl"),
             entries: &[
-                // binding 0: camera uniform
+                cam_entry,
+                verts_entry,
+                // binding 2: scene_color (offscreen background, refraction source)
                 wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
                     count: None,
                 },
-                // binding 1: verts storage (read-only)
+                // binding 3: water back-surface depth (thickness source)
                 wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
                     count: None,
                 },
@@ -253,6 +292,18 @@ impl MeshExtractor {
         let render_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mesh_render_layout"),
             bind_group_layouts: &[Some(&render_bgl)],
+            immediate_size: 0,
+        });
+
+        // Depth-only prepass layout: camera + verts only (it CANNOT bind back_depth,
+        // which is its own render target).
+        let back_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("mesh_back_bgl"),
+            entries: &[cam_entry, verts_entry],
+        });
+        let back_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("mesh_back_layout"),
+            bind_group_layouts: &[Some(&back_bgl)],
             immediate_size: 0,
         });
 
@@ -275,9 +326,10 @@ impl MeshExtractor {
                 entry_point: Some("fs"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
-                    // Translucent glassy water: standard straight-alpha blending so
-                    // the tank/background reads through the surface (issue 5).
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    // Opaque: the shader composites the refracted/absorbed background
+                    // itself (the background is already blitted underneath), so no
+                    // blending — depth resolves the nearest water surface.
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -290,7 +342,7 @@ impl MeshExtractor {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: depth_format,
                 // Depth-test against the scene but still write depth so layered
-                // water surfaces resolve to the nearest one (avoids over-blending).
+                // water surfaces resolve to the nearest one.
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
@@ -301,9 +353,41 @@ impl MeshExtractor {
             cache: None,
         });
 
-        let render_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("mesh_render_bg"),
-            layout: &render_bgl,
+        // Depth-only prepass: reuse the mesh vertex shader, no fragment stage. Writes
+        // the FARTHEST water surface (compare Greater, cleared to 0.0) into a depth
+        // target sampled by the main pass for per-pixel water thickness.
+        let back_pl = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("mesh back-depth pipeline"),
+            layout: Some(&back_layout),
+            vertex: wgpu::VertexState {
+                module: &mesh_module,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: depth_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let render_bg = make_render_bg(device, &render_bgl, &camera_buf, &verts_buf, scene_color, back_depth);
+
+        let back_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mesh_back_bg"),
+            layout: &back_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: camera_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: verts_buf.as_entire_binding() },
@@ -331,13 +415,34 @@ impl MeshExtractor {
             mc_pl,
             mc_args_pl,
             render_pl,
+            back_pl,
+            render_bgl,
             density_bg,
             blur_bg_ab,
             blur_bg_ba,
             mc_bg,
             mc_args_bg,
             render_bg,
+            back_bg,
         }
+    }
+
+    /// Re-point the main render bind group at freshly (re)created scene targets.
+    /// Called whenever `scene_color` / `water_back_depth` are recreated (resize).
+    pub fn rebuild_render_bg(
+        &mut self,
+        device: &wgpu::Device,
+        scene_color: &wgpu::TextureView,
+        back_depth: &wgpu::TextureView,
+    ) {
+        self.render_bg = make_render_bg(
+            device,
+            &self.render_bgl,
+            &self.camera_buf,
+            &self.verts_buf,
+            scene_color,
+            back_depth,
+        );
     }
 
     /// Total bytes of the storage buffers owned by the mesh extractor (the
@@ -363,15 +468,28 @@ impl MeshExtractor {
     pub fn set_opacity(&mut self, v: f32) { self.look.opacity = v; }
     pub fn set_fresnel(&mut self, v: f32) { self.look.fresnel = v; }
     pub fn set_foam(&mut self, v: f32) { self.look.foam = v; }
+    pub fn set_absorb(&mut self, v: f32) { self.look.absorb = v; }
+    pub fn set_refract(&mut self, v: f32) { self.look.refract = v; }
 
-    /// Upload camera matrices, eye (tank-local), sun, and water look for this frame.
-    pub fn update_camera(&self, queue: &wgpu::Queue, view_proj: &Mat4, cam_pos_local: glam::Vec3, sun_dir: glam::Vec3) {
+    /// Upload camera matrices, eye (tank-local), sun, look, and target resolution for
+    /// this frame. `view_proj` maps tank-local → clip; its inverse reconstructs the
+    /// background position (water thickness) from the depth prepass.
+    pub fn update_camera(
+        &self,
+        queue: &wgpu::Queue,
+        view_proj: &Mat4,
+        cam_pos_local: glam::Vec3,
+        sun_dir: glam::Vec3,
+        resolution: (f32, f32),
+    ) {
         let u = MeshCamera {
             view_proj: view_proj.to_cols_array_2d(),
+            inv_view_proj: view_proj.inverse().to_cols_array_2d(),
             cam_pos: [cam_pos_local.x, cam_pos_local.y, cam_pos_local.z, 0.0],
             sun_dir: [sun_dir.x, sun_dir.y, sun_dir.z, 0.0],
-            water: [self.look.opacity, self.look.fresnel, self.look.foam, 0.0],
-            tint: [self.look.tint[0], self.look.tint[1], self.look.tint[2], 0.0],
+            water: [self.look.opacity, self.look.fresnel, self.look.foam, self.look.absorb],
+            tint: [self.look.tint[0], self.look.tint[1], self.look.tint[2], self.look.refract],
+            misc: [resolution.0, resolution.1, 0.0, 0.0],
         };
         let _ = self.sun_dir; // retained for symmetry / future static-sun paths
         queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&u));
@@ -433,13 +551,43 @@ impl MeshExtractor {
         queue.submit(std::iter::once(enc.finish()));
     }
 
-    /// Draw the mesh (indirect). Call inside a render pass after updating the
-    /// camera uniform.
+    /// Depth-only prepass writing the water's FAR surface into `water_back_depth`.
+    /// Call in a depth-only render pass (cleared to 0.0) BEFORE the main water pass.
+    pub fn draw_back(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_pipeline(&self.back_pl);
+        pass.set_bind_group(0, &self.back_bg, &[]);
+        pass.draw_indirect(&self.indirect_args_buf, 0);
+    }
+
+    /// Draw the shaded water (indirect). Call inside the water render pass after
+    /// updating the camera uniform and the background blit.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.render_pl);
         pass.set_bind_group(0, &self.render_bg, &[]);
         pass.draw_indirect(&self.indirect_args_buf, 0);
     }
+}
+
+/// Build the main render bind group (camera + verts + scene_color + back_depth).
+/// Shared by `new` and `rebuild_render_bg` (scene targets change on resize).
+fn make_render_bg(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    camera_buf: &wgpu::Buffer,
+    verts_buf: &wgpu::Buffer,
+    scene_color: &wgpu::TextureView,
+    back_depth: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("mesh_render_bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: camera_buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: verts_buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(scene_color) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(back_depth) },
+        ],
+    })
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

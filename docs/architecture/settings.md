@@ -70,9 +70,11 @@ to TypeScript. All three are in `app/crates/fluid-lab/src/lib.rs → set_setting
 
 `config_json()` serializes the full registry to a JSON array. Each entry carries:
 `id`, `label`, `category`, `type` (`"u32"` or `"f32"`), `value`, `default`, `min`,
-`max`, `apply`, `tooltip`, and optionally `options` (for enum-valued settings that
-render as dropdowns — currently only `scene.preset`). The panel reads this once at
-init to construct all controls; it never hard-codes control metadata.
+`max`, `apply`, `tooltip`, and two optional fields: `options` (for enum-valued
+settings that render as dropdowns — currently only `scene.preset`) and `slider_scale`
+(a non-linear scale hint for the slider — currently only `"log2"` on
+`particles.count`). The panel reads this once at init to construct all controls; it
+never hard-codes control metadata.
 
 `set_setting(id, value: f64)` writes a validated value into the registry. For Live
 settings it additionally dispatches the change to the GPU immediately via the
@@ -99,9 +101,16 @@ observer — it does not write settings.
 - The `options` field in `config_json` output exists only for settings with an entry
   in `app/crates/fluid-lab/src/settings/mod.rs → enum_options`. Currently only `scene.preset` has options.
   Adding a new dropdown-rendered setting requires adding an arm there.
+- The `slider_scale` field is emitted only for settings with an entry in
+  `app/crates/fluid-lab/src/settings/mod.rs → slider_scale`. Currently only `particles.count` returns
+  `"log2"`. It makes the panel render that setting's slider in exponent space (each
+  notch doubles the value) so one slider spans a huge range; the number input still
+  accepts any exact value in `[min, max]`. `particles.count` ranges `1_024` (2^10) to
+  `134_217_728` (2^27, the smallest power of two over 100M) — both endpoints are
+  powers of two so the log2 stepping is clean.
 - `physics.max_substeps` defaults to 1 (range 1–16). The default of 1 prefers interactivity — excess accumulated sim time is dropped and the browser catches up by rendering the next frame (see `decisions/performance.md`). Raise to 4 for dev/stress catch-up testing.
 - `dev.mesh_enabled` (U32 0/1, default 0, Reset-class) — controls lazy allocation of the ~73 MB MC GPU resources. Accessor: `mesh_enabled() → bool`.
-- The marching-cubes water look is tuned by Live, mesh-only settings: `render.mesh_iso`, `render.mesh_smooth` (u32 blur iterations), `render.mesh_opacity`, `render.mesh_fresnel`, `render.mesh_foam`. They no-op until `dev.mesh_enabled` is on (the `gpu.set_mesh_*` setters guard on `Option<MeshExtractor>` and `MeshLook` preserves them across (re)allocation). See `architecture/rendering.md`.
+- The marching-cubes water look is tuned by Live, mesh-only settings: `render.mesh_iso`, `render.mesh_smooth` (u32 blur iterations), `render.mesh_opacity`, `render.mesh_fresnel`, `render.mesh_foam`, plus the volume-shading pair `render.water_absorb` (Beer-Lambert depth-tint strength, default 2.5) and `render.water_refract` (screen-space refraction strength, default 0.6). They no-op until `dev.mesh_enabled` is on (the `gpu.set_mesh_*` / `gpu.set_water_*` setters guard on `Option<MeshExtractor>`, and `MeshLook` — which now also carries `absorb`/`refract` — preserves them across (re)allocation). See `architecture/rendering.md`.
 - `physics.cfl` (F32, default 2.0, Live) — the CFL number = max grid cells a particle may cross per substep; raises the velocity ceiling so splash height does not shrink as the grid is refined. Writes `Params.cls[2]`; see `architecture/simulation.md`.
 - `dev.detailed_gpu_profiling` (U32 0/1, default 0, Reset-class) — switches `GpuTimers` from coarse (3 passes/substep) to detailed (one pass per fine section + per-CG-iter timing). Accessor: `detailed_gpu_profiling() → bool`.
 - The colored apply-class dots (green/yellow/red) are rendered by the web panel from

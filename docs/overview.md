@@ -13,7 +13,7 @@ TypeScript shell.
  Browser tab
  ┌─────────────────────────────────────────────────────────────┐
  │  web shell (thin TS/HTML, no framework)                      │
- │    static.html + main.js + panels.js   ← canonical path      │
+ │    index.html + main.js + panels.js   ← canonical path       │
  │    config panel · profiler panel   (rendered from the bridge)│
  │                    │  config_json / set_setting / stats_json │
  │                    ▼                                          │
@@ -48,8 +48,8 @@ relative to it. (The Rust crate manifest is `app/Cargo.toml`; its source is `app
   `lib.rs` (the WASM app + frame loop) and `camera.rs` / `timestep.rs`. WGSL compute &
   render shaders live in `app/crates/fluid-lab/src/gpu/shaders/`.
 - **Web shell** (`app/web/`): thin TypeScript/HTML. The verified path is the no-bundler
-  static path (`static.html` + `main.js` + `panels.js`); a Vite/TS path exists but is
-  stale.
+  static path (`index.html` + `main.js` + `panels.js`); an orphaned Vite/TS stub
+  (`src/main.ts`) exists but nothing loads it.
 - **Capture harness** (`app/tools/capture.mjs`): headless real-GPU Chrome that writes a
   screenshot + page console — the one acceptance signal that can't be faked.
 

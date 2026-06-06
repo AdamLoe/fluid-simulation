@@ -263,12 +263,21 @@ function buildSettingRow(s, app, allSettings) {
   const controls = document.createElement("div");
   controls.className = "cfg-controls";
 
+  // Optional non-linear slider scale. "log2" runs the slider in exponent space:
+  // each integer notch doubles the value (2^min … 2^max), so one slider can span
+  // a huge range. The number input below always spans the full [min, max], so any
+  // exact value (including non-powers-of-two) can still be typed manually.
+  const isLog2 = s.slider_scale === "log2";
+  const toSlider = (v) => isLog2 ? Math.round(Math.log2(clamp(v, s.min, s.max))) : v;
+  const fromSlider = (p) =>
+    isLog2 ? Math.pow(2, parseInt(p, 10)) : (isF32 ? parseFloat(p) : parseInt(p, 10));
+
   const slider = document.createElement("input");
   slider.type = "range";
-  slider.min = s.min;
-  slider.max = s.max;
-  slider.step = step;
-  slider.value = s.value;
+  slider.min = toSlider(s.min);
+  slider.max = toSlider(s.max);
+  slider.step = isLog2 ? 1 : step;
+  slider.value = toSlider(s.value);
   slider.className = "cfg-slider";
 
   const numInput = document.createElement("input");
@@ -306,7 +315,7 @@ function buildSettingRow(s, app, allSettings) {
     s.value = v; // update local mirror
 
     // Sync both controls without triggering each other
-    slider.value = v;
+    slider.value = toSlider(v);
     numInput.value = isF32 ? v.toFixed(decimals) : v;
 
     // Persist to localStorage
@@ -325,7 +334,7 @@ function buildSettingRow(s, app, allSettings) {
     }
   }
 
-  slider.addEventListener("input", () => applyChange(slider.value));
+  slider.addEventListener("input", () => applyChange(fromSlider(slider.value)));
   numInput.addEventListener("change", () => applyChange(numInput.value));
   // Per-setting reset reuses applyChange, so it goes through the same
   // set_setting + control-sync + reset-class badge path as a manual edit.
@@ -637,9 +646,9 @@ export function initPanels(app) {
     btnProfiler.classList.toggle("btn-active", v);
   }
 
-  // Respect ?panels=off URL param (hides both)
+  // Both panels start closed; ?panels=on opens them on load.
   const params = new URLSearchParams(location.search);
-  const startVisible = params.get("panels") !== "off";
+  const startVisible = params.get("panels") === "on";
   setConfigVisible(startVisible);
   setProfVisible(startVisible);
 

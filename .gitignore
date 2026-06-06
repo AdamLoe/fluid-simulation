@@ -1,4 +1,9 @@
+# Browser capture artifacts. capture.mjs writes bare-named outputs into captures/.
 captures/**
-app/target/** 
+# Defensive: never track stray screenshots if one is written next to the harness.
+app/tools/*.png
+app/tools/*.png.console.txt
+app/tools/*.frames/
+app/target/**
 app/web/node_modules/**
 app/tools/node_modules/**

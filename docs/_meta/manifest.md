@@ -48,10 +48,10 @@ doc Y." Code paths are relative to `code_root` (`app/`).
 | `app/crates/fluid-lab/src/gpu/shaders/{scatter,normalize,mark,classify,clear,forces,boundaries,g2p,gradient,divergence,save_vel,impulse}.wgsl` | `architecture/simulation.md` |
 | `app/crates/fluid-lab/src/gpu/shaders/cg_*.wgsl`, `app/crates/fluid-lab/src/gpu/shaders/pressure.wgsl`, `app/crates/fluid-lab/src/sim/pressure.rs` | `architecture/pressure-solver.md`; `decisions/pressure.md` if the solver choice/convention changes |
 | `app/crates/fluid-lab/src/gpu/mod.rs` (device, GpuCaps, buffer layout, recreate path), `app/crates/fluid-lab/src/gpu/smoke.rs` | `architecture/gpu-resources.md`; `decisions/performance.md` if the pass-split/SoA strategy changes |
-| `app/crates/fluid-lab/src/gpu/{renderer,particles,slice,mesh}.rs`, `app/crates/fluid-lab/src/sim/marching_cubes.rs`, `app/crates/fluid-lab/src/gpu/shaders/{particles,slice,mesh,mc,mc_args,density,blur}.wgsl` | `architecture/rendering.md`; `decisions/rendering.md` if a render-policy decision changes |
+| `app/crates/fluid-lab/src/gpu/{renderer,particles,slice,mesh,blit}.rs`, `app/crates/fluid-lab/src/sim/marching_cubes.rs`, `app/crates/fluid-lab/src/gpu/shaders/{particles,slice,mesh,mc,mc_args,density,blur,blit}.wgsl` | `architecture/rendering.md`; `decisions/rendering.md` if a render-policy decision changes |
 | `app/crates/fluid-lab/src/profiler/mod.rs`, `app/crates/fluid-lab/src/gpu/timing.rs` | `architecture/profiler.md`; `decisions/observability.md` if the timing-honesty/threshold policy changes |
 | `app/crates/fluid-lab/src/settings/mod.rs` (registry, ApplyClass, defaults, validation) | `architecture/settings.md`; `decisions/observability.md` if the apply-class policy changes |
-| `web/*` (main.js, panels.js, static.html, the Vite/TS path), `tools/capture.mjs` | `architecture/web-shell.md`; `agent-context/build-run.md` if the build/serve/verify flow changes |
+| `web/*` (main.js, panels.js, index.html, the orphaned Vite/TS stub), `tools/capture.mjs` | `architecture/web-shell.md`; `agent-context/build-run.md` if the build/serve/verify flow changes |
 | `app/Cargo.toml` deps or toolchain pins | `overview.md` (toolchain facts), `agent-context/build-run.md` |
 | Repository directory layout (new/renamed dir) | `repository-layout.md` |
 | A new/removed/re-routed architecture doc | `architecture/index.md`, and `_meta/ownership.json` |

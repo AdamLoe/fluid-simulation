@@ -8,14 +8,29 @@
 // Usage (from Windows node):
 //   node tools/capture.mjs <url> <out.png> [waitMs] [chromePath]
 //
-// Console text is also written next to the PNG as <out>.console.txt.
+// Output location: a BARE filename (e.g. `boot.png`) is written into the repo's
+// `captures/` dir (gitignored), anchored to THIS script's location — so it lands
+// there no matter what cwd the harness was launched from. Pass a path with a
+// directory (or an absolute path) to override. Console text is written alongside
+// the PNG as <out>.console.txt.
 
 import { writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join, resolve, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
 
+// Repo `captures/` dir, resolved relative to this file (app/tools/ → ../../captures),
+// not the cwd. Keeps screenshots out of app/tools/ (which is tracked by git).
+const CAPTURES_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../captures");
+
 const url = process.argv[2] || "http://localhost:5173/";
-const outPng = process.argv[3] || "captures/capture.png";
+const outArg = process.argv[3] || "capture.png";
+// Bare filename → captures/; an explicit path (has a separator or is absolute) is
+// respected as-is (relative to cwd).
+const outPng =
+  isAbsolute(outArg) || outArg.includes("/") || outArg.includes("\\")
+    ? outArg
+    : join(CAPTURES_DIR, outArg);
 mkdirSync(dirname(outPng), { recursive: true });
 const waitMs = parseInt(process.argv[4] || "6000", 10);
 const chromePath =

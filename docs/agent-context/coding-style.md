@@ -30,8 +30,8 @@ You're editing Rust, WGSL, or TypeScript under `app/`.
 
 **TypeScript / web**
 - The shell is intentionally thin — no framework (React is optional wrapper only).
-- The canonical, verified front-end is the no-bundler static path (`web/static.html` +
-  `web/main.js` + `web/panels.js`); the Vite/TS path is a stale stub. See
+- The canonical, verified front-end is the no-bundler static path (`web/index.html` +
+  `web/main.js` + `web/panels.js`); the orphaned `web/src/main.ts` Vite stub is dead. See
   [`../architecture/web-shell.md`](../architecture/web-shell.md).
 - Panels are rendered *from* the WASM config registry (`config_json` / `set_setting` /
   `stats_json`) — never hand-wire a control against ad-hoc state.

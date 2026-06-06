@@ -410,6 +410,14 @@ impl FluidApp {
                         self.gpu.set_mesh_foam(value as f32);
                         log(&format!("[fluid-lab] live mesh_foam = {value}"));
                     }
+                    "render.water_absorb" => {
+                        self.gpu.set_water_absorb(value as f32);
+                        log(&format!("[fluid-lab] live water_absorb = {value}"));
+                    }
+                    "render.water_refract" => {
+                        self.gpu.set_water_refract(value as f32);
+                        log(&format!("[fluid-lab] live water_refract = {value}"));
+                    }
                     "classify.liquid_threshold" => {
                         self.gpu.set_liquid_threshold(value as u32);
                         log(&format!("[fluid-lab] live liquid_threshold = {value}"));

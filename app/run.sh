@@ -34,17 +34,14 @@ fi
 free_port
 
 echo "==> Serving on http://localhost:${PORT}/  (Ctrl-C to stop)"
-# Serve the canonical static shell at the root ("/" -> static.html) so the bare
-# URL works; the on-disk index.html is the stale Vite stub and is bypassed.
-# No-cache headers so an ordinary browser reload always picks up the freshly
-# built .wasm (plain http.server caches it, requiring Ctrl-Shift-R).
+# The canonical shell is web/index.html, so the bare "/" serves it under any
+# server (http.server's default directory index) — no path remap needed. We wrap
+# http.server only to add no-cache headers, so an ordinary browser reload always
+# picks up the freshly built .wasm (plain http.server caches it, requiring
+# Ctrl-Shift-R).
 cd "$APP_DIR/web" && exec python3 -c '
 import sys, http.server
 class Handler(http.server.SimpleHTTPRequestHandler):
-    def send_head(self):
-        if self.path in ("/", ""):
-            self.path = "/static.html"
-        return super().send_head()
     def end_headers(self):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")

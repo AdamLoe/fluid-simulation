@@ -1,6 +1,7 @@
 //! WebGPU context: adapter/device init, surface configuration, boot diagnostics,
 //! the compute/integer-atomic smoke test, the GPU fluid sim, and rendering.
 
+mod blit;
 mod fluid;
 mod mesh;
 mod particles;
@@ -36,6 +37,11 @@ pub struct GpuContext {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     depth_view: wgpu::TextureView,
+    // Offscreen targets for the marching-cubes water path (volume shading). Screen-
+    // sized; recreated on resize. Unused by the default particle/slice path.
+    scene_color: wgpu::TextureView,      // opaque scene → refraction/background source
+    water_back_depth: wgpu::TextureView, // water far-surface depth → thickness source
+    blit: blit::Blitter,                 // copies scene_color onto the swapchain
     fluid: fluid::GpuFluid,
     wireframe: renderer::WireframeRenderer,
     particles: particles::ParticleRenderer,
@@ -141,6 +147,10 @@ impl GpuContext {
         surface.configure(&device, &config);
 
         let depth_view = create_depth(&device, width, height);
+        let scene_color = create_scene_color(&device, format, width, height);
+        let water_back_depth = create_back_depth(&device, width, height);
+        let mut blit = blit::Blitter::new(&device, format, DEPTH_FORMAT);
+        blit.rebuild(&device, &scene_color);
 
         let fluid = fluid::GpuFluid::new(&device, &queue, settings, scene);
         let particle_radius = crate::sim::H * 0.35;
@@ -179,6 +189,8 @@ impl GpuContext {
             opacity: settings.mesh_opacity(),
             fresnel: settings.mesh_fresnel(),
             foam: settings.mesh_foam(),
+            absorb: settings.water_absorb(),
+            refract: settings.water_refract(),
             smooth_iters: settings.mesh_smooth(),
             ..Default::default()
         };
@@ -197,6 +209,8 @@ impl GpuContext {
                 tank_lo,
                 mesh_look,
                 mesh_iso,
+                &scene_color,
+                &water_back_depth,
             ))
         } else {
             None
@@ -220,6 +234,9 @@ impl GpuContext {
             surface,
             config,
             depth_view,
+            scene_color,
+            water_back_depth,
+            blit,
             fluid,
             wireframe,
             particles,
@@ -294,6 +311,8 @@ impl GpuContext {
                 tank_lo,
                 self.mesh_look,
                 self.mesh_iso,
+                &self.scene_color,
+                &self.water_back_depth,
             ))
         } else {
             None
@@ -363,6 +382,13 @@ impl GpuContext {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth(&self.device, width, height);
+        // Recreate the water-path offscreen targets and re-point the consumers.
+        self.scene_color = create_scene_color(&self.device, self.config.format, width, height);
+        self.water_back_depth = create_back_depth(&self.device, width, height);
+        self.blit.rebuild(&self.device, &self.scene_color);
+        if let Some(m) = &mut self.mesh {
+            m.rebuild_render_bg(&self.device, &self.scene_color, &self.water_back_depth);
+        }
     }
 
     pub fn reset(&mut self) {
@@ -427,6 +453,8 @@ impl GpuContext {
                     tank_lo,
                     self.mesh_look,
                     self.mesh_iso,
+                    &self.scene_color,
+                    &self.water_back_depth,
                 ));
             }
         } else {
@@ -468,6 +496,20 @@ impl GpuContext {
         self.mesh_look.foam = v;
         if let Some(m) = &mut self.mesh {
             m.set_foam(v);
+        }
+    }
+
+    pub fn set_water_absorb(&mut self, v: f32) {
+        self.mesh_look.absorb = v;
+        if let Some(m) = &mut self.mesh {
+            m.set_absorb(v);
+        }
+    }
+
+    pub fn set_water_refract(&mut self, v: f32) {
+        self.mesh_look.refract = v;
+        if let Some(m) = &mut self.mesh {
+            m.set_refract(v);
         }
     }
 
@@ -685,53 +727,111 @@ impl GpuContext {
 
         // The caller passes the true camera eye already transformed into the tank's
         // LOCAL frame (the same space the MC vertices live in), so the mesh shader's
-        // view vector / Fresnel stay correct as the tank is moved or rotated. This
-        // is what fixes the white-flash artifacts (issues 1 & 2).
+        // view vector / Fresnel stay correct as the tank is moved or rotated.
+        let resolution = (self.config.width as f32, self.config.height as f32);
         if let Some(m) = &self.mesh {
-            m.update_camera(&self.queue, view_proj, cam_pos_local, self.sun_dir);
+            m.update_camera(&self.queue, view_proj, cam_pos_local, self.sun_dir, resolution);
         }
+
+        const CLEAR: wgpu::Color = wgpu::Color { r: 0.04, g: 0.05, b: 0.08, a: 1.0 };
 
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("scene pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.04,
-                            g: 0.05,
-                            b: 0.08,
-                            a: 1.0,
+
+        match (self.mesh_enabled, self.mesh.as_ref()) {
+            // ── Water (marching-cubes) path: volume shading needs offscreen targets ──
+            // 1) opaque scene → scene_color (+depth); 2) water far-surface depth-only
+            // prepass → water_back_depth; 3) water pass to the swapchain: blit the
+            // background, then draw water sampling scene_color (refraction) and
+            // water_back_depth (thickness).
+            (true, Some(m)) => {
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("opaque pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &self.scene_color,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(CLEAR), store: wgpu::StoreOp::Store },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &self.depth_view,
+                            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                            stencil_ops: None,
                         }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: self.timers.as_ref().map(|t| t.render_writes()),
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            self.wireframe.draw(&mut pass);
-            // Mesh draws only when enabled AND its resources exist; otherwise
-            // particles are the graceful fallback (the existing fallback contract).
-            match (self.mesh_enabled, self.mesh.as_ref()) {
-                (true, Some(m)) => m.draw(&mut pass),
-                _ => self.particles.draw(&mut pass, self.fluid.particle_count()),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    self.wireframe.draw(&mut pass);
+                }
+                {
+                    // Depth-only: farthest water surface (compare Greater, clear 0.0).
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("water back-depth prepass"),
+                        color_attachments: &[],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &self.water_back_depth,
+                            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    m.draw_back(&mut pass);
+                }
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("water pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(CLEAR), store: wgpu::StoreOp::Store },
+                        })],
+                        // Load the opaque-pass depth so water is occluded by the tank.
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &self.depth_view,
+                            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: self.timers.as_ref().map(|t| t.render_writes()),
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    self.blit.draw(&mut pass);   // background (scene_color) under the water
+                    m.draw(&mut pass);
+                    if self.slice_enabled {
+                        self.slice.draw(&mut pass);
+                    }
+                }
             }
-            if self.slice_enabled {
-                self.slice.draw(&mut pass);
+            // ── Default path (particles/slice): single pass straight to the swapchain ──
+            _ => {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("scene pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(CLEAR), store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: self.timers.as_ref().map(|t| t.render_writes()),
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                self.wireframe.draw(&mut pass);
+                self.particles.draw(&mut pass, self.fluid.particle_count());
+                if self.slice_enabled {
+                    self.slice.draw(&mut pass);
+                }
             }
         }
 
@@ -769,6 +869,8 @@ fn build_mesh(
     tank_lo: [f32; 3],
     look: mesh::MeshLook,
     iso: f32,
+    scene_color: &wgpu::TextureView,
+    back_depth: &wgpu::TextureView,
 ) -> mesh::MeshExtractor {
     mesh::MeshExtractor::new(
         device,
@@ -784,6 +886,8 @@ fn build_mesh(
         tank_lo,
         look,
         iso,
+        scene_color,
+        back_depth,
     )
 }
 
@@ -800,6 +904,43 @@ fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    tex.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// Offscreen color target for the water path: the opaque scene is rendered here so
+/// the water pass can blit it as background and sample it for refraction.
+fn create_scene_color(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> wgpu::TextureView {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("scene_color"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    tex.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// Sampleable depth target holding the water's far surface (depth-only prepass),
+/// read by the water shader to compute per-pixel water thickness.
+fn create_back_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("water_back_depth"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     tex.create_view(&wgpu::TextureViewDescriptor::default())

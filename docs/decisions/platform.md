@@ -64,9 +64,10 @@ second project.
 ## The verified web entry path is the no-bundler static path
 
 **Decision** — The canonical, verified front-end is the no-bundler static path
-(`web/static.html` + `web/main.js` + `web/panels.js`, served by a plain static
-server). The Vite/TS path is a stale stub kept only as a sibling; do not verify
-against it.
+(`web/index.html` + `web/main.js` + `web/panels.js`, served by a plain static
+server). The shell is named `index.html` so the bare `/` serves it under any server,
+with no `/`-remap. The old Vite/TS entry (`web/src/main.ts`) is an orphaned stub that
+nothing loads; do not verify against it.
 
 **Why** — npm/Vite has been unreliable on the build machine, and the static path is
 the one that actually carries the rendered panels and is exercised by the capture
