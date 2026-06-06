@@ -1,0 +1,6 @@
+# Pin the toolchain so Cloudflare Pages (and any other CI) compiles the WASM
+# with the same Rust as local dev. rustup reads this from any ancestor of the
+# build cwd, so wasm-pack invocations under app/ pick it up automatically.
+[toolchain]
+channel = "1.95.0"
+targets = ["wasm32-unknown-unknown"]
