@@ -21,16 +21,26 @@ WEB="$APP/web"
 PKG="$WEB/pkg"
 OUT="$WEB/dist"
 
-# wasm-pack: prefer the prebuilt-binary installer (fast, reliable on CI). On a
-# dev box it's already on PATH and this block is skipped.
+# Rust: Cloudflare's build image ships no Rust toolchain, so bootstrap rustup on
+# CI (channel + wasm target come from rust-toolchain.toml). On a dev box cargo is
+# already on PATH and this block is skipped.
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "==> Installing Rust (rustup)…"
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --profile minimal --default-toolchain 1.95.0
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+# Ensure the wasm target is present (no-op if rust-toolchain.toml already added it).
+rustup target add wasm32-unknown-unknown 2>/dev/null || true
+
+# wasm-pack: prebuilt-binary installer (fast, reliable on CI). Needs Rust present,
+# so it runs after the rustup bootstrap above.
 if ! command -v wasm-pack >/dev/null 2>&1; then
   echo "==> Installing wasm-pack…"
   curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
   export PATH="$HOME/.cargo/bin:$PATH"
 fi
-
-# rust-toolchain.toml pins the channel + wasm target; this is a no-op once present.
-rustup target add wasm32-unknown-unknown 2>/dev/null || true
 
 echo "==> Building WASM (release)…"
 ( cd "$APP" && wasm-pack build crates/fluid-lab --target web --out-dir "$PKG" --release )
