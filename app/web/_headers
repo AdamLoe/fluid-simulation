@@ -9,6 +9,12 @@
 /*
   Content-Security-Policy: frame-ancestors 'self' https://adamloe.com https://www.adamloe.com https://*.adamloe.com
   X-Content-Type-Options: nosniff
+  # Cross-origin isolation (SharedArrayBuffer / WASM threads). NOT required by the
+  # current single-threaded GPU sim, but enabled per request. Caveat: with
+  # require-corp, any future CROSS-ORIGIN subresource must send CORP/CORS headers
+  # or it will be blocked. All current assets are same-origin, so unaffected.
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
 
 # The wasm-bindgen glue + binary aren't content-hashed, but Cloudflare serves
 # each deployment immutably and revalidates via ETag, so a short cache is safe
