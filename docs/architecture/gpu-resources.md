@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-07
+last_updated:  2026-06-08
 okay_to_delete: false
 long_lived:    true
 ---
@@ -22,6 +22,12 @@ At boot, `GpuContext::new` requests a `HighPerformance` adapter, clones the full
 - **`GpuFluid`** (`app/crates/fluid-lab/src/gpu/fluid.rs`) — simulation buffer set and all compute pipelines; `GpuContext` drives it via `record_prep` / `record_pressure` / `record_finish`.
 - **Sub-renderers** — `WireframeRenderer`, `ParticleRenderer`, `SliceRenderer`; each receives buffer handles from `GpuFluid` at construction, not raw device buffers. `GpuFluid::grid_dims()` and `GpuFluid::tank_bounds()` thread the per-axis cell counts and the world-space tank AABB into the renderers on both construct and recreate.
 - **`GpuTimers`** (`app/crates/fluid-lab/src/gpu/timing.rs`) — wraps timestamp-query sets; `None` when the feature is absent. When present, constructed with `(max_substeps, detailed, pressure_iters)` from the registry so the `QuerySet` is sized at construction time.
+- **Particle-scale preflight/status** — `GpuContext::new` and
+  `GpuContext::recreate_fluid` validate the requested seeded particle count against the
+  shared tiled particle-dispatch contract and the storage-binding limit before
+  allocation/submission, then surface the result through `requested_particles`,
+  `estimated_particles`, `scale_status`, `particle_dispatch_groups`, and
+  `particle_dispatch_capacity`.
 
 ## Buffer layout and the per-stage storage-buffer budget
 
@@ -50,13 +56,22 @@ Bind groups are built once in `GpuFluid::new`; buffers never move after creation
 
 **Reset-class settings require buffer reallocation.** The per-axis grid resolutions `grid.res_x/res_y/res_z`, particle count, `fixed_dt`, `max_substeps`, and `dev.detailed_gpu_profiling` are baked into buffer sizes, uniforms, or timer layout at construction. Changing them requires calling `GpuContext::recreate_fluid`, which calls `GpuFluid::new` and rebuilds the `WireframeRenderer`, `ParticleRenderer`, and `SliceRenderer` from the new buffer handles. `GpuTimers` is also rebuilt from the new `max_substeps` / mode / `pressure_iters`. The device, surface, and format are untouched. Live/tweak-class settings are written to uniforms or renderer state without a rebuild.
 
-**Particle-scale preflight happens before allocation/submission.** Particle-linear
-passes currently use one-dimensional workgroup dispatches at workgroup size 64.
-`GpuContext::recreate_fluid` computes the exact deterministic seeded count before
-allocation and rejects a Reset when that count exceeds either
-`max_compute_workgroups_per_dimension * 64` or the single particle storage-binding
-limit. A rejected Reset preserves the running fluid and exposes the requested,
-estimated, actual, and limiting values through `stats_json`.
+**Particle-linear work uses one shared tiled dispatch shape.**
+`gpu/fluid.rs -> particle_dispatch_shape` is the contract for every particle-linear
+pass: mark, scatter U/V/W, G2P, and the standalone impulse path all dispatch with
+`@workgroup_size(64, 1, 1)` and the same `(groups_x, groups_y)` shape. The shader-side
+particle index is `((workgroup_id.y * num_workgroups.x + workgroup_id.x) * 64) +
+local_invocation_index`; partial tiles still guard `p >= particle_count`.
+
+**Particle-scale preflight happens before allocation/submission.** `GpuContext::new`
+and `GpuContext::recreate_fluid` compute the exact deterministic seeded count before
+allocation and reject create/Reset when that count exceeds either the tiled dispatch
+capacity or the single particle storage-binding limit. The tiled ceiling is
+`min(max_compute_workgroups_per_dimension^2, floor(u32::MAX / 64)) * 64`, still
+subject to the particle storage-binding limit. A rejected Reset preserves the running
+fluid and exposes the requested, estimated, actual, and limiting values through
+`stats_json`; `scale_status` distinguishes dispatch-capacity rejection from
+storage-binding rejection.
 
 **Memory accounting covers the active simulation buffers.** `GpuContext::buffer_memory_bytes()` forwards `GpuFluid::buffer_memory_bytes()`. Rendering owns only small renderer uniforms/geometry plus the shared depth texture; there is no extracted-surface vertex allocation or offscreen water-target allocation included in the runtime.
 
@@ -75,6 +90,8 @@ estimated, actual, and limiting values through `stats_json`.
 - A new Reset-class setting is added — note it in the reallocation invariant. (The per-axis `grid.res_x/res_y/res_z` and `dev.detailed_gpu_profiling` are already Reset-class.)
 - The adapter limit floor changes (e.g., if a WebGPU spec update guarantees ≥10) — update the constraint description.
 - `GpuTimers` construction parameters change — update "What it owns" above; `profiler.md` owns the timing readout shape.
+- The shared particle dispatch contract changes (workgroup size, tiling formula, or
+  preflight status names).
 
 ## See also
 

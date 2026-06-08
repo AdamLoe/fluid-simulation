@@ -1,4 +1,4 @@
-// panels.js — Config + Profiler side panels for Fluid Lab (phase 1.2 observability)
+// panels.js - Right-side workspace tabs for Fluid Lab.
 // Pure ES module, vanilla DOM, no dependencies, no build step.
 //
 // NOTE on reset/reload-class settings: calling app.set_setting() updates the stored
@@ -8,10 +8,36 @@
 // Live-class settings apply to the running sim immediately and need no badge.
 
 const LS_KEY = "fluidlab.config.v1";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+const HIDDEN_SETTING_IDS = new Set([
+  "interaction.auto_roll_enabled",
+  "interaction.wave_enabled",
+]);
+const TAB_ORDER = ["render", "general", "physics", "modes", "profiler"];
+const TAB_META = {
+  render:   { label: "Render" },
+  general:  { label: "General" },
+  physics:  { label: "Physics" },
+  modes:    { label: "Modes" },
+  profiler: { label: "Profiler" },
+};
+const TAB_CATEGORY_ALLOWLIST = {
+  render: new Set(["Render", "Camera"]),
+  general: new Set(["Scene", "Grid", "Particles"]),
+  physics: new Set(["Physics", "Solver"]),
+  modes: new Set(["Interaction"]),
+};
+const MODE_SECTION_ORDER = [
+  {
+    label: "Auto Rotate",
+    note: "Controls the scheduled tank rocking used by Auto Rotate.",
+    ids: ["interaction.auto_roll_strength", "interaction.auto_roll_cadence"],
+  },
+  {
+    label: "Waves",
+    note: "Controls the scheduled wave-maker impulses used by Waves.",
+    ids: ["interaction.wave_strength", "interaction.wave_frequency"],
+  },
+];
 
 function safeConfigJson(app) {
   try {
@@ -38,15 +64,6 @@ function fmt(n, decimals) {
 function clamp(v, min, max) {
   return Math.min(max, Math.max(min, v));
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Instant hover tooltip
-//
-// The native `title` attribute only surfaces after a ~1s browser delay, which
-// feels broken on the ⓘ affordance. This is a single shared bubble parented on
-// <body> (position:fixed) so it appears immediately on hover and is never
-// clipped by the panel-body's overflow.
-// ─────────────────────────────────────────────────────────────────────────────
 
 let _tipEl = null;
 function getTipEl() {
@@ -79,7 +96,6 @@ function showTip(text, anchor, kind = "functional") {
   const tip = getTipEl();
   tip.textContent = text;
   styleTip(tip, kind);
-  // Make it laid-out-but-invisible so we can measure before positioning.
   tip.style.visibility = "hidden";
   tip.style.left = "0px";
   tip.style.top = "0px";
@@ -88,7 +104,7 @@ function showTip(text, anchor, kind = "functional") {
   const th = tip.offsetHeight;
   let left = clamp(r.left, 8, Math.max(8, window.innerWidth - tw - 8));
   let top = r.bottom + 6;
-  if (top + th > window.innerHeight - 8) top = r.top - th - 6; // flip above if needed
+  if (top + th > window.innerHeight - 8) top = r.top - th - 6;
   tip.style.left = left + "px";
   tip.style.top = Math.max(8, top) + "px";
   tip.style.visibility = "visible";
@@ -102,17 +118,12 @@ function hideTip() {
   }
 }
 
-// Attach instant-tooltip behaviour to an element (hover + keyboard focus).
 function attachTip(el, text, kind = "functional") {
   el.addEventListener("mouseenter", () => showTip(text, el, kind));
   el.addEventListener("mouseleave", hideTip);
   el.addEventListener("focus", () => showTip(text, el, kind));
   el.addEventListener("blur", hideTip);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// localStorage helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 function loadStoredConfig() {
   try {
@@ -126,16 +137,16 @@ function loadStoredConfig() {
 function saveStoredConfig(settings) {
   try {
     const map = {};
-    for (const s of settings) map[s.id] = s.value;
+    for (const s of settings) {
+      if (!HIDDEN_SETTING_IDS.has(s.id)) {
+        map[s.id] = s.value;
+      }
+    }
     localStorage.setItem(LS_KEY, JSON.stringify(map));
   } catch (e) {
     console.warn("[panels] localStorage write failed:", e);
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Config panel
-// ─────────────────────────────────────────────────────────────────────────────
 
 const APPLY_DOT = {
   live:   { color: "#4ade80", title: "Live - takes effect immediately" },
@@ -144,8 +155,8 @@ const APPLY_DOT = {
 };
 
 const APPLY_BADGE = {
-  reset:  { text: "⟳ reset to apply",  cls: "badge-reset" },
-  reload: { text: "⤓ reload to apply", cls: "badge-reload" },
+  reset:  { text: "reset to apply", cls: "badge-reset" },
+  reload: { text: "reload to apply", cls: "badge-reload" },
 };
 
 const PANEL_GROUPS = [
@@ -155,37 +166,43 @@ const PANEL_GROUPS = [
 ];
 const PRESENTATION_CATEGORIES = new Set(["Render", "Camera"]);
 
-function buildConfigPanel(container, app) {
+function filteredSettingsForTab(settings, tabId) {
+  if (tabId === "modes") {
+    return settings.filter(
+      (s) => s.category === "Interaction" && !HIDDEN_SETTING_IDS.has(s.id)
+    );
+  }
+  const allow = TAB_CATEGORY_ALLOWLIST[tabId];
+  if (!allow) return settings;
+  return settings.filter((s) => allow.has(s.category));
+}
+
+function buildConfigPanel(container, app, tabId) {
   hideTip();
   container.innerHTML = "";
 
-  const settings = safeConfigJson(app);
+  const settings = filteredSettingsForTab(safeConfigJson(app), tabId);
   if (!settings.length) {
     container.innerHTML = '<p class="panel-empty">No settings returned.</p>';
     return;
   }
 
-  // Group by panel tier first, then category. Unknown tiers remain reachable in
-  // the default tier rather than disappearing.
-  const byGroup = {};
-  for (const group of PANEL_GROUPS) byGroup[group.id] = [];
-  for (const s of settings) {
-    const group = PANEL_GROUPS.some(g => g.id === s.panel_group) ? s.panel_group : "default";
-    byGroup[group].push(s);
+  if (tabId === "modes") {
+    buildModesPanel(container, app, settings);
+    return;
   }
 
-  // Track row elements by id for badge/value updates
   const rowEls = {};
-
+  const byGroup = splitByPanelGroup(settings);
   const defaultSettings = byGroup.default || [];
-  const defaultCore = defaultSettings.filter(s => !PRESENTATION_CATEGORIES.has(s.category));
-  const defaultPresentation = defaultSettings.filter(s => PRESENTATION_CATEGORIES.has(s.category));
+  const defaultCore = defaultSettings.filter((s) => !PRESENTATION_CATEGORIES.has(s.category));
+  const defaultPresentation = defaultSettings.filter((s) => PRESENTATION_CATEGORIES.has(s.category));
 
   appendCategorySections(container, defaultCore, rowEls, app);
 
   const expertDrawers = document.createElement("div");
   expertDrawers.className = "cfg-expert-drawers";
-  for (const group of PANEL_GROUPS.filter(g => g.collapsed)) {
+  for (const group of PANEL_GROUPS.filter((g) => g.collapsed)) {
     appendCollapsedGroup(expertDrawers, group, byGroup[group.id], rowEls, app);
   }
   if (expertDrawers.children.length > 0) {
@@ -193,8 +210,68 @@ function buildConfigPanel(container, app) {
   }
 
   appendCategorySections(container, defaultPresentation, rowEls, app);
+  appendResetDefaultsAction(container, app, tabId);
+}
 
-  // Bottom action buttons
+function buildModesPanel(container, app, settings) {
+  const rowEls = {};
+  const settingsById = new Map(settings.map((s) => [s.id, s]));
+  const orderedDefault = [];
+
+  for (const sectionMeta of MODE_SECTION_ORDER) {
+    const note = document.createElement("div");
+    note.className = "mode-section-note";
+    note.textContent = sectionMeta.note;
+    container.appendChild(note);
+
+    const section = document.createElement("div");
+    section.className = "cfg-section";
+    const heading = document.createElement("div");
+    heading.className = "cfg-section-heading";
+    heading.textContent = sectionMeta.label;
+    section.appendChild(heading);
+
+    for (const id of sectionMeta.ids) {
+      const setting = settingsById.get(id);
+      if (setting && setting.panel_group === "default") {
+        orderedDefault.push(setting);
+        const row = buildSettingRow(setting, app);
+        rowEls[setting.id] = row.el;
+        section.appendChild(row.el);
+      }
+    }
+
+    if (section.children.length > 1) {
+      container.appendChild(section);
+    }
+  }
+
+  const leftover = settings.filter((s) => !orderedDefault.includes(s));
+  const byGroup = splitByPanelGroup(leftover);
+
+  const expertDrawers = document.createElement("div");
+  expertDrawers.className = "cfg-expert-drawers";
+  for (const group of PANEL_GROUPS.filter((g) => g.collapsed)) {
+    appendCollapsedGroup(expertDrawers, group, byGroup[group.id], rowEls, app);
+  }
+  if (expertDrawers.children.length > 0) {
+    container.appendChild(expertDrawers);
+  }
+
+  appendResetDefaultsAction(container, app, "modes");
+}
+
+function splitByPanelGroup(settings) {
+  const byGroup = {};
+  for (const group of PANEL_GROUPS) byGroup[group.id] = [];
+  for (const s of settings) {
+    const group = PANEL_GROUPS.some((g) => g.id === s.panel_group) ? s.panel_group : "default";
+    byGroup[group].push(s);
+  }
+  return byGroup;
+}
+
+function appendResetDefaultsAction(container, app, tabId) {
   const actions = document.createElement("div");
   actions.className = "cfg-actions";
 
@@ -208,28 +285,10 @@ function buildConfigPanel(container, app) {
       app.set_setting(s.id, s.default);
     }
     localStorage.removeItem(LS_KEY);
-    // Re-render config panel with fresh values
-    buildConfigPanel(container, app);
-  });
-
-  const copyBtn = document.createElement("button");
-  copyBtn.className = "panel-btn";
-  copyBtn.textContent = "Copy Config JSON";
-  copyBtn.title = "Copy current config to clipboard as JSON";
-  copyBtn.addEventListener("click", () => {
-    const json = app.config_json();
-    navigator.clipboard.writeText(json).then(() => {
-      copyBtn.textContent = "Copied!";
-      setTimeout(() => { copyBtn.textContent = "Copy Config JSON"; }, 1500);
-    }).catch(e => {
-      console.warn("[panels] clipboard write failed:", e);
-      copyBtn.textContent = "Failed";
-      setTimeout(() => { copyBtn.textContent = "Copy Config JSON"; }, 1500);
-    });
+    buildConfigPanel(container, app, tabId);
   });
 
   actions.appendChild(resetBtn);
-  actions.appendChild(copyBtn);
   container.appendChild(actions);
 }
 
@@ -325,6 +384,10 @@ function appendHelpIcons(labelWrap, s) {
   labelWrap.appendChild(help);
 }
 
+function persistCurrentSettings(app) {
+  saveStoredConfig(safeConfigJson(app));
+}
+
 function buildSettingRow(s, app) {
   const isF32 = s.type === "f32";
   const step = isF32 ? (s.max - s.min) / 200 : 1;
@@ -333,7 +396,6 @@ function buildSettingRow(s, app) {
   const row = document.createElement("div");
   row.className = "cfg-row";
 
-  // Label + apply-class dot
   const labelWrap = document.createElement("div");
   labelWrap.className = "cfg-label-wrap";
 
@@ -351,25 +413,17 @@ function buildSettingRow(s, app) {
   labelWrap.appendChild(label);
   appendHelpIcons(labelWrap, s);
 
-  // Enum-valued settings (carry `options`) render as a dropdown instead of a
-  // slider. The stored value is the selected option's index.
   if (Array.isArray(s.options) && s.options.length) {
     return buildEnumRow(s, app, row, labelWrap);
   }
 
-  // Color settings render as a native color picker.
   if (s.slider_scale === "color") {
     return buildColorRow(s, app, row, labelWrap);
   }
 
-  // Controls: slider + number input
   const controls = document.createElement("div");
   controls.className = "cfg-controls";
 
-  // Optional non-linear slider scale. "log2" runs the slider in exponent space:
-  // each integer notch doubles the value (2^min … 2^max), so one slider can span
-  // a huge range. The number input below always spans the full [min, max], so any
-  // exact value (including non-powers-of-two) can still be typed manually.
   const isLog2 = s.slider_scale === "log2";
   const toSlider = (v) => isLog2 ? Math.round(Math.log2(clamp(v, s.min, s.max))) : v;
   const fromSlider = (p) =>
@@ -391,7 +445,6 @@ function buildSettingRow(s, app) {
   numInput.value = isF32 ? parseFloat(s.value).toFixed(decimals) : s.value;
   numInput.className = "cfg-number";
 
-  // Badge for non-live settings (shown when value has been changed)
   const badge = document.createElement("span");
   badge.className = "cfg-badge";
   badge.style.display = "none";
@@ -405,7 +458,6 @@ function buildSettingRow(s, app) {
   controls.appendChild(slider);
   controls.appendChild(numInput);
   controls.appendChild(resetBtn);
-
   row.appendChild(labelWrap);
   row.appendChild(controls);
   row.appendChild(badge);
@@ -415,16 +467,11 @@ function buildSettingRow(s, app) {
     if (isNaN(v)) return;
 
     const live = app.set_setting(s.id, v);
-    s.value = v; // update local mirror
-
-    // Sync both controls without triggering each other
+    s.value = v;
     slider.value = toSlider(v);
     numInput.value = isF32 ? v.toFixed(decimals) : v;
+    persistCurrentSettings(app);
 
-    // Persist to localStorage
-    saveStoredConfig(safeConfigJson(app));
-
-    // Show/clear badge
     if (!live && s.apply !== "live") {
       const bi = APPLY_BADGE[s.apply];
       if (bi) {
@@ -439,26 +486,21 @@ function buildSettingRow(s, app) {
 
   slider.addEventListener("input", () => applyChange(fromSlider(slider.value)));
   numInput.addEventListener("change", () => applyChange(numInput.value));
-  // Per-setting reset reuses applyChange, so it goes through the same
-  // set_setting + control-sync + reset-class badge path as a manual edit.
   resetBtn.addEventListener("click", () => applyChange(s.default));
 
   return { el: row };
 }
 
-// Build a dropdown row for an enum-valued setting (e.g. the scenario selector).
-// The `scene.preset` selector auto-applies by calling app.reset() so picking a
-// scenario rebuilds the sim immediately (no manual Reset needed).
 function buildEnumRow(s, app, row, labelWrap) {
   const controls = document.createElement("div");
   controls.className = "cfg-controls";
 
   const select = document.createElement("select");
   select.className = "cfg-select";
-  s.options.forEach((label, i) => {
+  s.options.forEach((optionLabel, i) => {
     const opt = document.createElement("option");
     opt.value = String(i);
-    opt.textContent = label;
+    opt.textContent = optionLabel;
     if (i === Math.round(s.value)) opt.selected = true;
     select.appendChild(opt);
   });
@@ -488,10 +530,9 @@ function buildEnumRow(s, app, row, labelWrap) {
     app.set_setting(s.id, v);
     s.value = v;
     select.value = String(v);
-    saveStoredConfig(safeConfigJson(app));
+    persistCurrentSettings(app);
 
     if (autoReset) {
-      // Rebuild the sim now so the new scenario takes effect immediately.
       app.reset();
       badge.style.display = "none";
     } else if (s.apply !== "live") {
@@ -505,15 +546,11 @@ function buildEnumRow(s, app, row, labelWrap) {
   }
 
   select.addEventListener("change", () => applyChange(select.value));
-  // Per-setting reset reuses applyChange, so it goes through the same
-  // set_setting + select-sync + auto-reset/badge path as a manual change.
   resetBtn.addEventListener("click", () => applyChange(s.default));
 
   return { el: row };
 }
 
-// Build a color-picker row for settings with slider_scale === "color".
-// The value is a packed integer 0x00RRGGBB; the native color input expects "#rrggbb".
 function buildColorRow(s, app, row, labelWrap) {
   function toHex(v) {
     return "#" + Math.round(v).toString(16).padStart(6, "0");
@@ -553,8 +590,8 @@ function buildColorRow(s, app, row, labelWrap) {
     app.set_setting(s.id, v);
     s.value = v;
     picker.value = toHex(v);
-    saveStoredConfig(safeConfigJson(app));
-    badge.style.display = "none"; // color settings are always Live
+    persistCurrentSettings(app);
+    badge.style.display = "none";
   }
 
   picker.addEventListener("input", () => applyChange(fromHex(picker.value)));
@@ -563,14 +600,8 @@ function buildColorRow(s, app, row, labelWrap) {
   return { el: row };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Profiler panel
-// ─────────────────────────────────────────────────────────────────────────────
-
 function buildProfilerPanel(container, app) {
-  // Wipe and re-render on each poll tick
   const stats = safeStatsJson(app);
-
   if (!stats) {
     container.innerHTML = '<p class="panel-empty">Stats unavailable.</p>';
     return;
@@ -580,7 +611,6 @@ function buildProfilerPanel(container, app) {
   const timingColor = timing === "gpu-timestamp" ? "#4ade80" : "#fbbf24";
   const scaleOk = !stats.scale_status || stats.scale_status === "ok";
   const scaleColor = scaleOk ? "#4ade80" : "#f87171";
-
   const fps = stats.fps;
   const fpsColor = fps == null ? "#6b7689" : fps >= 55 ? "#4ade80" : fps >= 30 ? "#fbbf24" : "#f87171";
 
@@ -593,8 +623,11 @@ function buildProfilerPanel(container, app) {
     <div class="prof-row prof-header-row">
       <span class="prof-key">Timing</span>
       <span class="prof-val" style="color:${timingColor}">${timing} (${stats.frame_samples ?? "—"} frames)</span>
-    </div>` ;
+    </div>`;
   const liquidCells = stats.gpu && stats.gpu.liquid_cells != null ? stats.gpu.liquid_cells : null;
+  const dispatchShape = stats.particle_dispatch_groups_x != null && stats.particle_dispatch_groups_y != null
+    ? `${stats.particle_dispatch_groups_x.toLocaleString()} x ${stats.particle_dispatch_groups_y.toLocaleString()} x 1`
+    : "—";
   html += `
     <div class="prof-row">
       <span class="prof-key">Grid res</span>
@@ -613,8 +646,12 @@ function buildProfilerPanel(container, app) {
       <span class="prof-val" style="color:${scaleColor}">${stats.scale_status ?? "—"}</span>
     </div>
     <div class="prof-row">
-      <span class="prof-key">Seeded / dispatch limit</span>
+      <span class="prof-key">Seeded / dispatch cap</span>
       <span class="prof-val">${stats.estimated_particles != null ? stats.estimated_particles.toLocaleString() : "—"} / ${stats.max_particle_dispatch_count != null ? stats.max_particle_dispatch_count.toLocaleString() : "—"}</span>
+    </div>
+    <div class="prof-row">
+      <span class="prof-key">Particle dispatch</span>
+      <span class="prof-val">${dispatchShape} (${stats.particle_dispatch_capacity != null ? stats.particle_dispatch_capacity.toLocaleString() : "—"} slots)</span>
     </div>
     <div class="prof-row">
       <span class="prof-key">Workgroups / dimension</span>
@@ -624,9 +661,7 @@ function buildProfilerPanel(container, app) {
       <span class="prof-key">GPU buffer mem</span>
       <span class="prof-val">${stats.gpu_buffer_mb != null ? fmt(stats.gpu_buffer_mb, 1) + " MB" : "—"}</span>
     </div>
-
     <div class="prof-divider"></div>
-
     <div class="prof-row">
       <span class="prof-key">Frame avg</span>
       <span class="prof-val">${fmt(stats.frame_avg_ms, 2)} ms &nbsp;<span class="prof-fps">(${fmt(stats.fps, 1)} fps)</span></span>
@@ -685,9 +720,6 @@ function buildProfilerPanel(container, app) {
       </div>
     `;
 
-    // Detailed (fine) per-section breakdown — only when the dev toggle is on and
-    // real timestamps produced a `sections` object. All values are ms/frame
-    // (summed over the substeps that ran this frame).
     if (g.sections) {
       html += `
         <div class="prof-divider"></div>
@@ -740,84 +772,132 @@ function buildProfilerPanel(container, app) {
   container.innerHTML = html;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Public entry point
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function initPanels(app) {
-  const configPanel  = document.getElementById("config-panel");
-  const profPanel    = document.getElementById("profiler-panel");
-  const btnConfig    = document.getElementById("btn-config");
-  const btnProfiler  = document.getElementById("btn-profiler");
+  const workspace = document.getElementById("workspace");
+  const workspaceBody = document.getElementById("workspace-body");
+  const tabsRoot = document.getElementById("workspace-tabs");
+  const tabLabel = document.getElementById("workspace-tab-label");
+  const btnConfig = document.getElementById("btn-config");
+  const toolbarReset = document.getElementById("btn-reset");
 
-  if (!configPanel || !profPanel || !btnConfig || !btnProfiler) {
-    console.warn("[panels] Panel DOM elements not found — skipping initPanels.");
-    return;
+  if (!workspace || !workspaceBody || !tabsRoot || !tabLabel || !btnConfig) {
+    console.warn("[panels] Workspace DOM elements not found - skipping initPanels.");
+    return null;
   }
 
-  const configBody  = configPanel.querySelector(".panel-body");
-  const profBody    = profPanel.querySelector(".panel-body");
-
-  // ── Apply stored config ──────────────────────────────────────────────────
   const stored = loadStoredConfig();
   if (Object.keys(stored).length > 0) {
     const current = safeConfigJson(app);
-    const knownIds = new Set(current.map(s => s.id));
+    const knownIds = new Set(current.map((s) => s.id));
     let needsRebuild = false;
     for (const [id, value] of Object.entries(stored)) {
       if (knownIds.has(id)) {
         try {
-          // set_setting returns true for Live (already applied); false for
-          // Reset/Reload — those only take effect after a fluid rebuild.
           const live = app.set_setting(id, value);
           if (!live) needsRebuild = true;
         } catch (e) {
           console.warn("[panels] failed to restore setting", id, e);
         }
       }
-      // Unknown ids are silently ignored; missing ids fall back to Rust defaults.
     }
-    // Rebuild the sim once so restored Reset-class values actually take effect.
     if (needsRebuild) app.reset();
   }
 
-  // ── Render config panel ──────────────────────────────────────────────────
-  buildConfigPanel(configBody, app);
+  let isOpen = false;
+  let activeTab = "general";
 
-  // Pressing the toolbar Reset applies pending Reset-class changes (Rust rebuilds
-  // the fluid from settings), so clear the "reset to apply" badges by re-rendering.
-  const toolbarReset = document.getElementById("btn-reset");
-  if (toolbarReset) {
-    toolbarReset.addEventListener("click", () => buildConfigPanel(configBody, app));
+  function renderActiveTab() {
+    if (activeTab === "profiler") {
+      buildProfilerPanel(workspaceBody, app);
+    } else {
+      buildConfigPanel(workspaceBody, app, activeTab);
+    }
+    tabLabel.textContent = TAB_META[activeTab].label;
+    for (const btn of tabsRoot.querySelectorAll(".tab-btn")) {
+      const selected = btn.dataset.tab === activeTab;
+      btn.classList.toggle("tab-active", selected);
+      btn.setAttribute("aria-selected", selected ? "true" : "false");
+      btn.tabIndex = selected ? 0 : -1;
+    }
   }
 
-  // ── Profiler polling loop (4×/sec) ───────────────────────────────────────
-  buildProfilerPanel(profBody, app); // immediate first render
-  setInterval(() => {
-    buildProfilerPanel(profBody, app);
+  function setWorkspaceOpen(nextOpen) {
+    isOpen = nextOpen;
+    workspace.hidden = !isOpen;
+    btnConfig.classList.toggle("btn-active", isOpen);
+    btnConfig.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    if (isOpen) renderActiveTab();
+  }
+
+  function openWorkspace(tab = "general") {
+    activeTab = TAB_META[tab] ? tab : "general";
+    setWorkspaceOpen(true);
+  }
+
+  function closeWorkspace() {
+    setWorkspaceOpen(false);
+  }
+
+  function toggleWorkspace() {
+    if (isOpen) {
+      closeWorkspace();
+    } else {
+      openWorkspace("general");
+    }
+  }
+
+  function setActiveTab(tab) {
+    if (!TAB_META[tab]) return;
+    activeTab = tab;
+    if (isOpen) renderActiveTab();
+  }
+
+  for (const tabId of TAB_ORDER) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tab-btn";
+    btn.dataset.tab = tabId;
+    btn.textContent = TAB_META[tabId].label;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-controls", "workspace-body");
+    btn.addEventListener("click", () => setActiveTab(tabId));
+    tabsRoot.appendChild(btn);
+  }
+
+  btnConfig.addEventListener("click", toggleWorkspace);
+
+  if (toolbarReset) {
+    toolbarReset.addEventListener("click", () => {
+      if (isOpen) renderActiveTab();
+    });
+  }
+
+  setWorkspaceOpen(false);
+  renderActiveTab();
+
+  window.setInterval(() => {
+    if (isOpen && activeTab === "profiler") {
+      buildProfilerPanel(workspaceBody, app);
+    }
   }, 250);
 
-  // ── Toggle visibility (each panel independently) ──────────────────────────
-  let configVisible = true;
-  let profVisible   = true;
-
-  function setConfigVisible(v) {
-    configVisible = v;
-    configPanel.style.display = v ? "" : "none";
-    btnConfig.classList.toggle("btn-active", v);
-  }
-  function setProfVisible(v) {
-    profVisible = v;
-    profPanel.style.display = v ? "" : "none";
-    btnProfiler.classList.toggle("btn-active", v);
-  }
-
-  // Both panels start closed; ?panels=on opens them on load.
-  const params = new URLSearchParams(location.search);
-  const startVisible = params.get("panels") === "on";
-  setConfigVisible(startVisible);
-  setProfVisible(startVisible);
-
-  btnConfig.addEventListener("click", () => setConfigVisible(!configVisible));
-  btnProfiler.addEventListener("click", () => setProfVisible(!profVisible));
+  return {
+    openWorkspace,
+    closeWorkspace,
+    toggleWorkspace,
+    setActiveTab,
+    rerender() {
+      if (isOpen) renderActiveTab();
+    },
+    rerenderModes() {
+      if (isOpen && activeTab === "modes") renderActiveTab();
+    },
+    isOpen() {
+      return isOpen;
+    },
+    activeTab() {
+      return activeTab;
+    },
+    applyStoredConfigDone: true,
+  };
 }

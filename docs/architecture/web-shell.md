@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-07
+last_updated:  2026-06-08
 okay_to_delete: false
 long_lived:    true
 ---
@@ -9,10 +9,11 @@ long_lived:    true
 # Web shell & capture harness
 
 The browser front-end is a thin vanilla-ES-module shell. Its job is to mount the WASM
-module, hand an `HTMLCanvasElement` to Rust, ferry pointer/keyboard input in, and
-render two observability panels driven entirely by the WASM JS bridge. A headless
-Puppeteer harness (`tools/capture.mjs`) runs real-GPU Chrome on the Windows host and
-provides the visible acceptance signal.
+module, hand an `HTMLCanvasElement` to Rust, ferry pointer/keyboard input in, keep the
+UI shell state (workspace open/tab plus product/manual modes), and render the
+workspace tabs driven by the WASM JS bridge. A headless Puppeteer harness
+(`tools/capture.mjs`) runs real-GPU Chrome on the Windows host and provides the
+visible acceptance signal.
 
 ```
 index.html  ──loads──▶  main.js  ──imports──▶  panels.js
@@ -25,19 +26,27 @@ index.html  ──loads──▶  main.js  ──imports──▶  panels.js
 - Feature-detecting `navigator.gpu` and showing `#unsupported` if absent.
 - Calling `FluidApp.create(canvas)` and exposing the result as `window.__fluid`.
 - Owning `requestAnimationFrame`; calling `app.frame(dtMs)` each tick.
-- Wiring header toolbar buttons (Pause / Reset / Config / Profiler), four interaction modes (camera / rotate / rotateRoll / slosh), keyboard shortcuts (1–4 select modes, `r` resets the sim), pointer drag dispatch, and wheel zoom.
-- URL params `?pressure=off`, `?paused=1`, `?flip=N`, `?slice=1`, `?slicemode=N`, `?panels=on` for scripted capture (panels start closed; `?panels=on` opens both on load).
+- Wiring the global toolbar (Pause / Reset / Workspace), the bottom launcher product
+  modes (Auto Rotate / Waves / Manual), the Manual-only pointer modes
+  (camera / rotate / rotateRoll / slosh), keyboard shortcuts (1–4 select manual
+  pointer modes only, `r` resets the sim), pointer drag dispatch, and wheel zoom.
+- URL params `?pressure=off`, `?paused=1`, `?flip=N`, `?slice=1`, and
+  `?slicemode=N` for scripted capture.
 - The capture harness has explicit `PARTICLES`, `DETAILED`, and `MEASURE_WAIT`
   environment hooks for fresh-browser scale rows and always records final
   machine-readable `stats_json`; use this instead of shell-quoted `EVAL` for the
   performance matrix.
-- Calling `initPanels(app)` once after WASM init — panels own everything after that.
+- Calling `initPanels(app)` once after WASM init — `panels.js` owns workspace tabs,
+  config rendering, profiler rendering, and settings restore after that.
+- Exposing `window.__fluidShell` helpers for capture scripting of workspace/tab/mode
+  state (`openWorkspace`, `selectWorkspaceTab`, `selectProductMode`,
+  `selectManualPointerMode`, `reset`, `state`).
 
 ## The canonical shell and one orphaned stub
 
-There is one shell: `web/index.html` -> `web/main.js` -> `web/panels.js`. Because the
-canonical file is named `index.html`, the bare `/` serves it under any static server
-with no path remap and no second filename to type.
+There is one live shell: `web/index.html` -> `web/main.js` -> `web/panels.js`.
+Because the file is named `index.html`, the bare `/` serves it under any static
+server with no path remap and no second filename to type.
 
 What remains stale is the orphaned **`web/src/main.ts`** (the old Vite/TS entry, a Phase 0.1 subset with no panels). **Nothing loads it** — `index.html` imports `./main.js`, not `src/main.ts`. `vite.config.ts` still binds 5184 with `strictPort: true`, but `run.sh` does not use Vite; treat `src/main.ts` as dead until it is brought to parity or deleted.
 
@@ -45,20 +54,24 @@ What remains stale is the orphaned **`web/src/main.ts`** (the old Vite/TS entry,
 
 The capture harness defaults to `http://localhost:5173/` in its argv but should be pointed at the static server — the bare `http://localhost:5184/`.
 
-## The rendered panels
+## The rendered workspace
 
-`web/panels.js -> initPanels` drives both side panels. Neither panel hardcodes setting
-metadata; the config panel is built from `app.config_json()` and the profiler panel is
-built from `app.stats_json()`.
+`web/panels.js -> initPanels` drives one right-side workspace. The workspace starts
+closed, always reopens on the **General** tab, and contains five tabs:
+Render, General, Physics, Modes, and Profiler. Neither config nor profiler metadata is
+hardcoded; config tabs are built from `app.config_json()` and the profiler tab is built
+from `app.stats_json()`.
 
-**Config panel (left):** settings are grouped by `panel_group` first, then by semantic
-`category`. The default group's core simulation sections render open first.
-`advanced` and `dev` render as collapsed `details` drawers before the default
-presentation sections; when closed they share a compact row, and when opened they span
-the panel width. Expert controls remain discoverable without dominating the scan path.
-Ordinary numeric settings use slider + number input,
-enum settings use dropdowns, `slider_scale: "log2"` uses an exponent-space particle
-count slider, and `slider_scale: "color"` uses a native color picker for packed RGB.
+**Config tabs:** Render, General, and Physics filter settings by semantic category
+(`Render`/`Camera`, `Scene`/`Grid`/`Particles`, `Physics`/`Solver`). Inside a config
+tab, settings are grouped by `panel_group` first, then by `category`. The default
+group's core sections render open first. `advanced` and `dev` render as collapsed
+`details` drawers before the default presentation sections; when closed they share a
+compact row, and when opened they span the workspace width. Expert controls remain
+discoverable without dominating the scan path. Ordinary numeric settings use slider +
+number input, enum settings use dropdowns, `slider_scale: "log2"` uses an
+exponent-space particle count slider, and `slider_scale: "color"` uses a native color
+picker for packed RGB.
 
 Rows render help only when the registry supplies help. No `tooltip` and no
 `technical_tooltip` means no help affordance. `tooltip` renders a functional `?`
@@ -67,20 +80,28 @@ affordance and uses a distinct tooltip treatment. Both affordances show the shar
 instant hover/focus tooltip instead of relying on the native delayed `title` bubble.
 
 Changes call `app.set_setting(id, value)` and persist to `localStorage` under
-`fluidlab.config.v1`. The `apply` field drives the row dot and the reset/reload badge:
-`live` applies immediately, `reset` takes effect after `app.reset()`, and `reload`
-requires a page reload. `scene.preset` auto-calls `app.reset()` after selection. Stored
-settings replay on startup; if any restored setting is reset-class, the panel calls
-`app.reset()` once to materialize the restored state. Every row has a per-setting
-reset-to-default button that reuses the same apply path as manual edits.
+`fluidlab.config.v1`, except for hidden scheduler booleans
+(`interaction.auto_roll_enabled`, `interaction.wave_enabled`) which are internal shell
+state and never written back as user choices. The `apply` field drives the row dot and
+the reset/reload badge: `live` applies immediately, `reset` takes effect after
+`app.reset()`, and `reload` requires a page reload. `scene.preset` auto-calls
+`app.reset()` after selection. Stored settings replay on startup; if any restored
+setting is reset-class, the panel calls `app.reset()` once to materialize the restored
+state. Every row has a per-setting reset-to-default button that reuses the same apply
+path as manual edits. The tab-level "Reset to Defaults" action restores registry
+defaults and clears `localStorage`.
 
-**Profiler panel (right):** polls `app.stats_json()` at 4 Hz via `setInterval(250)` and
-rebuilds its DOM each tick. It shows FPS, timing source, grid/particle scale, GPU memory,
-frame percentiles, substep/drop accounting, pressure iterations, render mode, and sorted
-GPU cost rows when timestamp data is available. Detailed dev mode adds per-section and
-CG timing rows.
+**Modes tab:** the user-facing interaction surface is organized into sections for
+Auto Rotate and Waves and hides the raw enable booleans. Product-mode buttons in
+`main.js` own those enables; the tab exposes only the mode-specific strength/cadence
+controls that remain real settings.
 
-Both panels **start closed**; `?panels=on` opens both on load. Each panel has its own header toolbar button — **Config** (`#btn-config`) and **Profiler** (`#btn-profiler`) — toggled independently via `setConfigVisible` / `setProfVisible`. The buttons keep constant labels and convey open/closed state only through the `btn-active` class (they do not relabel themselves).
+**Profiler tab:** polls `app.stats_json()` at 4 Hz via `setInterval(250)` and rebuilds
+its DOM only while the workspace is open on the Profiler tab. It shows FPS, timing
+source, grid/particle scale, GPU memory, frame percentiles, substep/drop accounting,
+pressure iterations, render mode, particle dispatch-shape facts, and sorted GPU cost
+rows when timestamp data is available. Detailed dev mode adds per-section and CG timing
+rows.
 
 ## Capture harness
 
@@ -101,8 +122,27 @@ The harness reports `navigator.gpu` presence in the console log — if `hasGpu: 
 
 ## Non-obvious invariants and gotchas
 
-- **Two separate control clusters.** The header `#toolbar` (chromeless — no background, no border) holds the "Fluid Lab" title and Pause / Reset / Config / Profiler buttons; there is no Step button or surface-mode toggle. The bottom-center `#mode-bar` holds the four interaction-mode buttons and is driven by `main.js` independently of the header. The 1–4 number-key mode shortcuts target the mode-bar, not the toolbar; `r`/`R` calls `app.reset()` (same as the toolbar Reset button). All keyboard shortcuts are ignored while an `INPUT`/`TEXTAREA` config field is focused.
+- **Two distinct shell states.** The header `#toolbar` holds only the brand, Pause,
+  Reset, and Workspace buttons. The bottom-center launcher owns product mode
+  (`autoRotate`, `waves`, `manual`); the Manual-only pointer-mode strip is a second
+  state nested under Manual. The 1–4 number-key shortcuts affect only the Manual
+  pointer modes, never product mode; `r`/`R` calls `app.reset()`. All keyboard
+  shortcuts are ignored while an `INPUT`/`TEXTAREA`/`SELECT` is focused.
+- **Workspace reopen always lands on General.** `panels.js -> toggleWorkspace` calls
+  `openWorkspace("general")` on every closed→open transition. Tab clicks can change
+  the active tab while open; the toolbar reopen path deliberately overrides any prior
+  tab and lands on General. Script helpers may still open a specific tab directly.
+- **Product mode is not persisted.** Reload restores config settings from
+  `localStorage`, then `main.js` forces Auto Rotate as the default product mode so
+  stale hidden scheduler values cannot make Waves or Manual appear selected on load.
+- **Reset preserves shell state by reassertion.** `main.js -> resetSimulation`
+  calls `app.reset()`, then reapplies the current product mode and rerenders the open
+  tab if needed. Reset therefore preserves workspace open/closed state, current open
+  tab, product mode, and Manual pointer sub-mode, while a full reload returns to
+  Auto Rotate + camera.
 - **`window.__fluid` is the control surface.** The capture harness and any EVAL snippets drive the sim through this handle. It is set in `web/main.js → main` after `FluidApp.create` succeeds and is absent if WASM init fails.
+- **`window.__fluidShell` is the shell control surface.** Capture scripts use it for
+  workspace/tab/product-mode transitions that are not part of the Rust API.
 - **`#unsupported` starts `display:none`.** It is shown (via `showUnsupported`) only when `navigator.gpu` is absent or `FluidApp.create` throws. Both conditions are captured in the console log.
 - **Canvas sizing uses DPR.** `sizeCanvas` multiplies `clientWidth/Height` by `devicePixelRatio`; a `ResizeObserver` re-applies on layout changes. This means the capture at 1280×800 with `deviceScaleFactor:1` produces a 1280×800 canvas.
 - **Profiler panel fires on the JS frame timer, not GPU.** The `stats_json` timing field indicates whether real GPU timestamps are available (`gpu-timestamp`) or if the adapter fell back to CPU-side wall-clock estimates.
@@ -113,9 +153,11 @@ The harness reports `navigator.gpu` presence in the console log — if `hasGpu: 
 ## Update when
 
 - A new WASM bridge method is added or removed (`config_json`, `stats_json`, `set_setting`, `FluidApp.*`) — update the panels section.
-- The orphaned `web/src/main.ts` is deleted or brought to parity (panels + interaction model) — update the canonical-shell section.
+- The orphaned `web/src/main.ts` is deleted or brought to parity (workspace +
+  launcher state model) — update the canonical-shell section.
 - The capture harness gains new env hooks or output artefacts.
-- A new interaction mode is added to `main.js` → `modeOrder`.
+- A new product mode, manual pointer mode, or `window.__fluidShell` helper is added.
+- Workspace open/default-tab behavior changes.
 
 ## See also
 

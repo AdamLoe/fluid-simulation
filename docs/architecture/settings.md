@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-07
+last_updated:  2026-06-08
 okay_to_delete: false
 long_lived:    true
 ---
@@ -32,6 +32,8 @@ functional-plus-technical separator convention.
 
 Persistence is a web-shell concern. The registry holds canonical runtime state; the
 panel layers saved values on load by calling `set_setting` for each known persisted id.
+The shell may intentionally hide or suppress persistence for user-invisible internal
+controls while still keeping them as real registry settings.
 
 ## Apply Classes
 
@@ -125,6 +127,15 @@ These controls stay in the default panel group because they are product-facing
 interaction tools, not internal solver tuning. If future randomness/seed controls are
 added, those belong in Advanced unless the product needs them visible by default.
 
+The v1.7 shell treats the two `*_enabled` booleans as internal scheduler state rather
+than direct user controls. `web/panels.js -> HIDDEN_SETTING_IDS` suppresses
+`interaction.auto_roll_enabled` and `interaction.wave_enabled` from the config UI and
+from the persisted `localStorage` payload. `web/main.js` owns product-mode selection
+(Auto Rotate / Waves / Manual) and writes those hidden booleans through
+`set_setting(...)` as shell state transitions. The visible Interaction rows are the
+mode-specific strength/cadence/frequency settings, rendered under the workspace's
+Modes tab.
+
 ## Gotchas
 
 - The registry is append-safe: lookups and mutations are by id, not row index.
@@ -135,6 +146,9 @@ added, those belong in Advanced unless the product needs them visible by default
   them to the new particle renderer.
 - Reset restores tank pose and interaction schedules but preserves the Live
   interaction setting values.
+- Reload restores persisted visible settings, then the shell reapplies the default
+  Auto Rotate product mode; hidden enable booleans are therefore not durable user
+  preferences.
 - There is no `solver.density` setting. The CG pressure solve uses a hardcoded density
   internally, and the current scale convention makes it visually inert; see
   `../decisions/pressure.md`.
@@ -146,6 +160,7 @@ added, those belong in Advanced unless the product needs them visible by default
   from `FluidApp::set_setting`.
 - The JSON bridge shape changes, including optional help or panel-rendering metadata.
 - Interaction control semantics, defaults, grouping, or Live scheduling behavior change.
+- The shell's hidden-setting/persistence rules change for internal interaction toggles.
 - Compactness, particle seeding, liquid-cell inclusion, or pressure-quality semantics
   change.
 

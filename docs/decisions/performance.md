@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-07
+last_updated:  2026-06-08
 ---
 
 # Decisions — Performance
@@ -104,26 +104,34 @@ and can distort the architecture toward a number nobody needs yet.
 
 **Applies to** — `architecture/gpu-resources.md`, `architecture/profiler.md`.
 
-## Reject impossible one-dimensional particle dispatches before allocation
+## Keep one shared tiled particle-dispatch contract and preflight impossible scales
 
-**Decision** — Until particle-linear shaders support tiled indexing, Reset preflights
-the exact seeded particle count against the adapter's one-dimensional workgroup and
-single-storage-binding limits. Impossible requests preserve the running simulation and
-report a rejected scale status instead of submitting invalid commands.
+**Decision** — Particle-linear work uses one shared tiled dispatch contract across
+mark, scatter U/V/W, G2P, and impulse, and create/Reset still preflight the exact
+seeded particle count against tiled dispatch capacity plus the particle
+storage-binding limit before allocation/submission.
 
-**Why** — On the measured BrowserWebGpu adapter,
-`maxComputeWorkgroupsPerDimension=65,535` and workgroup size 64 impose a 4,194,240
-particle dispatch ceiling. Requested 8M seeds 7,939,819 and previously generated an
-invalid command every frame. Requested 4.20M seeds 4,171,888 and runs; requested
-4.25M seeds 4,209,137 and is rejected.
+**Why** — The old one-dimensional dispatch assumption made high seeded counts illegal
+even when the shaders were otherwise correct. Raising the legal ceiling safely requires
+one coordinated indexing model across every particle-linear path; loosening preflight
+before those paths agree would trade a truthful rejection for invalid GPU work.
 
-**Tradeoffs** — This makes the current ceiling truthful rather than raising it.
-Dispatch tiling requires coordinated particle indexing across mark, scatter, G2P, and
-impulse paths and is deferred until it can be verified as one change.
+**Tradeoffs** — This raises the legal submission ceiling, not the measured frame-rate
+ceiling. Real-GPU scale evidence for 2M/4M/8M remains a separate requirement; until
+those captures exist, no performance result or ship claim follows from the tiling
+change alone.
 
-**Evidence** — `../plans/v1.3.0-scale-measurements.md`.
+**Code anchors** — `crates/fluid-lab/src/gpu/fluid.rs → particle_dispatch_shape`;
+`crates/fluid-lab/src/gpu/mod.rs → validate_particle_scale`;
+`crates/fluid-lab/src/gpu/shaders/mark.wgsl → particle_index`;
+`crates/fluid-lab/src/gpu/shaders/scatter.wgsl → particle_index`;
+`crates/fluid-lab/src/gpu/shaders/g2p.wgsl → particle_index`;
+`crates/fluid-lab/src/gpu/shaders/impulse.wgsl → particle_index`.
 
-**Applies to** — `architecture/gpu-resources.md`, `architecture/profiler.md`.
+**Revisit when** — the v1.8 real-GPU scale matrix exists and identifies whether the
+next bottleneck is dispatch legality no longer, transfer/G2P/render cost, or storage.
+
+**Applies to** — `architecture/gpu-resources.md`, `architecture/simulation.md`, `architecture/profiler.md`.
 
 ## Do not carry an unused extracted-surface cost
 

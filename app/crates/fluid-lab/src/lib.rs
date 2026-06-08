@@ -433,6 +433,8 @@ impl FluidApp {
             self.gpu.estimated_particles(),
             self.gpu.max_compute_workgroups_per_dimension(),
             self.gpu.max_particle_dispatch_count(),
+            self.gpu.particle_dispatch_groups(),
+            self.gpu.particle_dispatch_capacity(),
             self.gpu.max_particle_storage_count(),
             self.gpu.scale_status(),
         );

@@ -148,8 +148,22 @@ impl GpuContext {
 
         let depth_view = create_depth(&device, width, height);
 
-        let fluid = fluid::GpuFluid::new(&device, &queue, settings, scene);
-        let estimated_particles = fluid.particle_count();
+        let requested_particles = settings.particle_count();
+        let estimated_particles = fluid::estimated_particle_count(settings, scene);
+        validate_particle_scale(
+            requested_particles,
+            estimated_particles,
+            caps.max_compute_workgroups_per_dimension,
+            max_particle_storage_count_for(&caps),
+        )?;
+
+        let fluid = fluid::GpuFluid::new(
+            &device,
+            &queue,
+            settings,
+            scene,
+            caps.max_compute_workgroups_per_dimension,
+        );
         let particle_radius = crate::sim::H * 0.35;
 
         let (tank_lo, tank_hi) = fluid.tank_bounds();
@@ -216,7 +230,7 @@ impl GpuContext {
             particle_shading: settings.particle_shading(),
             timers,
             caps,
-            requested_particles: settings.particle_count(),
+            requested_particles,
             estimated_particles,
             scale_status: "ok",
         })
@@ -238,25 +252,26 @@ impl GpuContext {
         self.estimated_particles = estimated;
         let dispatch_limit = self.max_particle_dispatch_count();
         let storage_limit = self.max_particle_storage_count();
-        if estimated > dispatch_limit {
-            self.scale_status = "rejected-dispatch-limit";
-            return Err(format!(
-                "requested {} particles seeds {}, exceeding the one-dimensional particle dispatch limit {} ({} workgroups x {})",
-                self.requested_particles,
-                estimated,
-                dispatch_limit,
-                self.caps.max_compute_workgroups_per_dimension,
-                fluid::PARTICLE_WG,
-            ));
+        if let Err(e) = validate_particle_scale(
+            self.requested_particles,
+            estimated,
+            self.caps.max_compute_workgroups_per_dimension,
+            storage_limit,
+        ) {
+            self.scale_status = if estimated > dispatch_limit {
+                "rejected-dispatch-capacity"
+            } else {
+                "rejected-storage-binding-limit"
+            };
+            return Err(e);
         }
-        if estimated > storage_limit {
-            self.scale_status = "rejected-storage-binding-limit";
-            return Err(format!(
-                "requested {} particles seeds {}, exceeding the single particle storage binding limit {}",
-                self.requested_particles, estimated, storage_limit,
-            ));
-        }
-        let fluid = fluid::GpuFluid::new(&self.device, &self.queue, settings, scene);
+        let fluid = fluid::GpuFluid::new(
+            &self.device,
+            &self.queue,
+            settings,
+            scene,
+            self.caps.max_compute_workgroups_per_dimension,
+        );
         let particle_radius = crate::sim::H * 0.35;
         let (tank_lo, tank_hi) = fluid.tank_bounds();
         self.wireframe = renderer::WireframeRenderer::new(
@@ -371,17 +386,20 @@ impl GpuContext {
     }
 
     pub fn max_particle_dispatch_count(&self) -> u32 {
-        self.caps
-            .max_compute_workgroups_per_dimension
-            .saturating_mul(fluid::PARTICLE_WG)
+        fluid::max_tiled_particle_dispatch_count(self.caps.max_compute_workgroups_per_dimension)
     }
 
     pub fn max_particle_storage_count(&self) -> u32 {
-        let bytes = self
-            .caps
-            .max_storage_buffer_binding_size
-            .min(self.caps.max_buffer_size);
-        (bytes / 32).min(u32::MAX as u64) as u32
+        max_particle_storage_count_for(&self.caps)
+    }
+
+    pub fn particle_dispatch_groups(&self) -> [u32; 2] {
+        let shape = self.fluid.particle_dispatch_shape();
+        [shape.groups_x, shape.groups_y]
+    }
+
+    pub fn particle_dispatch_capacity(&self) -> u32 {
+        self.fluid.particle_dispatch_shape().capacity
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -794,6 +812,43 @@ fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+fn max_particle_storage_count_for(caps: &GpuCaps) -> u32 {
+    let bytes = caps
+        .max_storage_buffer_binding_size
+        .min(caps.max_buffer_size);
+    (bytes / 32).min(u32::MAX as u64) as u32
+}
+
+fn validate_particle_scale(
+    requested_particles: u32,
+    estimated_particles: u32,
+    max_compute_workgroups_per_dimension: u32,
+    storage_limit: u32,
+) -> Result<(), String> {
+    let dispatch_limit =
+        fluid::max_tiled_particle_dispatch_count(max_compute_workgroups_per_dimension);
+    if estimated_particles > dispatch_limit
+        || fluid::particle_dispatch_shape(estimated_particles, max_compute_workgroups_per_dimension)
+            .is_none()
+    {
+        return Err(format!(
+            "requested {} particles seeds {}, exceeding the tiled particle dispatch capacity {} (max {} workgroups per dimension, {} threads/workgroup, u32 shader index)",
+            requested_particles,
+            estimated_particles,
+            dispatch_limit,
+            max_compute_workgroups_per_dimension,
+            fluid::PARTICLE_WG,
+        ));
+    }
+    if estimated_particles > storage_limit {
+        return Err(format!(
+            "requested {} particles seeds {}, exceeding the single particle storage binding limit {}",
+            requested_particles, estimated_particles, storage_limit,
+        ));
+    }
+    Ok(())
+}
+
 fn log_boot_diagnostics(
     info: &wgpu::AdapterInfo,
     limits: &wgpu::Limits,
@@ -825,11 +880,9 @@ fn log_boot_diagnostics(
         limits.max_compute_workgroup_size_z,
     ));
     log(&format!(
-        "            max_compute_workgroups_per_dimension={} particle_dispatch_limit={}",
+        "            max_compute_workgroups_per_dimension={} tiled_particle_dispatch_capacity={}",
         limits.max_compute_workgroups_per_dimension,
-        limits
-            .max_compute_workgroups_per_dimension
-            .saturating_mul(fluid::PARTICLE_WG),
+        fluid::max_tiled_particle_dispatch_count(limits.max_compute_workgroups_per_dimension),
     ));
     log(&format!(
         "            max_buffer_size={} max_storage_buffer_binding_size={}",

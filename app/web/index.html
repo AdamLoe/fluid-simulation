@@ -4,57 +4,234 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:," />
-    <title>Fluid Lab — Rust · WASM · WebGPU 3D fluid</title>
+    <title>Fluid Lab</title>
     <style>
-      :root { color-scheme: dark; }
-      html, body { margin: 0; height: 100%; background: #0a0c10; color: #cdd6e4;
-        font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-      #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+      :root {
+        color-scheme: dark;
+        --chrome-bg: rgba(12, 16, 24, 0.62);
+        --chrome-border: rgba(78, 92, 120, 0.55);
+        --chrome-hover: rgba(31, 38, 54, 0.92);
+        --panel-bg: rgba(15, 18, 25, 0.92);
+        --panel-header: rgba(24, 29, 40, 0.95);
+        --text-muted: #8e99ae;
+        --text-strong: #f0f4fa;
+        --accent: #7dd3fc;
+        --accent-strong: #38bdf8;
+        --success: #4ade80;
+      }
 
-      /* ── Toolbar ── */
-      #toolbar { display: flex; gap: 8px; align-items: center; padding: 8px 12px;
-        user-select: none; flex-wrap: wrap; }
-      #toolbar strong { margin-right: auto; }
-      #toolbar button { background: #1b2130; color: #cdd6e4; border: 1px solid #2a3142;
-        padding: 5px 12px; border-radius: 5px; cursor: pointer; font: inherit; }
-      #toolbar button:hover { background: #232b3d; }
-      #toolbar button.btn-active { border-color: #4ade80; color: #4ade80; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #0a0c10;
+        color: #cdd6e4;
+        font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
 
-      /* ── Stage ── */
-      #stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
-      canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
 
-      /* ── Side panels shared ── */
-      .side-panel {
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+
+      #stage {
         position: absolute;
-        top: 10px;
-        bottom: 10px;
-        width: 296px;
-        background: rgba(17, 20, 27, 0.92);
-        border: 1px solid #2a3142;
-        border-radius: 8px;
-        display: flex;
-        flex-direction: column;
+        inset: 0;
         overflow: hidden;
-        backdrop-filter: blur(6px);
-        -webkit-backdrop-filter: blur(6px);
-        box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-        z-index: 10;
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      #toolbar {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        right: 12px;
+        z-index: 30;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        pointer-events: none;
+      }
+
+      .toolbar-cluster {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .toolbar-brand {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        min-width: 0;
+        padding: 9px 12px;
+        border: 1px solid var(--chrome-border);
+        border-radius: 8px;
+        background: var(--chrome-bg);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
         pointer-events: auto;
       }
-      .side-panel .panel-header {
-        padding: 9px 12px 8px;
-        background: #181d28;
-        border-bottom: 1px solid #2a3142;
-        font-size: 11px;
+
+      .toolbar-brand strong {
+        color: var(--text-strong);
+        font-size: 14px;
         font-weight: 700;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: #8fd0ff;
-        flex-shrink: 0;
-        user-select: none;
       }
-      .side-panel .panel-body {
+
+      .toolbar-version {
+        color: var(--text-muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .toolbar-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        pointer-events: auto;
+      }
+
+      .icon-btn {
+        width: 40px;
+        height: 40px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--chrome-border);
+        border-radius: 8px;
+        background: var(--chrome-bg);
+        color: #dbe6f6;
+        cursor: pointer;
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+      }
+
+      .icon-btn:hover {
+        background: var(--chrome-hover);
+        border-color: rgba(111, 132, 170, 0.85);
+      }
+
+      .icon-btn:focus-visible,
+      .mode-chip:focus-visible,
+      .tab-btn:focus-visible {
+        outline: 2px solid rgba(125, 211, 252, 0.9);
+        outline-offset: 2px;
+      }
+
+      .icon-btn.btn-active {
+        color: var(--accent);
+        border-color: rgba(56, 189, 248, 0.8);
+      }
+
+      .icon-btn svg {
+        width: 18px;
+        height: 18px;
+      }
+
+      .workspace {
+        position: absolute;
+        top: 68px;
+        right: 12px;
+        bottom: 108px;
+        width: min(360px, calc(100vw - 24px));
+        display: flex;
+        flex-direction: column;
+        border: 1px solid #2a3142;
+        border-radius: 8px;
+        background: var(--panel-bg);
+        overflow: hidden;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.44);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        z-index: 20;
+      }
+
+      .workspace[hidden] {
+        display: none;
+      }
+
+      .workspace-header {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px 12px 8px;
+        background: var(--panel-header);
+        border-bottom: 1px solid #2a3142;
+      }
+
+      .workspace-header-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .workspace-title {
+        color: var(--text-strong);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .workspace-subtitle {
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+
+      .workspace-tabs {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 6px;
+      }
+
+      .tab-btn {
+        min-width: 0;
+        border: 1px solid #2a3142;
+        border-radius: 6px;
+        background: rgba(15, 18, 25, 0.78);
+        color: var(--text-muted);
+        padding: 6px 8px;
+        cursor: pointer;
+      }
+
+      .tab-btn:hover {
+        background: #232b3d;
+        color: #dbe6f6;
+      }
+
+      .tab-btn.tab-active {
+        color: var(--accent);
+        border-color: rgba(56, 189, 248, 0.68);
+        background: rgba(26, 44, 62, 0.82);
+      }
+
+      .workspace-body {
         flex: 1;
         overflow-y: auto;
         overflow-x: hidden;
@@ -62,14 +239,20 @@
         scrollbar-width: thin;
         scrollbar-color: #2a3142 transparent;
       }
-      .side-panel .panel-body::-webkit-scrollbar { width: 5px; }
-      .side-panel .panel-body::-webkit-scrollbar-track { background: transparent; }
-      .side-panel .panel-body::-webkit-scrollbar-thumb { background: #2a3142; border-radius: 3px; }
 
-      #config-panel  { left: 10px; }
-      #profiler-panel { right: 10px; }
+      .workspace-body::-webkit-scrollbar {
+        width: 5px;
+      }
 
-      /* ── Config panel internals ── */
+      .workspace-body::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      .workspace-body::-webkit-scrollbar-thumb {
+        background: #2a3142;
+        border-radius: 3px;
+      }
+
       .cfg-section { margin-bottom: 4px; }
       .cfg-section-heading {
         padding: 5px 12px 3px;
@@ -110,9 +293,7 @@
         margin-right: 2px;
       }
       .cfg-group[open] .cfg-group-heading::before { content: "v"; }
-      .cfg-group-heading span:first-child {
-        flex: 1;
-      }
+      .cfg-group-heading span:first-child { flex: 1; }
       .cfg-group-count {
         color: #6b7689;
         font-size: 9px;
@@ -129,19 +310,13 @@
         gap: 5px;
         margin: 6px 8px 5px;
       }
-      .cfg-expert-drawers .cfg-group {
-        margin: 0;
-      }
-      .cfg-expert-drawers .cfg-group[open] {
-        grid-column: 1 / -1;
-      }
+      .cfg-expert-drawers .cfg-group { margin: 0; }
+      .cfg-expert-drawers .cfg-group[open] { grid-column: 1 / -1; }
       .cfg-expert-drawers .cfg-group-heading {
         gap: 5px;
         padding: 7px 8px;
       }
-      .cfg-expert-drawers .cfg-group-count {
-        display: none;
-      }
+      .cfg-expert-drawers .cfg-group-count { display: none; }
       .cfg-row {
         display: grid;
         grid-template-columns: 1fr auto;
@@ -229,7 +404,6 @@
         border: 1px solid #2a3142;
         border-radius: 4px;
         color: #cdd6e4;
-        font: inherit;
         font-size: 11px;
         padding: 2px 4px;
         text-align: right;
@@ -243,7 +417,6 @@
         border: 1px solid #2a3142;
         border-radius: 4px;
         color: #cdd6e4;
-        font: inherit;
         font-size: 11px;
         padding: 3px 4px;
         cursor: pointer;
@@ -278,7 +451,6 @@
       }
       .badge-reset  { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
       .badge-reload { background: rgba(248,113,113,0.15); color: #f87171; border: 1px solid rgba(248,113,113,0.3); }
-
       .cfg-actions {
         display: flex;
         gap: 8px;
@@ -293,19 +465,21 @@
         padding: 5px 8px;
         border-radius: 5px;
         cursor: pointer;
-        font: inherit;
         font-size: 11px;
         white-space: nowrap;
       }
       .panel-btn:hover { background: #232b3d; }
-
       .panel-empty {
         padding: 16px 12px;
         color: #6b7689;
         font-size: 12px;
       }
+      .mode-section-note {
+        padding: 4px 12px 0;
+        color: var(--text-muted);
+        font-size: 11px;
+      }
 
-      /* ── Profiler panel internals ── */
       .prof-row {
         display: flex;
         justify-content: space-between;
@@ -327,10 +501,8 @@
       }
       .prof-fps { color: #6b7689; font-size: 10px; }
       .prof-dominant { font-size: 9px; color: #f87171; letter-spacing: 0.04em; }
-      .prof-pressure-row .prof-val { color: #f87171; font-weight: 600; }
       .prof-total-row .prof-val { color: #8fd0ff; }
       .prof-header-row .prof-val { font-weight: 600; }
-
       .prof-divider {
         height: 1px;
         background: #1d2230;
@@ -344,26 +516,6 @@
         text-transform: uppercase;
         color: #6b7689;
       }
-
-      .prof-pressure-bar-wrap {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 2px 12px 4px 28px;
-      }
-      .prof-pressure-bar {
-        height: 5px;
-        max-width: calc(100% - 70px);
-        background: linear-gradient(to right, #b91c1c, #f87171);
-        border-radius: 3px;
-        min-width: 2px;
-        transition: width 0.2s;
-      }
-      .prof-pressure-pct {
-        font-size: 10px;
-        color: #f87171;
-        white-space: nowrap;
-      }
       .prof-note {
         padding: 8px 12px;
         font-size: 11px;
@@ -371,62 +523,222 @@
         line-height: 1.5;
       }
 
-      /* ── Mode buttons ── */
-      #mode-bar { position:absolute; bottom:16px; left:50%; transform:translateX(-50%);
-        display:flex; gap:10px; z-index:20; }
-      .mode-btn { width:44px; height:44px; border-radius:50%; background:rgba(17,20,27,0.92);
-        border:1px solid #2a3142; color:#8a93a6; display:grid; place-items:center; cursor:pointer;
-        backdrop-filter:blur(6px); box-shadow:0 2px 12px rgba(0,0,0,0.5); transition:all .12s; }
-      .mode-btn:hover { color:#cdd6e4; border-color:#3a4456; }
-      .mode-btn.mode-active { color:#4ade80; border-color:#4ade80; }
+      #launcher {
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        z-index: 30;
+        display: flex;
+        justify-content: center;
+        pointer-events: none;
+      }
 
-      /* ── Unsupported overlay ── */
-      #unsupported { position: fixed; inset: 0; display: none; place-items: center;
-        background: #0a0c10; padding: 24px; }
-      #unsupported .card { max-width: 560px; background: #11141b;
-        border: 1px solid #2a3142; border-radius: 10px; padding: 24px; }
-      #unsupported h1 { margin: 0 0 12px; font-size: 18px; color: #f0f4fa; }
+      .launcher-shell {
+        width: min(760px, 100%);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 10px 12px;
+        padding: 10px 12px;
+        border: 1px solid var(--chrome-border);
+        border-radius: 8px;
+        background: var(--chrome-bg);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        pointer-events: auto;
+      }
+
+      .launcher-group {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .mode-chip {
+        min-height: 36px;
+        padding: 7px 12px;
+        border: 1px solid #2a3142;
+        border-radius: 6px;
+        background: rgba(15, 18, 25, 0.82);
+        color: #cdd6e4;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+
+      .mode-chip:hover {
+        background: #232b3d;
+      }
+
+      .mode-chip.mode-active {
+        color: var(--success);
+        border-color: rgba(74, 222, 128, 0.85);
+        background: rgba(24, 48, 32, 0.88);
+      }
+
+      #manual-pointer-group[hidden] {
+        display: none;
+      }
+
+      #unsupported {
+        position: fixed;
+        inset: 0;
+        display: none;
+        place-items: center;
+        background: #0a0c10;
+        padding: 24px;
+      }
+
+      #unsupported .card {
+        max-width: 560px;
+        background: #11141b;
+        border: 1px solid #2a3142;
+        border-radius: 8px;
+        padding: 24px;
+      }
+
+      #unsupported h1 {
+        margin: 0 0 12px;
+        font-size: 18px;
+        color: #f0f4fa;
+      }
+
       #unsupported code { color: #8fd0ff; }
+
+      @media (max-width: 820px) {
+        #toolbar {
+          top: 10px;
+          left: 10px;
+          right: 10px;
+          flex-direction: column;
+          align-items: stretch;
+        }
+
+        .toolbar-cluster {
+          justify-content: space-between;
+        }
+
+        .toolbar-actions {
+          justify-content: flex-end;
+        }
+
+        .workspace {
+          top: 116px;
+          bottom: 132px;
+          width: min(420px, calc(100vw - 20px));
+          right: 10px;
+        }
+
+        .workspace-tabs {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 560px) {
+        .toolbar-cluster {
+          flex-wrap: wrap;
+        }
+
+        .toolbar-brand {
+          flex: 1 1 auto;
+        }
+
+        .toolbar-actions {
+          width: 100%;
+          justify-content: flex-end;
+        }
+
+        .workspace {
+          top: 126px;
+          right: 10px;
+          left: 10px;
+          width: auto;
+          bottom: 146px;
+        }
+
+        .workspace-tabs {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .launcher-shell {
+          justify-content: stretch;
+        }
+
+        .launcher-group {
+          width: 100%;
+        }
+
+        .mode-chip {
+          flex: 1 1 0;
+          min-width: 0;
+        }
+      }
     </style>
   </head>
   <body>
     <div id="app">
-      <div id="toolbar">
-        <strong>Fluid Lab</strong>
-        <button id="btn-pause">Pause</button>
-        <button id="btn-reset">Reset</button>
-        <button id="btn-config">Config</button>
-        <button id="btn-profiler">Profiler</button>
-      </div>
       <div id="stage">
         <canvas id="gpu-canvas"></canvas>
 
-        <!-- Config panel (left) -->
-        <div id="config-panel" class="side-panel">
-          <div class="panel-header">Config</div>
-          <div class="panel-body"></div>
-        </div>
+        <header id="toolbar" aria-label="Fluid Lab controls">
+          <div class="toolbar-cluster">
+            <div class="toolbar-brand">
+              <strong>Fluid Lab</strong>
+              <span id="app-version" class="toolbar-version" aria-live="polite"></span>
+            </div>
+          </div>
+          <div class="toolbar-actions" role="toolbar" aria-label="Global controls">
+            <button id="btn-pause" class="icon-btn" type="button" aria-label="Pause simulation" title="Pause simulation">
+              <svg id="icon-pause" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 5h3v14H8zM13 5h3v14h-3z" fill="currentColor"></path>
+              </svg>
+              <span class="visually-hidden">Pause</span>
+            </button>
+            <button id="btn-reset" class="icon-btn" type="button" aria-label="Reset simulation" title="Reset simulation">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 11a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+                <path d="M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+              </svg>
+              <span class="visually-hidden">Reset</span>
+            </button>
+            <button id="btn-config" class="icon-btn" type="button" aria-label="Toggle workspace" title="Toggle workspace">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3.5l1.8 1 .6 2.1 2.1.9 1.9-1.1 1.7 3-1.5 1.6.1 2.3 1.5 1.5-1.7 3-2-.5-2 1-1 1.8h-3.4l-1-1.8-2-.9-2 .4-1.7-3 1.5-1.6-.1-2.2-1.5-1.6 1.7-3 1.9 1 2.1-.8.7-2.1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"></path>
+                <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+              </svg>
+              <span class="visually-hidden">Workspace</span>
+            </button>
+          </div>
+        </header>
 
-        <!-- Profiler panel (right) -->
-        <div id="profiler-panel" class="side-panel">
-          <div class="panel-header">Profiler</div>
-          <div class="panel-body"></div>
-        </div>
+        <aside id="workspace" class="workspace" aria-label="Workspace" hidden>
+          <div class="workspace-header">
+            <div class="workspace-header-row">
+              <div class="workspace-title">Workspace</div>
+              <div id="workspace-tab-label" class="workspace-subtitle">General</div>
+            </div>
+            <div id="workspace-tabs" class="workspace-tabs" role="tablist" aria-label="Workspace sections"></div>
+          </div>
+          <div id="workspace-body" class="workspace-body"></div>
+        </aside>
 
-        <!-- Mode buttons (bottom-center) -->
-        <div id="mode-bar">
-          <button id="mode-camera" class="mode-btn mode-active" title="Camera — drag to orbit the view">
-            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="13" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
-          </button>
-          <button id="mode-rotate" class="mode-btn" title="Rotate — drag to rotate the tank (and its gravity)">
-            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M19 12a7 7 0 1 1-2-4.9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19 5v4h-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
-          </button>
-          <button id="mode-rotate-roll" class="mode-btn" title="(3) Rotate roll/pitch — drag to roll the tank + gravity">
-            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M5 12a7 7 0 1 1 2 4.9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 19v-4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
-          </button>
-          <button id="mode-slosh" class="mode-btn" title="(4) Move — drag to move the tank; the water sloshes (inertia)">
-            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
-          </button>
+        <div id="launcher" aria-label="Interaction modes">
+          <div class="launcher-shell">
+            <div id="product-mode-group" class="launcher-group" role="tablist" aria-label="Product mode">
+              <button id="product-auto-rotate" class="mode-chip" type="button">Auto Rotate</button>
+              <button id="product-waves" class="mode-chip" type="button">Waves</button>
+              <button id="product-manual" class="mode-chip" type="button">Manual</button>
+            </div>
+            <div id="manual-pointer-group" class="launcher-group" role="tablist" aria-label="Manual pointer mode" hidden>
+              <button id="mode-camera" class="mode-chip" type="button">Camera</button>
+              <button id="mode-rotate" class="mode-chip" type="button">Rotate</button>
+              <button id="mode-rotate-roll" class="mode-chip" type="button">Rotate Roll</button>
+              <button id="mode-slosh" class="mode-chip" type="button">Slosh</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -438,7 +750,7 @@
            this browser doesn't expose. Try a recent <strong>Chrome or Edge</strong>
            (desktop) with <code>navigator.gpu</code> available.</p>
         <p class="hint">It's a real-time hybrid particle/grid (FLIP/PIC) liquid
-           simulation — a portfolio demo, not a validated CFD solver.</p>
+           simulation - a portfolio demo, not a validated CFD solver.</p>
         <p id="unsupported-detail" class="hint"></p>
       </div>
     </div>

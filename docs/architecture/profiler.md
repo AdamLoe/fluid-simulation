@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-08
 okay_to_delete: false
 long_lived:    true
 ---
@@ -65,7 +65,9 @@ CPU wall-clock around a GPU submit measures nothing about GPU execution time bec
 
 Always-present keys additionally include measurement/scale facts:
 `frame_samples`, requested/estimated/actual particles, `scale_status`,
-`max_compute_workgroups_per_dimension`, particle dispatch/storage limits,
+`max_compute_workgroups_per_dimension`, `max_particle_dispatch_count`,
+`particle_dispatch_groups_x`, `particle_dispatch_groups_y`,
+`particle_dispatch_capacity`, `max_particle_storage_count`,
 `pressure_iterations`, and `render_mode`, alongside the existing frame percentile,
 grid, memory, dropped-time, dispatch, and GPU fields.
 
@@ -85,6 +87,12 @@ The `gpu` sub-object always carries: `sim_ms`, `prep_ms`, `pressure_ms`, `finish
 the rolling frame window, cached GPU sample/timing source, timestep snapshot, and CPU
 scope accumulators. This runs for successful and rejected Reset attempts so scale
 measurements cannot inherit pre-reset percentiles or timestamps.
+
+**Scale facts come from the active GPU context, not estimates in JS.**
+`FluidApp::frame` feeds requested/estimated/actual particles, tiled dispatch shape,
+dispatch/storage ceilings, and `scale_status` from `GpuContext` into
+`Profiler::set_frame_facts`. The profiler reports what the running or rejected Reset
+attempt actually asked for; the panel does not derive those fields independently.
 
 **The rendered panel sorts measured costs.** Coarse prep/pressure/finish/render rows
 and detailed section rows are descending by their real timestamp values. It does not
@@ -107,6 +115,8 @@ hardcode pressure or any other pass as dominant.
 - The logging interval or rolling-window cap change → `Profiler::new` in `app/crates/fluid-lab/src/profiler/mod.rs`
 - The JS bridge schema for `stats_json` changes → update `Profiler::stats_json` and the panel consumer in `web/panels.js`
 - The `GpuTimers` construction parameters change (mode, substeps, iters) → `gpu-resources.md` owns the rebuild path; note here if the `stats_json` shape changes
+- Scale-status or particle-dispatch fact fields change → update both `stats_json` and
+  the panel consumer wording.
 
 ## See also
 

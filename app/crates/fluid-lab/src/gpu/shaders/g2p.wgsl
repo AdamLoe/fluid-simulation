@@ -26,6 +26,12 @@ struct Params {
 @group(0) @binding(6) var<storage, read> v_saved: array<f32>;
 @group(0) @binding(7) var<storage, read> w_saved: array<f32>;
 
+const PARTICLE_WG: u32 = 64u;
+
+fn particle_index(wid: vec3<u32>, lid: u32, nwg: vec3<u32>) -> u32 {
+    return ((wid.y * nwg.x + wid.x) * PARTICLE_WG) + lid;
+}
+
 fn u_face_touches_static_solid(ii: i32, jj: i32, kk: i32) -> bool {
     let nx = i32(params.gdim.x);
     let ny = i32(params.gdim.y);
@@ -122,9 +128,13 @@ fn sample_w(P: vec3<f32>) -> vec2<f32> {
     return select(vec2<f32>(0.0), vec2<f32>(fin, sav) / wsum, wsum > 0.0);
 }
 
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let p = gid.x;
+@compute @workgroup_size(64, 1, 1)
+fn main(
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(local_invocation_index) lid: u32,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let p = particle_index(wid, lid, nwg);
     if (p >= params.dims.y) { return; }
 
     let h = params.geom.x;

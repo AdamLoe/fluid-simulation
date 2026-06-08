@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-07
+last_updated:  2026-06-08
 okay_to_delete: false
 long_lived:    true
 ---
@@ -79,6 +79,14 @@ G2P + ADVECT + RECOVER
 
 **Per-axis indexing drives every kernel.** The host contract (`app/crates/fluid-lab/src/sim/mod.rs → GridDims`, `cell_idx`/`u_idx`/`v_idx`/`w_idx`, `world_to_cell`, `cell_center_world`) is fully per-axis: cell index `i + nx*(j + ny*k)`, staggered face counts `(nx+1)·ny·nz` / `nx·(ny+1)·nz` / `nx·ny·(nz+1)`, scalar `h`. The WGSL port mirrors it: any shader that decomposes a linear cell index uses `i = c%nx; j = (c/nx)%ny; k = c/(nx*ny)` and the per-axis staggered face dims, reading `nx/ny/nz` from `params.gdim` (total cells `nx*ny*nz`). The sim/CG kernels that decompose indices all carry the `gdim` mirror; the scalar kernels (e.g. `clear`, `normalize`, `save_vel`) keep a shorter prefix `Params`. To find the set, `grep params.gdim` over `app/crates/fluid-lab/src/gpu/shaders/`.
 
+**Particle-linear passes use one tiled particle index contract.** Mark, scatter U/V/W,
+G2P, and the standalone impulse pass all compute particle index from 2D workgroup
+coordinates plus `local_invocation_index`, not from `global_invocation_id.x` alone.
+The contract is shared with `gpu/fluid.rs → particle_dispatch_shape`: same
+`@workgroup_size(64, 1, 1)`, same row-major workgroup flattening, same
+`if (p >= params.dims.y) { return; }` guard before touching the particle buffer. This
+raises the legal particle ceiling without changing P2G/G2P physics.
+
 **`gdim` is appended last in `Params`.** It sits at the END of the struct so shaders that don't decompose cell indices can keep their existing (shorter prefix) `Params` mirror without re-layout. `Params` is now 8 `vec4` = 128 B. A shader that needs per-axis dims must include all eight `vec4` fields up to and including `gdim`.
 
 **The pressure operator stays ISOTROPIC.** Because `h` is a single uniform scalar, there is NO per-axis `hx/hy/hz`. The CG SpMV (`app/crates/fluid-lab/src/gpu/shaders/cg_spmv.wgsl`) is the symmetric graph-Laplacian `(A d)_c = n_c·d_c − Σ_{liquid nb} d_nb` (the `1/h²` factor folds out uniformly); divergence/gradient use the single `params.geom` `inv_h`. Introducing a non-uniform cell size would make the operator anisotropic and is a contract change.
@@ -131,6 +139,7 @@ local frame.
 - Particle init layout changes (block config, jitter seed, spacing rule)
 - The step sequence order changes (e.g. forces before mark, or second enforce removed)
 - The impulse path changes from a particle velocity kick into a mass/source/drain or wall-paddle model
+- Particle-linear indexing stops matching the shared tiled dispatch contract
 
 ---
 

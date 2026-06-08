@@ -23,9 +23,19 @@ struct Particle { pos: vec4<f32>, vel: vec4<f32> };
 @group(0) @binding(2) var<storage, read_write> num: array<atomic<i32>>;
 @group(0) @binding(3) var<storage, read_write> den: array<atomic<i32>>;
 
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let p = gid.x;
+const PARTICLE_WG: u32 = 64u;
+
+fn particle_index(wid: vec3<u32>, lid: u32, nwg: vec3<u32>) -> u32 {
+    return ((wid.y * nwg.x + wid.x) * PARTICLE_WG) + lid;
+}
+
+@compute @workgroup_size(64, 1, 1)
+fn main(
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(local_invocation_index) lid: u32,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let p = particle_index(wid, lid, nwg);
     if (p >= params.dims.y) { return; }
 
     let nx = i32(params.gdim.x);

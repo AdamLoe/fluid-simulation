@@ -40,8 +40,57 @@ const FIXED_SCALE: f32 = 65536.0; // 2^16 (see docs/p2g-strategy-note.md)
 pub(crate) const PARTICLE_WG: u32 = 64;
 const WG: u32 = PARTICLE_WG;
 
+#[derive(Clone, Copy)]
+pub(crate) struct ParticleDispatchShape {
+    pub groups_x: u32,
+    pub groups_y: u32,
+    pub capacity: u32,
+}
+
+pub(crate) fn max_tiled_particle_dispatch_count(max_workgroups_per_dimension: u32) -> u32 {
+    let max_dim = max_workgroups_per_dimension as u64;
+    let max_groups_by_dims = max_dim.saturating_mul(max_dim);
+    let max_groups_by_index = (u32::MAX as u64) / (PARTICLE_WG as u64);
+    let legal_groups = max_groups_by_dims.min(max_groups_by_index);
+    (legal_groups * PARTICLE_WG as u64) as u32
+}
+
+pub(crate) fn particle_dispatch_shape(
+    particle_count: u32,
+    max_workgroups_per_dimension: u32,
+) -> Option<ParticleDispatchShape> {
+    if particle_count == 0 || max_workgroups_per_dimension == 0 {
+        return Some(ParticleDispatchShape {
+            groups_x: 0,
+            groups_y: 0,
+            capacity: 0,
+        });
+    }
+
+    let total_groups = (particle_count as u64).div_ceil(PARTICLE_WG as u64);
+    let groups_x = total_groups.min(max_workgroups_per_dimension as u64);
+    let groups_y = total_groups.div_ceil(groups_x);
+    if groups_x > max_workgroups_per_dimension as u64
+        || groups_y > max_workgroups_per_dimension as u64
+    {
+        return None;
+    }
+
+    let capacity = total_groups.checked_mul(PARTICLE_WG as u64)?;
+    if capacity > u32::MAX as u64 {
+        return None;
+    }
+
+    Some(ParticleDispatchShape {
+        groups_x: groups_x as u32,
+        groups_y: groups_y as u32,
+        capacity: capacity as u32,
+    })
+}
+
 pub struct GpuFluid {
     particle_count: u32,
+    particle_dispatch: ParticleDispatchShape,
     nx: u32,
     ny: u32,
     nz: u32,
@@ -147,6 +196,7 @@ impl GpuFluid {
         _queue: &wgpu::Queue,
         settings: &Registry,
         scene: &SceneConfig,
+        max_compute_workgroups_per_dimension: u32,
     ) -> Self {
         // Uniform cell size; the tank is made rectangular by per-axis cell counts.
         let nx = settings.grid_res_x();
@@ -163,6 +213,9 @@ impl GpuFluid {
 
         let positions = generate_particles(scene, h, origin, extent);
         let particle_count = positions.len() as u32;
+        let particle_dispatch =
+            particle_dispatch_shape(particle_count, max_compute_workgroups_per_dimension)
+                .expect("particle count must pass tiled dispatch preflight");
         // Interleave into {pos.xyz, 0, vel=0,0,0,0}.
         let initial: Vec<[f32; 8]> = positions
             .iter()
@@ -764,11 +817,15 @@ impl GpuFluid {
         );
 
         log(&format!(
-            "[fluid-lab][gpu] fluid init: dims={nx}x{ny}x{nz} h={h:.4} particles={particle_count} cells={cell_count} press_iters={pressure_iters}"
+            "[fluid-lab][gpu] fluid init: dims={nx}x{ny}x{nz} h={h:.4} particles={particle_count} particle_dispatch={}x{}x1 capacity={} cells={cell_count} press_iters={pressure_iters}",
+            particle_dispatch.groups_x,
+            particle_dispatch.groups_y,
+            particle_dispatch.capacity,
         ));
 
         GpuFluid {
             particle_count,
+            particle_dispatch,
             nx,
             ny,
             nz,
@@ -856,6 +913,9 @@ impl GpuFluid {
 
     pub fn particle_count(&self) -> u32 {
         self.particle_count
+    }
+    pub fn particle_dispatch_shape(&self) -> ParticleDispatchShape {
+        self.particle_dispatch
     }
     pub fn particle_buffer(&self) -> &wgpu::Buffer {
         &self.particles
@@ -1005,9 +1065,20 @@ impl GpuFluid {
             });
             p.set_pipeline(&self.impulse_pl);
             p.set_bind_group(0, &self.impulse_bg, &[]);
-            p.dispatch_workgroups(self.particle_count.div_ceil(WG), 1, 1);
+            self.dispatch_particles(&mut p);
         }
         queue.submit(std::iter::once(enc.finish()));
+    }
+
+    fn dispatch_particles(&self, pass: &mut wgpu::ComputePass<'_>) {
+        if self.particle_dispatch.groups_x == 0 || self.particle_dispatch.groups_y == 0 {
+            return;
+        }
+        pass.dispatch_workgroups(
+            self.particle_dispatch.groups_x,
+            self.particle_dispatch.groups_y,
+            1,
+        );
     }
 
     pub fn reset(&mut self, queue: &wgpu::Queue) {
@@ -1059,7 +1130,7 @@ impl GpuFluid {
     pub fn dispatch_mark(&self, pass: &mut wgpu::ComputePass<'_>) {
         pass.set_pipeline(&self.mark_pl);
         pass.set_bind_group(0, &self.mark_bg, &[]);
-        pass.dispatch_workgroups(self.particle_count.div_ceil(WG), 1, 1);
+        self.dispatch_particles(pass);
     }
     pub fn dispatch_classify(&self, pass: &mut wgpu::ComputePass<'_>) {
         pass.set_pipeline(&self.classify_pl);
@@ -1069,7 +1140,7 @@ impl GpuFluid {
     pub fn dispatch_scatter(&self, pass: &mut wgpu::ComputePass<'_>, a: usize) {
         pass.set_pipeline(&self.scatter_pl[a]);
         pass.set_bind_group(0, &self.scatter_bg[a], &[]);
-        pass.dispatch_workgroups(self.particle_count.div_ceil(WG), 1, 1);
+        self.dispatch_particles(pass);
     }
     pub fn dispatch_normalize(&self, pass: &mut wgpu::ComputePass<'_>, a: usize) {
         pass.set_pipeline(&self.normalize_pl);
@@ -1099,7 +1170,7 @@ impl GpuFluid {
     pub fn dispatch_g2p(&self, pass: &mut wgpu::ComputePass<'_>) {
         pass.set_pipeline(&self.g2p_pl);
         pass.set_bind_group(0, &self.g2p_bg, &[]);
-        pass.dispatch_workgroups(self.particle_count.div_ceil(WG), 1, 1);
+        self.dispatch_particles(pass);
     }
     pub fn dispatch_divergence(&self, pass: &mut wgpu::ComputePass<'_>) {
         pass.set_pipeline(&self.divergence_pl);

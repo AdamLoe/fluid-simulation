@@ -115,6 +115,9 @@ struct FrameFacts {
     estimated_particles: u32,
     max_compute_workgroups_per_dimension: u32,
     max_particle_dispatch_count: u32,
+    particle_dispatch_groups_x: u32,
+    particle_dispatch_groups_y: u32,
+    particle_dispatch_capacity: u32,
     max_particle_storage_count: u32,
     scale_status: &'static str,
 }
@@ -187,6 +190,8 @@ impl Profiler {
         estimated_particles: u32,
         max_compute_workgroups_per_dimension: u32,
         max_particle_dispatch_count: u32,
+        particle_dispatch_groups: [u32; 2],
+        particle_dispatch_capacity: u32,
         max_particle_storage_count: u32,
         scale_status: &'static str,
     ) {
@@ -200,6 +205,9 @@ impl Profiler {
             estimated_particles,
             max_compute_workgroups_per_dimension,
             max_particle_dispatch_count,
+            particle_dispatch_groups_x: particle_dispatch_groups[0],
+            particle_dispatch_groups_y: particle_dispatch_groups[1],
+            particle_dispatch_capacity,
             max_particle_storage_count,
             scale_status,
         };
@@ -466,7 +474,7 @@ impl Profiler {
         let dispatches_this_frame = dispatches_per_substep * ts.substeps_this_frame;
 
         format!(
-            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"substeps_this_frame":{stf},"accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
+            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"particle_dispatch_groups_x":{pdgx},"particle_dispatch_groups_y":{pdgy},"particle_dispatch_capacity":{pdcap},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"substeps_this_frame":{stf},"accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
             timing = self.timing_source.label(),
             sample_count = samples.len(),
             avg = fmt_ms(avg),
@@ -484,6 +492,9 @@ impl Profiler {
             scale_status = f.scale_status,
             max_wg = f.max_compute_workgroups_per_dimension,
             max_dispatch = f.max_particle_dispatch_count,
+            pdgx = f.particle_dispatch_groups_x,
+            pdgy = f.particle_dispatch_groups_y,
+            pdcap = f.particle_dispatch_capacity,
             max_storage = f.max_particle_storage_count,
             pressure_iterations = pressure_iterations,
             render_mode = render_mode,
