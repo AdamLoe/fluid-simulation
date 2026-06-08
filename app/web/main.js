@@ -52,17 +52,6 @@ async function main() {
     document.getElementById("btn-pause").textContent = "Resume";
   }
 
-  // Mesh toggle (URL param ?mesh=1)
-  let meshEnabled = false;
-  const meshBtn = document.getElementById("btn-mesh");
-  function setMeshEnabled(on) {
-    meshEnabled = on;
-    app.set_mesh_enabled(on);
-    meshBtn.classList.toggle("btn-active", on);
-  }
-  meshBtn.addEventListener("click", () => setMeshEnabled(!meshEnabled));
-  if (params.get("mesh") === "1") setMeshEnabled(true);
-
   // controls
   const pauseBtn = document.getElementById("btn-pause");
   pauseBtn.addEventListener("click", () => {

@@ -40,6 +40,231 @@ pub(crate) fn warn(s: &str) {
     web_sys::console::warn_1(&JsValue::from_str(s));
 }
 
+/// Decode a packed 0x00RRGGBB u32 to linear [0,1] RGB floats.
+#[cfg(target_arch = "wasm32")]
+fn unpack_rgb(c: u32) -> [f32; 3] {
+    [
+        ((c >> 16) & 0xFF) as f32 / 255.0,
+        ((c >> 8) & 0xFF) as f32 / 255.0,
+        (c & 0xFF) as f32 / 255.0,
+    ]
+}
+
+const INTERACTION_SEED: u64 = 0x464c_5549_445f_5631;
+const INTERACTION_MAX_DT_S: f32 = 1.0 / 30.0;
+
+#[derive(Clone, Copy, Debug)]
+struct InteractionRng {
+    state: u64,
+}
+
+impl InteractionRng {
+    fn new(seed: u64) -> Self {
+        let state = if seed == 0 {
+            0x9e37_79b9_7f4a_7c15
+        } else {
+            seed
+        };
+        Self { state }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        self.state = self
+            .state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (self.state >> 32) as u32
+    }
+
+    fn next_f32(&mut self) -> f32 {
+        const SCALE: f32 = 1.0 / ((u32::MAX as f32) + 1.0);
+        (self.next_u32() as f32) * SCALE
+    }
+
+    fn signed_f32(&mut self) -> f32 {
+        self.next_f32() * 2.0 - 1.0
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AutoRollSchedule {
+    enabled_last: bool,
+    elapsed_s: f32,
+    duration_s: f32,
+    from: glam::Quat,
+    target: glam::Quat,
+}
+
+impl Default for AutoRollSchedule {
+    fn default() -> Self {
+        Self {
+            enabled_last: false,
+            elapsed_s: 0.0,
+            duration_s: 0.0,
+            from: glam::Quat::IDENTITY,
+            target: glam::Quat::IDENTITY,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WaveSchedule {
+    enabled_last: bool,
+    time_until_next_s: f32,
+    phase: u32,
+}
+
+impl Default for WaveSchedule {
+    fn default() -> Self {
+        Self {
+            enabled_last: false,
+            time_until_next_s: 0.0,
+            phase: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InteractionState {
+    rng: InteractionRng,
+    auto_roll: AutoRollSchedule,
+    wave: WaveSchedule,
+}
+
+impl InteractionState {
+    fn new(seed: u64) -> Self {
+        Self {
+            rng: InteractionRng::new(seed),
+            auto_roll: AutoRollSchedule::default(),
+            wave: WaveSchedule::default(),
+        }
+    }
+
+    fn reset(&mut self, seed: u64) {
+        *self = Self::new(seed);
+    }
+
+    fn update_auto_roll(
+        &mut self,
+        dt_s: f32,
+        current: glam::Quat,
+        enabled: bool,
+        strength: f32,
+        cadence_s: f32,
+    ) -> Option<glam::Quat> {
+        let strength = strength.max(0.0);
+        if !enabled || strength <= f32::EPSILON {
+            self.auto_roll.enabled_last = false;
+            return None;
+        }
+
+        let dt_s = finite_nonnegative(dt_s);
+        if !self.auto_roll.enabled_last || self.auto_roll.duration_s <= f32::EPSILON {
+            self.schedule_auto_roll(current, strength, cadence_s);
+            self.auto_roll.enabled_last = true;
+        }
+
+        self.auto_roll.elapsed_s += dt_s;
+        while self.auto_roll.duration_s > f32::EPSILON
+            && self.auto_roll.elapsed_s >= self.auto_roll.duration_s
+        {
+            let overflow = self.auto_roll.elapsed_s - self.auto_roll.duration_s;
+            let start = self.auto_roll.target;
+            self.schedule_auto_roll(start, strength, cadence_s);
+            self.auto_roll.enabled_last = true;
+            self.auto_roll.elapsed_s = overflow.min(self.auto_roll.duration_s);
+        }
+
+        let t = (self.auto_roll.elapsed_s / self.auto_roll.duration_s).clamp(0.0, 1.0);
+        let eased = t * t * (3.0 - 2.0 * t);
+        Some(clamp_rotation(
+            self.auto_roll
+                .from
+                .slerp(self.auto_roll.target, eased)
+                .normalize(),
+            strength,
+        ))
+    }
+
+    fn schedule_auto_roll(&mut self, from: glam::Quat, strength: f32, cadence_s: f32) {
+        let cadence_s = cadence_s.max(0.1);
+        let jitter = 0.75 + self.rng.next_f32() * 0.5;
+        let horizontal = glam::Vec3::new(self.rng.signed_f32(), 0.0, self.rng.signed_f32());
+        let axis = if horizontal.length_squared() > 1.0e-6 {
+            horizontal.normalize()
+        } else {
+            glam::Vec3::X
+        };
+        let angle = strength * (0.35 + self.rng.next_f32() * 0.65);
+
+        self.auto_roll.from = clamp_rotation(from.normalize(), strength);
+        self.auto_roll.target = glam::Quat::from_axis_angle(axis, angle).normalize();
+        self.auto_roll.duration_s = cadence_s * jitter;
+        self.auto_roll.elapsed_s = 0.0;
+    }
+
+    fn update_wave(
+        &mut self,
+        dt_s: f32,
+        enabled: bool,
+        strength: f32,
+        frequency_hz: f32,
+    ) -> Option<[f32; 3]> {
+        let strength = strength.max(0.0);
+        let frequency_hz = frequency_hz.max(0.0);
+        if !enabled || strength <= f32::EPSILON || frequency_hz <= f32::EPSILON {
+            self.wave.enabled_last = false;
+            return None;
+        }
+
+        if !self.wave.enabled_last {
+            self.wave.enabled_last = true;
+            self.wave.time_until_next_s = 0.0;
+        }
+
+        self.wave.time_until_next_s -= finite_nonnegative(dt_s);
+        if self.wave.time_until_next_s > 0.0 {
+            return None;
+        }
+
+        let dir = wave_direction(self.wave.phase);
+        self.wave.phase = self.wave.phase.wrapping_add(1);
+        self.wave.time_until_next_s += 1.0 / frequency_hz;
+        if self.wave.time_until_next_s < 0.0 {
+            self.wave.time_until_next_s = 1.0 / frequency_hz;
+        }
+
+        Some([dir.x * strength, 0.0, dir.z * strength])
+    }
+}
+
+fn finite_nonnegative(v: f32) -> f32 {
+    if v.is_finite() {
+        v.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+fn clamp_rotation(q: glam::Quat, max_angle: f32) -> glam::Quat {
+    let max_angle = max_angle.max(0.0);
+    let (axis, angle) = q.to_axis_angle();
+    if angle > max_angle && axis.length_squared() > 0.0 {
+        glam::Quat::from_axis_angle(axis, max_angle).normalize()
+    } else {
+        q.normalize()
+    }
+}
+
+fn wave_direction(phase: u32) -> glam::Vec3 {
+    match phase % 4 {
+        0 => glam::Vec3::X,
+        1 => -glam::Vec3::X,
+        2 => glam::Vec3::Z,
+        _ => -glam::Vec3::Z,
+    }
+}
+
 /// App-level run state driven by the pause/reset/step controls.
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -70,6 +295,7 @@ pub struct FluidApp {
     box_orient: glam::Quat,
     /// Box translation in world space. Default = zero (centered).
     box_pos: glam::Vec3,
+    interactions: InteractionState,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -92,10 +318,8 @@ impl FluidApp {
 
         log("[fluid-lab] FluidApp created — Phase 0.1 shell ready.");
 
-        let timestep = timestep::TimestepController::new(
-            settings.fixed_dt(),
-            settings.max_substeps(),
-        );
+        let timestep =
+            timestep::TimestepController::new(settings.fixed_dt(), settings.max_substeps());
 
         let mut app = FluidApp {
             gpu,
@@ -111,13 +335,13 @@ impl FluidApp {
             timestep,
             box_orient: glam::Quat::IDENTITY,
             box_pos: glam::Vec3::ZERO,
+            interactions: InteractionState::new(INTERACTION_SEED),
         };
-        // Apply settings-defined initial camera orientation and sun direction.
+        // Apply settings-defined initial camera orientation.
         app.camera.set_pitch(app.settings.camera_rot_x());
         app.camera.set_yaw(app.settings.camera_rot_y());
         app.camera.set_roll(app.settings.camera_rot_z());
         app.camera.set_distance(app.settings.camera_distance());
-        app.gpu.set_sun_dir(app.settings.sun_x(), app.settings.sun_y(), app.settings.sun_z());
         app.push_gravity();
         Ok(app)
     }
@@ -133,7 +357,15 @@ impl FluidApp {
         self.profiler.scope_begin("update");
         let n_substeps: u32 = match self.run_state {
             RunState::Running => {
-                let n = self.timestep.steps_for_frame((render_dt_ms as f32) / 1000.0);
+                let interaction_dt_s = if render_dt_ms.is_finite() {
+                    ((render_dt_ms as f32) / 1000.0).clamp(0.0, INTERACTION_MAX_DT_S)
+                } else {
+                    0.0
+                };
+                self.update_interactions(interaction_dt_s);
+                let n = self
+                    .timestep
+                    .steps_for_frame((render_dt_ms as f32) / 1000.0);
                 if n > 0 {
                     self.profiler.scope_begin("simulation");
                     self.gpu.step(n);
@@ -162,8 +394,8 @@ impl FluidApp {
         // --- render ---
         self.profiler.scope_begin("render");
         let aspect = self.gpu.aspect();
-        let model = glam::Mat4::from_translation(self.box_pos)
-            * glam::Mat4::from_quat(self.box_orient);
+        let model =
+            glam::Mat4::from_translation(self.box_pos) * glam::Mat4::from_quat(self.box_orient);
         let view_proj = self.camera.view_proj(aspect) * model;
         // Billboard basis is camera-facing in WORLD space, but the particle quads are
         // expanded in MODEL space (their positions go through `model` in the shader).
@@ -173,11 +405,7 @@ impl FluidApp {
         let (right, up) = self.camera.billboard_basis();
         let inv = self.box_orient.inverse();
         let (right, up) = (inv * right, inv * up);
-        // Camera eye in the tank's local frame (vertices/MC live in local space; the
-        // model matrix is baked into view_proj only). The mesh shader needs this for
-        // correct view-dependent shading while the tank is moved/rotated.
-        let cam_pos_local = inv * (self.camera.eye() - self.box_pos);
-        if let Err(e) = self.gpu.render(&view_proj, right, up, cam_pos_local) {
+        if let Err(e) = self.gpu.render(&view_proj, right, up) {
             // Recoverable surface errors (resize/lost); log and continue.
             warn(&format!("[fluid-lab] render error: {e}"));
         }
@@ -201,8 +429,15 @@ impl FluidApp {
             self.gpu.grid_res(),
             self.gpu.buffer_memory_bytes(),
             self.gpu.dispatches_per_substep(),
+            self.gpu.requested_particles(),
+            self.gpu.estimated_particles(),
+            self.gpu.max_compute_workgroups_per_dimension(),
+            self.gpu.max_particle_dispatch_count(),
+            self.gpu.max_particle_storage_count(),
+            self.gpu.scale_status(),
         );
-        self.profiler.end_frame_and_maybe_log(&self.config_snapshot());
+        self.profiler
+            .end_frame_and_maybe_log(&self.config_snapshot());
     }
 
     /// Build the active config snapshot string used to tag profiler output.
@@ -253,15 +488,17 @@ impl FluidApp {
         // Rebuild scene + fluid + timestep from the current registry so Reset-class
         // settings (grid resolution, particle count, fixed dt, max substeps, density)
         // take effect on Reset — the recreate-fluid-from-settings path.
-        self.scene = scene::SceneConfig::from_settings(&self.settings);
+        self.profiler.reset_measurement();
         self.timestep = timestep::TimestepController::new(
             self.settings.fixed_dt(),
             self.settings.max_substeps(),
         );
-        self.gpu.recreate_fluid(&self.settings, &self.scene);
-        // dev.mesh_enabled is Reset-class: materialize it now so the MC resources
-        // are (de)allocated to match the registry on Reset.
-        self.gpu.set_mesh_enabled(self.settings.mesh_enabled());
+        let scene = scene::SceneConfig::from_settings(&self.settings);
+        if let Err(e) = self.gpu.recreate_fluid(&self.settings, &scene) {
+            warn(&format!("[fluid-lab][scale] reset rejected: {e}"));
+            return;
+        }
+        self.scene = scene;
         // Restore the camera orientation from settings (so the camera sliders define the
         // default view), and the box transform to identity.
         self.camera = camera::OrbitCamera::new();
@@ -271,6 +508,8 @@ impl FluidApp {
         self.camera.set_distance(self.settings.camera_distance());
         self.box_orient = glam::Quat::IDENTITY;
         self.box_pos = glam::Vec3::ZERO;
+        self.interactions
+            .reset(interaction_seed_for_reset(self.reset_count));
         self.push_gravity();
         log(&format!(
             "[fluid-lab] reset (count={}) — rebuilt from settings (grid={}x{}x{}, particles={})",
@@ -300,20 +539,6 @@ impl FluidApp {
     pub fn set_slice_enabled(&mut self, on: bool) {
         self.gpu.set_slice_enabled(on);
         log(&format!("[fluid-lab] slice_enabled = {on}"));
-    }
-
-    /// Toggle the marching-cubes mesh surface view (replaces particles when on).
-    #[wasm_bindgen]
-    pub fn set_mesh_enabled(&mut self, on: bool) {
-        self.gpu.set_mesh_enabled(on);
-        log(&format!("[fluid-lab] mesh_enabled = {on}"));
-    }
-
-    /// Live update of the MC isosurface level (particles/cell, default 2.0).
-    #[wasm_bindgen]
-    pub fn set_mesh_iso(&mut self, v: f32) {
-        self.gpu.set_mesh_iso(v);
-        log(&format!("[fluid-lab] mesh_iso = {v}"));
     }
 
     /// Set the slice inspection mode: 0=cell-type, 1=pressure, 2=speed.
@@ -390,34 +615,6 @@ impl FluidApp {
                         self.gpu.set_cfl(value as f32);
                         log(&format!("[fluid-lab] live cfl = {value}"));
                     }
-                    "render.mesh_iso" => {
-                        self.gpu.set_mesh_iso(value as f32);
-                        log(&format!("[fluid-lab] live mesh_iso = {value}"));
-                    }
-                    "render.mesh_smooth" => {
-                        self.gpu.set_mesh_smooth(value as u32);
-                        log(&format!("[fluid-lab] live mesh_smooth = {value}"));
-                    }
-                    "render.mesh_opacity" => {
-                        self.gpu.set_mesh_opacity(value as f32);
-                        log(&format!("[fluid-lab] live mesh_opacity = {value}"));
-                    }
-                    "render.mesh_fresnel" => {
-                        self.gpu.set_mesh_fresnel(value as f32);
-                        log(&format!("[fluid-lab] live mesh_fresnel = {value}"));
-                    }
-                    "render.mesh_foam" => {
-                        self.gpu.set_mesh_foam(value as f32);
-                        log(&format!("[fluid-lab] live mesh_foam = {value}"));
-                    }
-                    "render.water_absorb" => {
-                        self.gpu.set_water_absorb(value as f32);
-                        log(&format!("[fluid-lab] live water_absorb = {value}"));
-                    }
-                    "render.water_refract" => {
-                        self.gpu.set_water_refract(value as f32);
-                        log(&format!("[fluid-lab] live water_refract = {value}"));
-                    }
                     "classify.liquid_threshold" => {
                         self.gpu.set_liquid_threshold(value as u32);
                         log(&format!("[fluid-lab] live liquid_threshold = {value}"));
@@ -438,9 +635,48 @@ impl FluidApp {
                         self.gpu.set_speed_scale(value as f32);
                         log(&format!("[fluid-lab] live speed_scale = {value}"));
                     }
+                    "render.particle_slow_color" => {
+                        self.gpu.set_particle_slow_color(unpack_rgb(value as u32));
+                    }
+                    "render.particle_fast_color" => {
+                        self.gpu.set_particle_fast_color(unpack_rgb(value as u32));
+                    }
+                    "render.particle_alpha" => {
+                        self.gpu.set_particle_alpha(value as f32);
+                    }
+                    "render.particle_edge" => {
+                        self.gpu.set_particle_edge(value as f32);
+                    }
+                    "render.particle_shading" => {
+                        self.gpu.set_particle_shading(value as f32);
+                    }
                     "render.fps_target" => {
                         // FPS target is consumed by the JS rAF loop; no GPU dispatch needed.
                         log(&format!("[fluid-lab] live fps_target = {value}"));
+                    }
+                    "interaction.auto_roll_enabled" => {
+                        log(&format!(
+                            "[fluid-lab] live auto_roll_enabled = {}",
+                            value as u32 != 0
+                        ));
+                    }
+                    "interaction.auto_roll_strength" => {
+                        log(&format!("[fluid-lab] live auto_roll_strength = {value}"));
+                    }
+                    "interaction.auto_roll_cadence" => {
+                        log(&format!("[fluid-lab] live auto_roll_cadence = {value}"));
+                    }
+                    "interaction.wave_enabled" => {
+                        log(&format!(
+                            "[fluid-lab] live wave_enabled = {}",
+                            value as u32 != 0
+                        ));
+                    }
+                    "interaction.wave_strength" => {
+                        log(&format!("[fluid-lab] live wave_strength = {value}"));
+                    }
+                    "interaction.wave_frequency" => {
+                        log(&format!("[fluid-lab] live wave_frequency = {value}"));
                     }
                     "camera.rot_x" => {
                         self.camera.set_pitch(value as f32);
@@ -457,13 +693,6 @@ impl FluidApp {
                     "camera.distance" => {
                         self.camera.set_distance(value as f32);
                         log(&format!("[fluid-lab] live camera.distance = {value}"));
-                    }
-                    "render.sun_x" | "render.sun_y" | "render.sun_z" => {
-                        let sx = self.settings.sun_x();
-                        let sy = self.settings.sun_y();
-                        let sz = self.settings.sun_z();
-                        self.gpu.set_sun_dir(sx, sy, sz);
-                        log(&format!("[fluid-lab] live sun_dir = ({sx},{sy},{sz})"));
                     }
                     _ => {}
                 }
@@ -486,6 +715,12 @@ impl FluidApp {
         self.profiler.stats_json(
             self.settings.grid_res_x(),
             self.gpu.particle_count(),
+            self.settings.pressure_iterations(),
+            if self.pressure_enabled {
+                "particles+pressure"
+            } else {
+                "particles+NOpressure"
+            },
         )
     }
 
@@ -504,6 +739,31 @@ impl FluidApp {
         let world = glam::Vec3::new(0.0, mag, 0.0);
         let g = self.box_orient.inverse() * world; // local-frame gravity
         self.gpu.set_gravity_vec(g.x, g.y, g.z);
+    }
+
+    fn update_interactions(&mut self, dt_s: f32) {
+        let next_orient = self.interactions.update_auto_roll(
+            dt_s,
+            self.box_orient,
+            self.settings.auto_roll_enabled(),
+            self.settings.auto_roll_strength(),
+            self.settings.auto_roll_cadence(),
+        );
+        if let Some(next_orient) = next_orient {
+            if self.box_orient.dot(next_orient).abs() < 0.999_999 {
+                self.box_orient = next_orient;
+                self.push_gravity();
+            }
+        }
+
+        if let Some(impulse) = self.interactions.update_wave(
+            dt_s,
+            self.settings.wave_enabled(),
+            self.settings.wave_strength(),
+            self.settings.wave_frequency(),
+        ) {
+            self.gpu.apply_impulse(impulse);
+        }
     }
 
     /// Rotate the tank (and its gravity) by drag deltas (pixels). dx spins about the
@@ -538,7 +798,9 @@ impl FluidApp {
         let (right, up) = self.camera.billboard_basis();
         let scale = 0.004;
         self.box_pos += right * (dx * scale) - up * (dy * scale);
-        self.box_pos = self.box_pos.clamp(glam::Vec3::splat(-3.0), glam::Vec3::splat(3.0));
+        self.box_pos = self
+            .box_pos
+            .clamp(glam::Vec3::splat(-3.0), glam::Vec3::splat(3.0));
     }
 
     /// Slosh the tank: moves the tank in the screen plane but gives the water an
@@ -548,7 +810,8 @@ impl FluidApp {
         let (right, up) = self.camera.billboard_basis();
         let scale = 0.004;
         let d_world = right * (dx * scale) - up * (dy * scale);
-        self.box_pos = (self.box_pos + d_world).clamp(glam::Vec3::splat(-3.0), glam::Vec3::splat(3.0));
+        self.box_pos =
+            (self.box_pos + d_world).clamp(glam::Vec3::splat(-3.0), glam::Vec3::splat(3.0));
         // Water lags: local-frame impulse opposite to the box's motion.
         let gain = 35.0;
         let imp = self.box_orient.inverse() * (-d_world * gain);
@@ -556,3 +819,53 @@ impl FluidApp {
     }
 }
 
+fn interaction_seed_for_reset(reset_count: u32) -> u64 {
+    INTERACTION_SEED ^ ((reset_count as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+
+    #[test]
+    fn interaction_rng_is_repeatable() {
+        let mut a = InteractionRng::new(123);
+        let mut b = InteractionRng::new(123);
+
+        for _ in 0..16 {
+            assert_eq!(a.next_u32(), b.next_u32());
+        }
+    }
+
+    #[test]
+    fn auto_roll_stays_within_strength_bound() {
+        let mut state = InteractionState::new(42);
+        let mut q = glam::Quat::IDENTITY;
+        let strength = 0.4;
+
+        for _ in 0..64 {
+            q = state
+                .update_auto_roll(0.1, q, true, strength, 1.0)
+                .expect("enabled auto-roll should produce a pose");
+            assert!(glam::Quat::IDENTITY.angle_between(q) <= strength + 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn wave_scheduler_fires_immediate_then_by_frequency() {
+        let mut state = InteractionState::new(7);
+
+        assert_eq!(
+            state.update_wave(0.0, true, 0.5, 2.0),
+            Some([0.5, 0.0, 0.0])
+        );
+        assert_eq!(state.update_wave(0.1, true, 0.5, 2.0), None);
+        assert_eq!(
+            state.update_wave(0.4, true, 0.5, 2.0),
+            Some([-0.5, 0.0, -0.0])
+        );
+
+        state.reset(7);
+        assert_eq!(state.update_wave(0.0, false, 0.5, 2.0), None);
+    }
+}

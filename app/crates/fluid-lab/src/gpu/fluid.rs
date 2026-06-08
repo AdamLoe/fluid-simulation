@@ -23,21 +23,22 @@ use crate::settings::Registry;
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Params {
-    dims:   [u32; 4], // nx (legacy "n"), particle_count, pressure_iters, _
-    geom:   [f32; 4], // h, inv_h, dt, fixed_scale
-    phys:   [f32; 4], // gravity_y (legacy), rho, flip_blend, wall_friction
+    dims: [u32; 4], // nx (legacy "n"), particle_count, pressure_iters, _
+    geom: [f32; 4], // h, inv_h, dt, fixed_scale
+    phys: [f32; 4], // gravity_y (legacy), rho, flip_blend, wall_friction
     origin: [f32; 4],
-    grav:   [f32; 4], // gx, gy, gz, _ (3-axis gravity)
-    spc:    [f32; 4], // rest_per_cell, volume_stiffness, drift_clamp, _
-    cls:    [f32; 4], // liquid_threshold, surface_dilation, _, _
+    grav: [f32; 4], // gx, gy, gz, _ (3-axis gravity)
+    spc: [f32; 4],  // rest_per_cell, volume_stiffness, drift_clamp, _
+    cls: [f32; 4],  // liquid_threshold, surface_dilation, _, _
     /// Per-axis cell counts for the rectangular tank: [nx, ny, nz, 0]. Appended at
     /// the END so shaders that don't decompose cell indices can keep their existing
     /// (prefix) Params mirror untouched; only the decomposing shaders mirror this.
-    gdim:   [u32; 4],
+    gdim: [u32; 4],
 }
 
 const FIXED_SCALE: f32 = 65536.0; // 2^16 (see docs/p2g-strategy-note.md)
-const WG: u32 = 64;
+pub(crate) const PARTICLE_WG: u32 = 64;
+const WG: u32 = PARTICLE_WG;
 
 pub struct GpuFluid {
     particle_count: u32,
@@ -119,7 +120,7 @@ pub struct GpuFluid {
     gravity_bg: [wgpu::BindGroup; 3],
     enforce_bg: [wgpu::BindGroup; 3],
     divergence_bg: wgpu::BindGroup,
-    rbgs_bg: wgpu::BindGroup,   // kept for reference, no longer dispatched
+    rbgs_bg: wgpu::BindGroup, // kept for reference, no longer dispatched
     gradient_bg: [wgpu::BindGroup; 3], // read pressure_a
     g2p_bg: wgpu::BindGroup,
     // CG bind groups
@@ -141,7 +142,12 @@ pub struct GpuFluid {
 }
 
 impl GpuFluid {
-    pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue, settings: &Registry, scene: &SceneConfig) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        settings: &Registry,
+        scene: &SceneConfig,
+    ) -> Self {
         // Uniform cell size; the tank is made rectangular by per-axis cell counts.
         let nx = settings.grid_res_x();
         let ny = settings.grid_res_y();
@@ -171,14 +177,29 @@ impl GpuFluid {
         let pressure_iters = settings.pressure_iterations().max(1);
 
         let params = Params {
-            dims:   [nx, particle_count, pressure_iters, 0],
-            geom:   [h, 1.0 / h, settings.fixed_dt(), FIXED_SCALE],
-            phys:   [settings.gravity(), 1000.0, settings.flip_blend(), settings.wall_friction()],
+            dims: [nx, particle_count, pressure_iters, 0],
+            geom: [h, 1.0 / h, settings.fixed_dt(), FIXED_SCALE],
+            phys: [
+                settings.gravity(),
+                1000.0,
+                settings.flip_blend(),
+                settings.wall_friction(),
+            ],
             origin: [origin[0], origin[1], origin[2], 0.0],
-            grav:   [0.0, settings.gravity(), 0.0, 0.0],
-            spc:    [settings.rest_density(), settings.volume_stiffness(), settings.drift_clamp(), 0.0],
-            cls:    [settings.liquid_threshold() as f32, settings.surface_dilation() as f32, settings.cfl(), 0.0],
-            gdim:   [nx, ny, nz, 0],
+            grav: [0.0, settings.gravity(), 0.0, 0.0],
+            spc: [
+                settings.rest_density(),
+                settings.volume_stiffness(),
+                settings.drift_clamp(),
+                0.0,
+            ],
+            cls: [
+                settings.liquid_threshold() as f32,
+                settings.surface_dilation() as f32,
+                settings.cfl(),
+                0.0,
+            ],
+            gdim: [nx, ny, nz, 0],
         };
         let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("fluid params"),
@@ -196,7 +217,9 @@ impl GpuFluid {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size: (elems as u64) * 4,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             })
         };
@@ -238,21 +261,51 @@ impl GpuFluid {
             + 1                                           // stats
             + (cell_count as u64) * 2                     // cg_d, cg_q
             + (red_wgs as u64)                            // cg_partials
-            + 4;                                          // cg_scalars
+            + 4; // cg_scalars
         let buffer_bytes: u64 = storage_elems * 4 + (particle_count as u64) * 32;
 
         // --- pipelines ---
-        let clear_pl = compute(device, "clear", include_str!("shaders/clear.wgsl"), "main", &[]);
-        let mark_pl = compute(device, "mark", include_str!("shaders/mark.wgsl"), "main", &[]);
-        let classify_pl = compute(device, "classify", include_str!("shaders/classify.wgsl"), "main", &[]);
+        let clear_pl = compute(
+            device,
+            "clear",
+            include_str!("shaders/clear.wgsl"),
+            "main",
+            &[],
+        );
+        let mark_pl = compute(
+            device,
+            "mark",
+            include_str!("shaders/mark.wgsl"),
+            "main",
+            &[],
+        );
+        let classify_pl = compute(
+            device,
+            "classify",
+            include_str!("shaders/classify.wgsl"),
+            "main",
+            &[],
+        );
         let scatter_src = include_str!("shaders/scatter.wgsl");
         let scatter_pl = [
             compute(device, "scatter_u", scatter_src, "main", &[("AXIS", 0.0)]),
             compute(device, "scatter_v", scatter_src, "main", &[("AXIS", 1.0)]),
             compute(device, "scatter_w", scatter_src, "main", &[("AXIS", 2.0)]),
         ];
-        let normalize_pl = compute(device, "normalize", include_str!("shaders/normalize.wgsl"), "main", &[]);
-        let save_vel_pl = compute(device, "save_vel", include_str!("shaders/save_vel.wgsl"), "main", &[]);
+        let normalize_pl = compute(
+            device,
+            "normalize",
+            include_str!("shaders/normalize.wgsl"),
+            "main",
+            &[],
+        );
+        let save_vel_pl = compute(
+            device,
+            "save_vel",
+            include_str!("shaders/save_vel.wgsl"),
+            "main",
+            &[],
+        );
         let forces_src = include_str!("shaders/forces.wgsl");
         let gravity_pl = [
             compute(device, "gravity_u", forces_src, "main", &[("AXIS", 0.0)]),
@@ -265,7 +318,13 @@ impl GpuFluid {
             compute(device, "enforce_v", bnd_src, "main", &[("AXIS", 1.0)]),
             compute(device, "enforce_w", bnd_src, "main", &[("AXIS", 2.0)]),
         ];
-        let divergence_pl = compute(device, "divergence", include_str!("shaders/divergence.wgsl"), "main", &[]);
+        let divergence_pl = compute(
+            device,
+            "divergence",
+            include_str!("shaders/divergence.wgsl"),
+            "main",
+            &[],
+        );
         // RBGS red/black share one EXPLICIT layout so the single `rbgs_bg` bind
         // group is compatible with BOTH pipelines. (Two pipelines with auto-layout
         // get distinct layout objects → a bind group built from one is rejected by
@@ -313,8 +372,22 @@ impl GpuFluid {
             bind_group_layouts: &[Some(&rbgs_bgl)],
             immediate_size: 0,
         });
-        let rbgs_red_pl   = compute_with_layout(device, "rbgs_red",   pressure_src, "main", &[("PHASE", 0.0)], &rbgs_pll);
-        let rbgs_black_pl = compute_with_layout(device, "rbgs_black", pressure_src, "main", &[("PHASE", 1.0)], &rbgs_pll);
+        let rbgs_red_pl = compute_with_layout(
+            device,
+            "rbgs_red",
+            pressure_src,
+            "main",
+            &[("PHASE", 0.0)],
+            &rbgs_pll,
+        );
+        let rbgs_black_pl = compute_with_layout(
+            device,
+            "rbgs_black",
+            pressure_src,
+            "main",
+            &[("PHASE", 1.0)],
+            &rbgs_pll,
+        );
         let grad_src = include_str!("shaders/gradient.wgsl");
         let gradient_pl = [
             compute(device, "gradient_u", grad_src, "main", &[("AXIS", 0.0)]),
@@ -324,21 +397,84 @@ impl GpuFluid {
         let g2p_pl = compute(device, "g2p", include_str!("shaders/g2p.wgsl"), "main", &[]);
 
         // --- CG pipelines ---
-        let cg_init_pl = compute(device, "cg_init", include_str!("shaders/cg_init.wgsl"), "main", &[]);
-        let cg_spmv_pl = compute(device, "cg_spmv", include_str!("shaders/cg_spmv.wgsl"), "main", &[]);
-        let cg_reduce_pl = compute(device, "cg_reduce", include_str!("shaders/cg_reduce.wgsl"), "main", &[]);
-        let cg_reduce_final_pl = compute(device, "cg_reduce_final", include_str!("shaders/cg_reduce_final.wgsl"), "main", &[]);
-        let cg_alpha_pl = compute(device, "cg_alpha", include_str!("shaders/cg_alpha.wgsl"), "main", &[]);
-        let cg_update_pl = compute(device, "cg_update", include_str!("shaders/cg_update.wgsl"), "main", &[]);
-        let cg_beta_pl = compute(device, "cg_beta", include_str!("shaders/cg_beta.wgsl"), "main", &[]);
-        let cg_dir_pl = compute(device, "cg_dir", include_str!("shaders/cg_dir.wgsl"), "main", &[]);
-        let cg_set_rsold_pl = compute(device, "cg_set_rsold", include_str!("shaders/cg_set_rsold.wgsl"), "main", &[]);
+        let cg_init_pl = compute(
+            device,
+            "cg_init",
+            include_str!("shaders/cg_init.wgsl"),
+            "main",
+            &[],
+        );
+        let cg_spmv_pl = compute(
+            device,
+            "cg_spmv",
+            include_str!("shaders/cg_spmv.wgsl"),
+            "main",
+            &[],
+        );
+        let cg_reduce_pl = compute(
+            device,
+            "cg_reduce",
+            include_str!("shaders/cg_reduce.wgsl"),
+            "main",
+            &[],
+        );
+        let cg_reduce_final_pl = compute(
+            device,
+            "cg_reduce_final",
+            include_str!("shaders/cg_reduce_final.wgsl"),
+            "main",
+            &[],
+        );
+        let cg_alpha_pl = compute(
+            device,
+            "cg_alpha",
+            include_str!("shaders/cg_alpha.wgsl"),
+            "main",
+            &[],
+        );
+        let cg_update_pl = compute(
+            device,
+            "cg_update",
+            include_str!("shaders/cg_update.wgsl"),
+            "main",
+            &[],
+        );
+        let cg_beta_pl = compute(
+            device,
+            "cg_beta",
+            include_str!("shaders/cg_beta.wgsl"),
+            "main",
+            &[],
+        );
+        let cg_dir_pl = compute(
+            device,
+            "cg_dir",
+            include_str!("shaders/cg_dir.wgsl"),
+            "main",
+            &[],
+        );
+        let cg_set_rsold_pl = compute(
+            device,
+            "cg_set_rsold",
+            include_str!("shaders/cg_set_rsold.wgsl"),
+            "main",
+            &[],
+        );
 
         // --- impulse pipeline ---
-        let impulse_pl = compute(device, "impulse", include_str!("shaders/impulse.wgsl"), "main", &[]);
+        let impulse_pl = compute(
+            device,
+            "impulse",
+            include_str!("shaders/impulse.wgsl"),
+            "main",
+            &[],
+        );
 
         // --- bind groups ---
-        let bg = |label: &str, pl: &wgpu::ComputePipeline, entries: &[&wgpu::Buffer]| -> wgpu::BindGroup {
+        let bg = |label: &str,
+                  pl: &wgpu::ComputePipeline,
+                  entries: &[&wgpu::Buffer]|
+         -> wgpu::BindGroup {
             let e: Vec<wgpu::BindGroupEntry> = entries
                 .iter()
                 .enumerate()
@@ -355,11 +491,15 @@ impl GpuFluid {
         };
 
         let clear_targets: [(&wgpu::Buffer, u32); 10] = [
-            (&u_num, u_count), (&u_den, u_count),
-            (&v_num, v_count), (&v_den, v_count),
-            (&w_num, w_count), (&w_den, w_count),
+            (&u_num, u_count),
+            (&u_den, u_count),
+            (&v_num, v_count),
+            (&v_den, v_count),
+            (&w_num, w_count),
+            (&w_den, w_count),
             (&occupancy, cell_count),
-            (&pressure_a, cell_count), (&pressure_b, cell_count),
+            (&pressure_a, cell_count),
+            (&pressure_b, cell_count),
             (&stats, 1),
         ];
         let clear_bg: Vec<(wgpu::BindGroup, u32)> = clear_targets
@@ -368,16 +508,44 @@ impl GpuFluid {
             .collect();
 
         let mark_bg = bg("mark", &mark_pl, &[&params_buf, &particles, &occupancy]);
-        let classify_bg = bg("classify", &classify_pl, &[&params_buf, &occupancy, &cell_type, &stats]);
+        let classify_bg = bg(
+            "classify",
+            &classify_pl,
+            &[&params_buf, &occupancy, &cell_type, &stats],
+        );
         let scatter_bg = [
-            bg("scatter_u", &scatter_pl[0], &[&params_buf, &particles, &u_num, &u_den]),
-            bg("scatter_v", &scatter_pl[1], &[&params_buf, &particles, &v_num, &v_den]),
-            bg("scatter_w", &scatter_pl[2], &[&params_buf, &particles, &w_num, &w_den]),
+            bg(
+                "scatter_u",
+                &scatter_pl[0],
+                &[&params_buf, &particles, &u_num, &u_den],
+            ),
+            bg(
+                "scatter_v",
+                &scatter_pl[1],
+                &[&params_buf, &particles, &v_num, &v_den],
+            ),
+            bg(
+                "scatter_w",
+                &scatter_pl[2],
+                &[&params_buf, &particles, &w_num, &w_den],
+            ),
         ];
         let normalize_bg = [
-            bg("norm_u", &normalize_pl, &[&params_buf, &u_num, &u_den, &u_vel]),
-            bg("norm_v", &normalize_pl, &[&params_buf, &v_num, &v_den, &v_vel]),
-            bg("norm_w", &normalize_pl, &[&params_buf, &w_num, &w_den, &w_vel]),
+            bg(
+                "norm_u",
+                &normalize_pl,
+                &[&params_buf, &u_num, &u_den, &u_vel],
+            ),
+            bg(
+                "norm_v",
+                &normalize_pl,
+                &[&params_buf, &v_num, &v_den, &v_vel],
+            ),
+            bg(
+                "norm_w",
+                &normalize_pl,
+                &[&params_buf, &w_num, &w_den, &w_vel],
+            ),
         ];
         let save_vel_bg = [
             bg("save_u", &save_vel_pl, &[&params_buf, &u_vel, &u_saved]),
@@ -385,54 +553,144 @@ impl GpuFluid {
             bg("save_w", &save_vel_pl, &[&params_buf, &w_vel, &w_saved]),
         ];
         let gravity_bg = [
-            bg("gravity_u", &gravity_pl[0], &[&params_buf, &u_vel, &cell_type]),
-            bg("gravity_v", &gravity_pl[1], &[&params_buf, &v_vel, &cell_type]),
-            bg("gravity_w", &gravity_pl[2], &[&params_buf, &w_vel, &cell_type]),
+            bg(
+                "gravity_u",
+                &gravity_pl[0],
+                &[&params_buf, &u_vel, &cell_type],
+            ),
+            bg(
+                "gravity_v",
+                &gravity_pl[1],
+                &[&params_buf, &v_vel, &cell_type],
+            ),
+            bg(
+                "gravity_w",
+                &gravity_pl[2],
+                &[&params_buf, &w_vel, &cell_type],
+            ),
         ];
         let enforce_bg = [
-            bg("enforce_u", &enforce_pl[0], &[&params_buf, &cell_type, &u_vel]),
-            bg("enforce_v", &enforce_pl[1], &[&params_buf, &cell_type, &v_vel]),
-            bg("enforce_w", &enforce_pl[2], &[&params_buf, &cell_type, &w_vel]),
+            bg(
+                "enforce_u",
+                &enforce_pl[0],
+                &[&params_buf, &cell_type, &u_vel],
+            ),
+            bg(
+                "enforce_v",
+                &enforce_pl[1],
+                &[&params_buf, &cell_type, &v_vel],
+            ),
+            bg(
+                "enforce_w",
+                &enforce_pl[2],
+                &[&params_buf, &cell_type, &w_vel],
+            ),
         ];
         let divergence_bg = bg(
             "divergence",
             &divergence_pl,
-            &[&params_buf, &u_vel, &v_vel, &w_vel, &cell_type, &divergence, &occupancy],
+            &[
+                &params_buf,
+                &u_vel,
+                &v_vel,
+                &w_vel,
+                &cell_type,
+                &divergence,
+                &occupancy,
+            ],
         );
         let rbgs_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rbgs"),
             layout: &rbgs_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: divergence.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: cell_type.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: pressure_a.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: divergence.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: cell_type.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: pressure_a.as_entire_binding(),
+                },
             ],
         });
         let gradient_bg = [
-            bg("grad_u", &gradient_pl[0], &[&params_buf, &pressure_a, &cell_type, &u_vel]),
-            bg("grad_v", &gradient_pl[1], &[&params_buf, &pressure_a, &cell_type, &v_vel]),
-            bg("grad_w", &gradient_pl[2], &[&params_buf, &pressure_a, &cell_type, &w_vel]),
+            bg(
+                "grad_u",
+                &gradient_pl[0],
+                &[&params_buf, &pressure_a, &cell_type, &u_vel],
+            ),
+            bg(
+                "grad_v",
+                &gradient_pl[1],
+                &[&params_buf, &pressure_a, &cell_type, &v_vel],
+            ),
+            bg(
+                "grad_w",
+                &gradient_pl[2],
+                &[&params_buf, &pressure_a, &cell_type, &w_vel],
+            ),
         ];
         let g2p_bg = bg(
             "g2p",
             &g2p_pl,
-            &[&params_buf, &particles, &u_vel, &v_vel, &w_vel, &u_saved, &v_saved, &w_saved],
+            &[
+                &params_buf,
+                &particles,
+                &u_vel,
+                &v_vel,
+                &w_vel,
+                &u_saved,
+                &v_saved,
+                &w_saved,
+            ],
         );
 
         // --- CG bind groups ---
-        let cg_init_bg = bg("cg_init", &cg_init_pl,
-            &[&params_buf, &divergence, &cell_type, &pressure_a, &pressure_b, &cg_d]);
-        let cg_spmv_bg = bg("cg_spmv", &cg_spmv_pl,
-            &[&params_buf, &cell_type, &cg_d, &cg_q]);
+        let cg_init_bg = bg(
+            "cg_init",
+            &cg_init_pl,
+            &[
+                &params_buf,
+                &divergence,
+                &cell_type,
+                &pressure_a,
+                &pressure_b,
+                &cg_d,
+            ],
+        );
+        let cg_spmv_bg = bg(
+            "cg_spmv",
+            &cg_spmv_pl,
+            &[&params_buf, &cell_type, &cg_d, &cg_q],
+        );
         // cg_reduce is used for two different vector pairs; create both bind groups from the SAME pipeline layout
         let cg_reduce_rr_bg = {
             let layout = cg_reduce_pl.get_bind_group_layout(0);
             let entries = [
-                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: pressure_b.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: pressure_b.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: cg_partials.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: pressure_b.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: pressure_b.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: cg_partials.as_entire_binding(),
+                },
             ];
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("cg_reduce_rr"),
@@ -443,10 +701,22 @@ impl GpuFluid {
         let cg_reduce_dq_bg = {
             let layout = cg_reduce_pl.get_bind_group_layout(0);
             let entries = [
-                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: cg_d.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: cg_q.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: cg_partials.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: cg_d.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: cg_q.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: cg_partials.as_entire_binding(),
+                },
             ];
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("cg_reduce_dq"),
@@ -454,14 +724,30 @@ impl GpuFluid {
                 entries: &entries,
             })
         };
-        let cg_reduce_final_bg = bg("cg_reduce_final", &cg_reduce_final_pl,
-            &[&params_buf, &cg_partials, &cg_scalars]);
+        let cg_reduce_final_bg = bg(
+            "cg_reduce_final",
+            &cg_reduce_final_pl,
+            &[&params_buf, &cg_partials, &cg_scalars],
+        );
         let cg_alpha_bg = bg("cg_alpha", &cg_alpha_pl, &[&cg_scalars]);
-        let cg_update_bg = bg("cg_update", &cg_update_pl,
-            &[&params_buf, &cg_scalars, &cg_d, &cg_q, &pressure_a, &pressure_b]);
+        let cg_update_bg = bg(
+            "cg_update",
+            &cg_update_pl,
+            &[
+                &params_buf,
+                &cg_scalars,
+                &cg_d,
+                &cg_q,
+                &pressure_a,
+                &pressure_b,
+            ],
+        );
         let cg_beta_bg = bg("cg_beta", &cg_beta_pl, &[&cg_scalars]);
-        let cg_dir_bg = bg("cg_dir", &cg_dir_pl,
-            &[&params_buf, &cg_scalars, &pressure_b, &cg_d]);
+        let cg_dir_bg = bg(
+            "cg_dir",
+            &cg_dir_pl,
+            &[&params_buf, &cg_scalars, &pressure_b, &cg_d],
+        );
         let cg_set_rsold_bg = bg("cg_set_rsold", &cg_set_rsold_pl, &[&cg_scalars]);
 
         // --- impulse buffer + bind group ---
@@ -471,7 +757,11 @@ impl GpuFluid {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let impulse_bg = bg("impulse", &impulse_pl, &[&params_buf, &impulse_buf, &particles]);
+        let impulse_bg = bg(
+            "impulse",
+            &impulse_pl,
+            &[&params_buf, &impulse_buf, &particles],
+        );
 
         log(&format!(
             "[fluid-lab][gpu] fluid init: dims={nx}x{ny}x{nz} h={h:.4} particles={particle_count} cells={cell_count} press_iters={pressure_iters}"
@@ -490,23 +780,77 @@ impl GpuFluid {
             buffer_bytes,
             particles,
             initial,
-            u_num, u_den, v_num, v_den, w_num, w_den,
-            u_vel, v_vel, w_vel,
-            u_saved, v_saved, w_saved,
-            pressure_a, pressure_b,
-            divergence, occupancy, cell_type, stats,
-            cg_d, cg_q, cg_partials, cg_scalars,
+            u_num,
+            u_den,
+            v_num,
+            v_den,
+            w_num,
+            w_den,
+            u_vel,
+            v_vel,
+            w_vel,
+            u_saved,
+            v_saved,
+            w_saved,
+            pressure_a,
+            pressure_b,
+            divergence,
+            occupancy,
+            cell_type,
+            stats,
+            cg_d,
+            cg_q,
+            cg_partials,
+            cg_scalars,
             params,
             params_buf,
-            clear_pl, mark_pl, classify_pl, scatter_pl, normalize_pl, save_vel_pl,
-            gravity_pl, enforce_pl, divergence_pl, rbgs_red_pl, rbgs_black_pl, gradient_pl, g2p_pl,
-            cg_init_pl, cg_spmv_pl, cg_reduce_pl, cg_reduce_final_pl,
-            cg_alpha_pl, cg_update_pl, cg_beta_pl, cg_dir_pl, cg_set_rsold_pl,
-            clear_bg, mark_bg, classify_bg, scatter_bg, normalize_bg, save_vel_bg, gravity_bg,
-            enforce_bg, divergence_bg, rbgs_bg, gradient_bg, g2p_bg,
-            cg_init_bg, cg_spmv_bg, cg_reduce_rr_bg, cg_reduce_dq_bg, cg_reduce_final_bg,
-            cg_alpha_bg, cg_update_bg, cg_beta_bg, cg_dir_bg, cg_set_rsold_bg,
-            impulse_buf, impulse_pl, impulse_bg,
+            clear_pl,
+            mark_pl,
+            classify_pl,
+            scatter_pl,
+            normalize_pl,
+            save_vel_pl,
+            gravity_pl,
+            enforce_pl,
+            divergence_pl,
+            rbgs_red_pl,
+            rbgs_black_pl,
+            gradient_pl,
+            g2p_pl,
+            cg_init_pl,
+            cg_spmv_pl,
+            cg_reduce_pl,
+            cg_reduce_final_pl,
+            cg_alpha_pl,
+            cg_update_pl,
+            cg_beta_pl,
+            cg_dir_pl,
+            cg_set_rsold_pl,
+            clear_bg,
+            mark_bg,
+            classify_bg,
+            scatter_bg,
+            normalize_bg,
+            save_vel_bg,
+            gravity_bg,
+            enforce_bg,
+            divergence_bg,
+            rbgs_bg,
+            gradient_bg,
+            g2p_bg,
+            cg_init_bg,
+            cg_spmv_bg,
+            cg_reduce_rr_bg,
+            cg_reduce_dq_bg,
+            cg_reduce_final_bg,
+            cg_alpha_bg,
+            cg_update_bg,
+            cg_beta_bg,
+            cg_dir_bg,
+            cg_set_rsold_bg,
+            impulse_buf,
+            impulse_pl,
+            impulse_bg,
         }
     }
 
@@ -524,9 +868,6 @@ impl GpuFluid {
     }
     pub fn pressure_buffer(&self) -> &wgpu::Buffer {
         &self.pressure_a
-    }
-    pub fn occupancy_buffer(&self) -> &wgpu::Buffer {
-        &self.occupancy
     }
     pub fn params_buffer(&self) -> &wgpu::Buffer {
         &self.params_buf
@@ -649,8 +990,14 @@ impl GpuFluid {
 
     /// Apply a uniform velocity impulse to all particles (for the slosh mode).
     pub fn apply_impulse(&self, device: &wgpu::Device, queue: &wgpu::Queue, dv: [f32; 3]) {
-        queue.write_buffer(&self.impulse_buf, 0, bytemuck::cast_slice(&[dv[0], dv[1], dv[2], 0.0f32]));
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("impulse") });
+        queue.write_buffer(
+            &self.impulse_buf,
+            0,
+            bytemuck::cast_slice(&[dv[0], dv[1], dv[2], 0.0f32]),
+        );
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("impulse"),
+        });
         {
             let mut p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("impulse"),
@@ -905,19 +1252,73 @@ fn compute_inner(
     })
 }
 
+/// Exact particle count the deterministic lattice generator will produce for a
+/// scene, without allocating the particle vector.
+pub(crate) fn estimated_particle_count(settings: &Registry, scene: &SceneConfig) -> u32 {
+    let extent = [
+        settings.grid_res_x() as f32 * crate::sim::H,
+        settings.grid_res_y() as f32 * crate::sim::H,
+        settings.grid_res_z() as f32 * crate::sim::H,
+    ];
+    let origin = [-extent[0] / 2.0, -extent[1] / 2.0, -extent[2] / 2.0];
+    let blocks = &scene.initial_liquid.blocks;
+    let mut volumes = Vec::with_capacity(blocks.len());
+    let mut total_vol = 0.0f32;
+    for b in blocks {
+        let wmin = [
+            origin[0] + b.min.x * extent[0],
+            origin[1] + b.min.y * extent[1],
+            origin[2] + b.min.z * extent[2],
+        ];
+        let wmax = [
+            origin[0] + b.max.x * extent[0],
+            origin[1] + b.max.y * extent[1],
+            origin[2] + b.max.z * extent[2],
+        ];
+        let ext = [wmax[0] - wmin[0], wmax[1] - wmin[1], wmax[2] - wmin[2]];
+        let vol = (ext[0] * ext[1] * ext[2]).max(1e-6);
+        total_vol += vol;
+        volumes.push((ext, vol));
+    }
+    let total_vol = total_vol.max(1e-6);
+    let total_target = scene.particle_count.max(1) as f32;
+    volumes
+        .into_iter()
+        .map(|(ext, vol)| {
+            let target = (total_target * (vol / total_vol)).max(1.0);
+            let spacing = (vol / target).cbrt().max(1e-4);
+            let x = ((ext[0] / spacing).floor() as u32).max(1);
+            let y = ((ext[1] / spacing).floor() as u32).max(1);
+            let z = ((ext[2] / spacing).floor() as u32).max(1);
+            x.saturating_mul(y).saturating_mul(z)
+        })
+        .sum()
+}
+
 /// Deterministic initial particles from the scene config (lattice with seeded
 /// jitter, clamped inside the walls). Each scene preset supplies one or more
 /// liquid blocks; the requested particle count is distributed across them in
 /// proportion to volume so denser/larger blocks get proportionally more
 /// particles. See `simulation_contract.md`.
-fn generate_particles(scene: &SceneConfig, h: f32, origin: [f32; 3], extent: [f32; 3]) -> Vec<[f32; 4]> {
+fn generate_particles(
+    scene: &SceneConfig,
+    h: f32,
+    origin: [f32; 3],
+    extent: [f32; 3],
+) -> Vec<[f32; 4]> {
     // Normalized [0,1]^3 liquid-block space -> per-axis world span [origin, origin+extent].
-    let to_world = |t: [f32; 3]| [
-        origin[0] + t[0] * extent[0],
-        origin[1] + t[1] * extent[1],
-        origin[2] + t[2] * extent[2],
+    let to_world = |t: [f32; 3]| {
+        [
+            origin[0] + t[0] * extent[0],
+            origin[1] + t[1] * extent[1],
+            origin[2] + t[2] * extent[2],
+        ]
+    };
+    let lo = [
+        origin[0] + h * 1.05,
+        origin[1] + h * 1.05,
+        origin[2] + h * 1.05,
     ];
-    let lo = [origin[0] + h * 1.05, origin[1] + h * 1.05, origin[2] + h * 1.05];
     let hi = [
         origin[0] + extent[0] - h * 1.05,
         origin[1] + extent[1] - h * 1.05,

@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-07
 okay_to_delete: false
 long_lived:    true
 ---
@@ -17,6 +17,7 @@ The app shell owns the WASM/JS boundary, the per-frame dispatch loop, the fixed-
 - **Fixed-timestep accumulator** — `app/crates/fluid-lab/src/timestep.rs → TimestepController`. Pure Rust, unit-tested natively.
 - **Orbit camera** — `app/crates/fluid-lab/src/camera.rs → OrbitCamera`. Quaternion-based yaw/pitch; no up-vector clamp.
 - **Tank transform** — `box_orient: glam::Quat` + `box_pos: glam::Vec3` fields on `FluidApp`; mutated by the pointer-mode methods.
+- **Interaction scheduler** — `app/crates/fluid-lab/src/lib.rs → InteractionState`; deterministic app-side auto-roll and wave-maker timing owned by `FluidApp`, not by JavaScript.
 - **JS↔WASM bridge** — `app/crates/fluid-lab/src/lib.rs → FluidApp::config_json`, `FluidApp::set_setting`, `FluidApp::stats_json`.
 - **Scene config** — `app/crates/fluid-lab/src/scene/mod.rs → SceneConfig`, `InitialLiquidConfig`, `LiquidBlock`, `ScenePreset`.
 - **Run state** — `app/crates/fluid-lab/src/lib.rs → RunState` (Running / Paused); `pending_steps` counter for single-step-while-paused.
@@ -26,9 +27,10 @@ The app shell owns the WASM/JS boundary, the per-frame dispatch loop, the fixed-
 ```
 rAF delta_ms (TS)
   └─ FluidApp::frame
+       ├─ update_interactions(clamped_s) [Running only]
        ├─ timestep.steps_for_frame(clamped_s) → n
        ├─ gpu.step(n)            [sim substeps]
-       ├─ gpu.render(view_proj, billboard_basis, eye_local)
+       ├─ gpu.render(view_proj, billboard_basis)
        └─ profiler.end_frame_and_maybe_log
 ```
 
@@ -44,7 +46,7 @@ TypeScript owns `requestAnimationFrame`; Rust owns all scheduling. TS never driv
 
 Each call records a `TimestepFrameStats` snapshot (`substeps`, `accumulated_before`, `accumulated_after`, `dropped_this_frame`). Accessors: `last_stats()` returns the per-frame snapshot; `total_dropped()` (and legacy `dropped_time()`) returns the cumulative total. `FluidApp::frame` pushes both into the profiler via `set_timestep_stats(...)`.
 
-When the sim is paused, `FluidApp::frame` calls `timestep.reset()` each frame so no stale time bursts on resume. `reset()` zeroes both the accumulator and `last` (so paused frames report 0 substeps / 0 dropped; cumulative `dropped_time` is preserved). On hard reset (`FluidApp::reset`) the controller is fully reconstructed from the registry.
+When the sim is paused, `FluidApp::frame` calls `timestep.reset()` each frame so no stale time bursts on resume. Scheduled interaction time does not advance while paused; single-step while paused advances the sim tick but does not run auto-roll or wave-maker scheduling. `reset()` zeroes both the accumulator and `last` (so paused frames report 0 substeps / 0 dropped; cumulative `dropped_time` is preserved). On hard reset (`FluidApp::reset`) the controller is fully reconstructed from the registry.
 
 ## Camera and pointer modes
 
@@ -66,6 +68,17 @@ The five wasm-exported pointer modes on `FluidApp` (`move_box` is exported but t
 
 `SceneConfig.grid_resolution` is a `UVec3` built from the `grid.res_x/res_y/res_z` registry settings (all Reset-class), feeding the per-axis cell counts.
 
+## Scheduled interactions
+
+`FluidApp::update_interactions` owns automatic tank and wave motion. JavaScript only writes registry values through `set_setting`; it does not drive schedules.
+
+`InteractionState` contains a lightweight deterministic PRNG and two schedules:
+
+- Auto-roll chooses bounded random target orientations, smoothly interpolates `box_orient`, and calls `push_gravity` after each pose change. The camera is untouched.
+- Wave maker emits periodic local horizontal velocity impulses through the existing GPU impulse path. The tank transform is unchanged by wave impulses.
+
+The `interaction.auto_roll_*` and `interaction.wave_*` settings are Live-class. Defaults keep both enable toggles off; changing strength/cadence/frequency updates the next scheduled behavior without a rebuild. Reset restores the tank to upright/centered, rebuilds the fluid, and resets the deterministic schedules, but it does not change the Live setting values.
+
 ## Rectangular tank
 
 The tank is a rectangular box, not a fixed cube. The cell size is a single **uniform** scalar `h = sim::H = 2.0/64.0` (`app/crates/fluid-lab/src/sim/mod.rs → H`); the box becomes rectangular only by varying the per-axis cell counts `nx/ny/nz` (the `grid.res_x/y/z` settings) independently. The domain is centered: per-axis `extent = n_axis * h`, `origin = [-nx*h/2, -ny*h/2, -nz*h/2]`. An all-64 grid reproduces the exact original `[-1,1]^3` cube. The GPU side owns the world placement (`app/crates/fluid-lab/src/gpu/fluid.rs → GpuFluid::new`, `tank_bounds`); `simulation.md` owns the grid-indexing contract.
@@ -78,13 +91,15 @@ Particle placement within each block uses a deterministic seeded jitter (`app/cr
 
 **Reset restores the full pose.** `FluidApp::reset` sets `box_orient = Quat::IDENTITY`, `box_pos = Vec3::ZERO`, reconstructs `OrbitCamera::new()` then restores its pitch/yaw/roll **and distance** from the `camera.*` settings, and finally calls `push_gravity`. A Reset always returns the tank to upright, centered, untilted, with the settings-defined camera pose — gravity points straight down again.
 
+**Auto-roll is bounded tank motion, not camera spin.** The app generates target tank poses in Rust and clamps them by `interaction.auto_roll_strength`. It never changes `OrbitCamera`.
+
+**Wave maker is an impulse tool.** It applies local X/Z particle velocity kicks via the existing impulse dispatch. It does not translate the tank, move a paddle, or create/delete particles.
+
 **Accumulator must be zeroed on pause.** The frame loop calls `timestep.reset()` every paused frame. Forgetting this would let the accumulator silently fill during a pause and burst multiple substeps on resume.
 
 **`set_setting` has two return semantics.** Returns `true` only for `Live`-class settings (change applied to GPU immediately). Returns `false` for `Reset`- and `Reload`-class settings, meaning the registry was updated but the caller must prompt the user to reset/reload. The web panel uses this return value to show the hint badge.
 
 **`box_pos` is clamped.** `move_box` and `slosh_box` both clamp `box_pos` to `[-3, 3]^3` so the tank cannot escape the camera frustum entirely.
-
-**The mesh shader needs the camera eye in tank-local space.** `FluidApp::frame` computes `eye_local = box_orient⁻¹·(camera.eye − box_pos)` and passes it to `gpu.render`; the MC vertices live in tank-local space, so a world-space eye would make view-dependent shading flash as the tank moves. `OrbitCamera::eye` is the world eye. (`simulation.md`/`rendering.md` own the downstream use.)
 
 **`dropped_time` is cumulative since last hard reset**, not a per-frame value. The per-frame drop is in `TimestepFrameStats.dropped_this_frame` (seconds). Both are surfaced through the profiler / `stats_json` and are useful for detecting sustained frame-rate overload.
 
@@ -95,6 +110,7 @@ Particle placement within each block uses a deterministic seeded jitter (`app/cr
 - The JS↔WASM bridge surface changes (new exported methods, new `set_setting` ids, changed JSON schemas for `config_json`/`stats_json`).
 - The timestep constants (`MAX_RENDER_DT_S`, `fixed_dt`, `max_substeps`) are made configurable, their defaults change, or the drop-excess policy changes (currently: zero accumulator when capped).
 - A new pointer mode is added or an existing mode's semantics change.
+- Scheduled interaction behavior or `interaction.*` settings change.
 - A new `ScenePreset` variant is added or the normalized-space block definitions change.
 - The tank stops being a uniform-`h` rectangular box (e.g. per-axis cell sizes), or the centered-origin placement changes.
 - `OrbitCamera` gains/loses a settings-restored field, or `reset()` stops restoring camera distance.

@@ -70,6 +70,33 @@ try {
   await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
   await new Promise((r) => setTimeout(r, waitMs));
 
+  // Repeatable scale/profiler measurement path. Keep this separate from EVAL so
+  // Windows cmd.exe quoting cannot silently drop the requested configuration.
+  if (process.env.PARTICLES || process.env.DETAILED === "1") {
+    const requestedParticles = process.env.PARTICLES
+      ? parseInt(process.env.PARTICLES, 10)
+      : null;
+    const detailed = process.env.DETAILED === "1";
+    const applied = await page.evaluate(
+      ({ requestedParticles, detailed }) => {
+        if (!window.__fluid) throw new Error("window.__fluid unavailable");
+        if (requestedParticles != null) {
+          window.__fluid.set_setting("particles.count", requestedParticles);
+        }
+        if (detailed) {
+          window.__fluid.set_setting("dev.detailed_gpu_profiling", 1);
+        }
+        window.__fluid.reset();
+        return { requestedParticles, detailed };
+      },
+      { requestedParticles, detailed },
+    );
+    record("[harness] scale config -> " + JSON.stringify(applied));
+    await new Promise((r) =>
+      setTimeout(r, parseInt(process.env.MEASURE_WAIT || "12000", 10)),
+    );
+  }
+
   // Optional: run a JS snippet in the page (e.g. drive reset) then settle.
   if (process.env.EVAL) {
     const out = await page.evaluate(process.env.EVAL);
@@ -118,6 +145,10 @@ try {
   }));
   record("[harness] navigator.gpu present: " + gpu.hasGpu);
   record("[harness] UA: " + gpu.ua);
+  const stats = await page.evaluate(() =>
+    window.__fluid ? JSON.parse(window.__fluid.stats_json()) : null,
+  );
+  record("[harness] stats_json: " + JSON.stringify(stats));
 
   writeFileSync(outPng + ".console.txt", consoleLines.join("\n") + "\n");
 } finally {

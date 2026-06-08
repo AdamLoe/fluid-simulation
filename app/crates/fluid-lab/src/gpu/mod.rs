@@ -1,9 +1,7 @@
 //! WebGPU context: adapter/device init, surface configuration, boot diagnostics,
 //! the compute/integer-atomic smoke test, the GPU fluid sim, and rendering.
 
-mod blit;
 mod fluid;
-mod mesh;
 mod particles;
 mod renderer;
 mod slice;
@@ -27,7 +25,9 @@ pub struct GpuCaps {
     pub backend: String,
     pub max_storage_buffers_per_stage: u32,
     pub max_compute_workgroup_storage_size: u32,
+    pub max_compute_workgroups_per_dimension: u32,
     pub max_buffer_size: u64,
+    pub max_storage_buffer_binding_size: u64,
     pub timestamp_query: bool,
 }
 
@@ -37,28 +37,25 @@ pub struct GpuContext {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     depth_view: wgpu::TextureView,
-    // Offscreen targets for the marching-cubes water path (volume shading). Screen-
-    // sized; recreated on resize. Unused by the default particle/slice path.
-    scene_color: wgpu::TextureView,      // opaque scene → refraction/background source
-    water_back_depth: wgpu::TextureView, // water far-surface depth → thickness source
-    blit: blit::Blitter,                 // copies scene_color onto the swapchain
     fluid: fluid::GpuFluid,
     wireframe: renderer::WireframeRenderer,
     particles: particles::ParticleRenderer,
     slice: slice::SliceRenderer,
-    mesh: Option<mesh::MeshExtractor>,
     pressure_enabled: bool,
     slice_enabled: bool,
-    mesh_enabled: bool,
-    mesh_iso: f32,
-    mesh_look: mesh::MeshLook,
     slice_mode: u32,
     particle_size: f32,
     speed_scale: f32,
-    sun_dir: Vec3,
+    particle_slow_rgb: [f32; 3],
+    particle_fast_rgb: [f32; 3],
+    particle_alpha: f32,
+    particle_edge: f32,
+    particle_shading: f32,
     timers: Option<timing::GpuTimers>,
-    #[allow(dead_code)]
     caps: GpuCaps,
+    requested_particles: u32,
+    estimated_particles: u32,
+    scale_status: &'static str,
 }
 
 impl GpuContext {
@@ -115,7 +112,10 @@ impl GpuContext {
             backend: format!("{:?}", info.backend),
             max_storage_buffers_per_stage: adapter_limits.max_storage_buffers_per_shader_stage,
             max_compute_workgroup_storage_size: adapter_limits.max_compute_workgroup_storage_size,
+            max_compute_workgroups_per_dimension: adapter_limits
+                .max_compute_workgroups_per_dimension,
             max_buffer_size: adapter_limits.max_buffer_size,
+            max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
             timestamp_query,
         };
 
@@ -147,16 +147,14 @@ impl GpuContext {
         surface.configure(&device, &config);
 
         let depth_view = create_depth(&device, width, height);
-        let scene_color = create_scene_color(&device, format, width, height);
-        let water_back_depth = create_back_depth(&device, width, height);
-        let mut blit = blit::Blitter::new(&device, format, DEPTH_FORMAT);
-        blit.rebuild(&device, &scene_color);
 
         let fluid = fluid::GpuFluid::new(&device, &queue, settings, scene);
+        let estimated_particles = fluid.particle_count();
         let particle_radius = crate::sim::H * 0.35;
 
         let (tank_lo, tank_hi) = fluid.tank_bounds();
-        let wireframe = renderer::WireframeRenderer::new(&device, format, DEPTH_FORMAT, tank_lo, tank_hi);
+        let wireframe =
+            renderer::WireframeRenderer::new(&device, format, DEPTH_FORMAT, tank_lo, tank_hi);
         let particles = particles::ParticleRenderer::new(
             &device,
             format,
@@ -184,38 +182,6 @@ impl GpuContext {
             slice_origin,
         );
 
-        let mesh_iso = settings.mesh_iso();
-        let mesh_look = mesh::MeshLook {
-            opacity: settings.mesh_opacity(),
-            fresnel: settings.mesh_fresnel(),
-            foam: settings.mesh_foam(),
-            absorb: settings.water_absorb(),
-            refract: settings.water_refract(),
-            smooth_iters: settings.mesh_smooth(),
-            ..Default::default()
-        };
-        // Marching-cubes resources are dev-only and lazy: allocate the ~73 MB MC
-        // vertex buffer + pipelines only when dev.mesh_enabled is on at boot.
-        let mesh_enabled = settings.mesh_enabled();
-        let mesh = if mesh_enabled {
-            Some(build_mesh(
-                &device,
-                format,
-                DEPTH_FORMAT,
-                &fluid,
-                grid_nx,
-                grid_ny,
-                grid_nz,
-                tank_lo,
-                mesh_look,
-                mesh_iso,
-                &scene_color,
-                &water_back_depth,
-            ))
-        } else {
-            None
-        };
-
         let timers = if timestamp_query {
             Some(timing::GpuTimers::new(
                 &device,
@@ -234,25 +200,25 @@ impl GpuContext {
             surface,
             config,
             depth_view,
-            scene_color,
-            water_back_depth,
-            blit,
             fluid,
             wireframe,
             particles,
             slice,
-            mesh,
             pressure_enabled: true,
             slice_enabled: false,
-            mesh_enabled,
-            mesh_iso,
-            mesh_look,
             slice_mode: 0,
             particle_size: 1.0,
             speed_scale: 4.0,
-            sun_dir: Vec3::new(0.4, 1.0, 0.3),
+            particle_slow_rgb: settings.particle_slow_color(),
+            particle_fast_rgb: settings.particle_fast_color(),
+            particle_alpha: settings.particle_alpha(),
+            particle_edge: settings.particle_edge(),
+            particle_shading: settings.particle_shading(),
             timers,
             caps,
+            requested_particles: settings.particle_count(),
+            estimated_particles,
+            scale_status: "ok",
         })
     }
 
@@ -262,7 +228,34 @@ impl GpuContext {
     /// fluid buffers. The device/surface/format are unchanged; the wireframe tank
     /// is rebuilt since per-axis grid resolution can change the tank's box size.
     /// Live params (gravity/flip/pressure_iters/spacing/classify) come fresh from `settings`.
-    pub fn recreate_fluid(&mut self, settings: &Registry, scene: &SceneConfig) {
+    pub fn recreate_fluid(
+        &mut self,
+        settings: &Registry,
+        scene: &SceneConfig,
+    ) -> Result<(), String> {
+        let estimated = fluid::estimated_particle_count(settings, scene);
+        self.requested_particles = settings.particle_count();
+        self.estimated_particles = estimated;
+        let dispatch_limit = self.max_particle_dispatch_count();
+        let storage_limit = self.max_particle_storage_count();
+        if estimated > dispatch_limit {
+            self.scale_status = "rejected-dispatch-limit";
+            return Err(format!(
+                "requested {} particles seeds {}, exceeding the one-dimensional particle dispatch limit {} ({} workgroups x {})",
+                self.requested_particles,
+                estimated,
+                dispatch_limit,
+                self.caps.max_compute_workgroups_per_dimension,
+                fluid::PARTICLE_WG,
+            ));
+        }
+        if estimated > storage_limit {
+            self.scale_status = "rejected-storage-binding-limit";
+            return Err(format!(
+                "requested {} particles seeds {}, exceeding the single particle storage binding limit {}",
+                self.requested_particles, estimated, storage_limit,
+            ));
+        }
         let fluid = fluid::GpuFluid::new(&self.device, &self.queue, settings, scene);
         let particle_radius = crate::sim::H * 0.35;
         let (tank_lo, tank_hi) = fluid.tank_bounds();
@@ -297,30 +290,9 @@ impl GpuContext {
             slice_h,
             tank_lo,
         );
-        // Rebuild mesh extractor with new grid size; preserve iso + look settings.
-        // Only allocate the MC resources when mesh mode is enabled (dev-only/lazy).
-        let mesh = if self.mesh_enabled {
-            Some(build_mesh(
-                &self.device,
-                self.config.format,
-                DEPTH_FORMAT,
-                &fluid,
-                grid_nx,
-                grid_ny,
-                grid_nz,
-                tank_lo,
-                self.mesh_look,
-                self.mesh_iso,
-                &self.scene_color,
-                &self.water_back_depth,
-            ))
-        } else {
-            None
-        };
         self.fluid = fluid;
         self.particles = particles;
         self.slice = slice;
-        self.mesh = mesh;
         // Timers carry Reset-class layout (max_substeps / detailed / pressure_iters);
         // rebuild them here so a Reset resizes the query set. Only when the adapter
         // supports timestamp queries (i.e. timers existed before).
@@ -333,9 +305,16 @@ impl GpuContext {
                 settings.pressure_iterations(),
             ));
         }
-        self.slice.set_mode(self.slice_mode); // preserve current inspection mode
+        self.slice.set_mode(self.slice_mode);
         self.particles.set_radius_scale(self.particle_size);
         self.particles.set_speed_scale(self.speed_scale);
+        self.particles.set_particle_look(
+            self.particle_slow_rgb,
+            self.particle_fast_rgb,
+            self.particle_alpha,
+        );
+        self.particles.set_edge_inner(self.particle_edge);
+        self.particles.set_shading(self.particle_shading);
         log(&format!(
             "[fluid-lab][gpu] recreated fluid: dims={}x{}x{} particles={}",
             grid_nx,
@@ -343,6 +322,8 @@ impl GpuContext {
             grid_nz,
             self.fluid.particle_count()
         ));
+        self.scale_status = "ok";
+        Ok(())
     }
 
     pub fn aspect(&self) -> f32 {
@@ -363,15 +344,44 @@ impl GpuContext {
         self.fluid.grid_dims()
     }
 
-    /// Total GPU storage-buffer memory: fluid buffers + (mesh buffers if allocated).
+    /// Total GPU storage-buffer memory owned by the fluid simulation.
     pub fn buffer_memory_bytes(&self) -> u64 {
         self.fluid.buffer_memory_bytes()
-            + self.mesh.as_ref().map(|m| m.buffer_memory_bytes()).unwrap_or(0)
     }
 
     /// Number of compute dispatches issued per substep (prep+pressure+finish).
     pub fn dispatches_per_substep(&self) -> u32 {
         self.fluid.dispatches_per_substep()
+    }
+
+    pub fn requested_particles(&self) -> u32 {
+        self.requested_particles
+    }
+
+    pub fn estimated_particles(&self) -> u32 {
+        self.estimated_particles
+    }
+
+    pub fn scale_status(&self) -> &'static str {
+        self.scale_status
+    }
+
+    pub fn max_compute_workgroups_per_dimension(&self) -> u32 {
+        self.caps.max_compute_workgroups_per_dimension
+    }
+
+    pub fn max_particle_dispatch_count(&self) -> u32 {
+        self.caps
+            .max_compute_workgroups_per_dimension
+            .saturating_mul(fluid::PARTICLE_WG)
+    }
+
+    pub fn max_particle_storage_count(&self) -> u32 {
+        let bytes = self
+            .caps
+            .max_storage_buffer_binding_size
+            .min(self.caps.max_buffer_size);
+        (bytes / 32).min(u32::MAX as u64) as u32
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -382,13 +392,6 @@ impl GpuContext {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth(&self.device, width, height);
-        // Recreate the water-path offscreen targets and re-point the consumers.
-        self.scene_color = create_scene_color(&self.device, self.config.format, width, height);
-        self.water_back_depth = create_back_depth(&self.device, width, height);
-        self.blit.rebuild(&self.device, &self.scene_color);
-        if let Some(m) = &mut self.mesh {
-            m.rebuild_render_bg(&self.device, &self.scene_color, &self.water_back_depth);
-        }
     }
 
     pub fn reset(&mut self) {
@@ -436,83 +439,6 @@ impl GpuContext {
         self.fluid.set_surface_dilation(&self.queue, v);
     }
 
-    pub fn set_mesh_enabled(&mut self, on: bool) {
-        if on {
-            // Lazily allocate the ~73 MB MC resources on first enable.
-            if self.mesh.is_none() {
-                let (tank_lo, _tank_hi) = self.fluid.tank_bounds();
-                let [grid_nx, grid_ny, grid_nz] = self.fluid.grid_dims();
-                self.mesh = Some(build_mesh(
-                    &self.device,
-                    self.config.format,
-                    DEPTH_FORMAT,
-                    &self.fluid,
-                    grid_nx,
-                    grid_ny,
-                    grid_nz,
-                    tank_lo,
-                    self.mesh_look,
-                    self.mesh_iso,
-                    &self.scene_color,
-                    &self.water_back_depth,
-                ));
-            }
-        } else {
-            // Drop the MC resources to free the ~73 MB.
-            self.mesh = None;
-        }
-        self.mesh_enabled = on;
-    }
-
-    pub fn set_mesh_iso(&mut self, v: f32) {
-        self.mesh_iso = v;
-        if let Some(m) = &mut self.mesh {
-            m.set_iso(&self.queue, v);
-        }
-    }
-
-    pub fn set_mesh_smooth(&mut self, n: u32) {
-        self.mesh_look.smooth_iters = n;
-        if let Some(m) = &mut self.mesh {
-            m.set_smooth_iters(n);
-        }
-    }
-
-    pub fn set_mesh_opacity(&mut self, v: f32) {
-        self.mesh_look.opacity = v;
-        if let Some(m) = &mut self.mesh {
-            m.set_opacity(v);
-        }
-    }
-
-    pub fn set_mesh_fresnel(&mut self, v: f32) {
-        self.mesh_look.fresnel = v;
-        if let Some(m) = &mut self.mesh {
-            m.set_fresnel(v);
-        }
-    }
-
-    pub fn set_mesh_foam(&mut self, v: f32) {
-        self.mesh_look.foam = v;
-        if let Some(m) = &mut self.mesh {
-            m.set_foam(v);
-        }
-    }
-
-    pub fn set_water_absorb(&mut self, v: f32) {
-        self.mesh_look.absorb = v;
-        if let Some(m) = &mut self.mesh {
-            m.set_absorb(v);
-        }
-    }
-
-    pub fn set_water_refract(&mut self, v: f32) {
-        self.mesh_look.refract = v;
-        if let Some(m) = &mut self.mesh {
-            m.set_refract(v);
-        }
-    }
-
     pub fn set_cfl(&mut self, v: f32) {
         self.fluid.set_cfl(&self.queue, v);
     }
@@ -539,8 +465,41 @@ impl GpuContext {
         self.particles.set_speed_scale(s);
     }
 
-    pub fn set_sun_dir(&mut self, x: f32, y: f32, z: f32) {
-        self.sun_dir = Vec3::new(x, y, z);
+    pub fn set_particle_slow_color(&mut self, rgb: [f32; 3]) {
+        self.particle_slow_rgb = rgb;
+        self.particles.set_particle_look(
+            self.particle_slow_rgb,
+            self.particle_fast_rgb,
+            self.particle_alpha,
+        );
+    }
+
+    pub fn set_particle_fast_color(&mut self, rgb: [f32; 3]) {
+        self.particle_fast_rgb = rgb;
+        self.particles.set_particle_look(
+            self.particle_slow_rgb,
+            self.particle_fast_rgb,
+            self.particle_alpha,
+        );
+    }
+
+    pub fn set_particle_alpha(&mut self, a: f32) {
+        self.particle_alpha = a;
+        self.particles.set_particle_look(
+            self.particle_slow_rgb,
+            self.particle_fast_rgb,
+            self.particle_alpha,
+        );
+    }
+
+    pub fn set_particle_edge(&mut self, v: f32) {
+        self.particle_edge = v;
+        self.particles.set_edge_inner(v);
+    }
+
+    pub fn set_particle_shading(&mut self, v: f32) {
+        self.particle_shading = v;
+        self.particles.set_shading(v);
     }
 
     pub fn gpu_timing(&self) -> Option<GpuReadout> {
@@ -550,7 +509,6 @@ impl GpuContext {
     /// Advance the simulation by `substeps` fixed physics steps. Each substep is
     /// recorded as three timestamped compute passes (prep / pressure / finish) so
     /// the pressure-solve GPU cost is measured separately.
-    /// After the final substep, if mesh_enabled, runs the mesh extraction passes.
     pub fn step(&mut self, substeps: u32) {
         // Record how many substeps run this frame so the throttled readback only
         // sums the valid per-substep timing slots (the rest are stale/zero).
@@ -561,20 +519,15 @@ impl GpuContext {
         for i in 0..substeps {
             let mut encoder = self
                 .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("sim step") });
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("sim step"),
+                });
             if detailed {
                 self.record_substep_detailed(&mut encoder, i);
             } else {
                 self.record_substep_coarse(&mut encoder, i);
             }
             self.queue.submit(std::iter::once(encoder.finish()));
-        }
-        // After all substeps: if mesh mode is on, extract the surface.
-        // Occupancy is valid (populated by record_prep in the last substep).
-        if self.mesh_enabled {
-            if let Some(m) = &self.mesh {
-                m.record_extract(&self.device, &self.queue);
-            }
         }
     }
 
@@ -627,29 +580,48 @@ impl GpuContext {
         }
 
         // 0..18 = prep sections (clear..bound_pre_w).
-        sec!(0, "d.clear", |p: &mut wgpu::ComputePass| f.dispatch_clear(p));
+        sec!(0, "d.clear", |p: &mut wgpu::ComputePass| f
+            .dispatch_clear(p));
         sec!(1, "d.mark", |p: &mut wgpu::ComputePass| f.dispatch_mark(p));
-        sec!(2, "d.classify", |p: &mut wgpu::ComputePass| f.dispatch_classify(p));
-        sec!(3, "d.scatter_u", |p: &mut wgpu::ComputePass| f.dispatch_scatter(p, 0));
-        sec!(4, "d.scatter_v", |p: &mut wgpu::ComputePass| f.dispatch_scatter(p, 1));
-        sec!(5, "d.scatter_w", |p: &mut wgpu::ComputePass| f.dispatch_scatter(p, 2));
-        sec!(6, "d.normalize_u", |p: &mut wgpu::ComputePass| f.dispatch_normalize(p, 0));
-        sec!(7, "d.normalize_v", |p: &mut wgpu::ComputePass| f.dispatch_normalize(p, 1));
-        sec!(8, "d.normalize_w", |p: &mut wgpu::ComputePass| f.dispatch_normalize(p, 2));
-        sec!(9, "d.savevel_u", |p: &mut wgpu::ComputePass| f.dispatch_savevel(p, 0));
-        sec!(10, "d.savevel_v", |p: &mut wgpu::ComputePass| f.dispatch_savevel(p, 1));
-        sec!(11, "d.savevel_w", |p: &mut wgpu::ComputePass| f.dispatch_savevel(p, 2));
-        sec!(12, "d.forces_u", |p: &mut wgpu::ComputePass| f.dispatch_forces(p, 0));
-        sec!(13, "d.forces_v", |p: &mut wgpu::ComputePass| f.dispatch_forces(p, 1));
-        sec!(14, "d.forces_w", |p: &mut wgpu::ComputePass| f.dispatch_forces(p, 2));
-        sec!(15, "d.bound_pre_u", |p: &mut wgpu::ComputePass| f.dispatch_enforce(p, 0));
-        sec!(16, "d.bound_pre_v", |p: &mut wgpu::ComputePass| f.dispatch_enforce(p, 1));
-        sec!(17, "d.bound_pre_w", |p: &mut wgpu::ComputePass| f.dispatch_enforce(p, 2));
+        sec!(2, "d.classify", |p: &mut wgpu::ComputePass| f
+            .dispatch_classify(p));
+        sec!(3, "d.scatter_u", |p: &mut wgpu::ComputePass| f
+            .dispatch_scatter(p, 0));
+        sec!(4, "d.scatter_v", |p: &mut wgpu::ComputePass| f
+            .dispatch_scatter(p, 1));
+        sec!(5, "d.scatter_w", |p: &mut wgpu::ComputePass| f
+            .dispatch_scatter(p, 2));
+        sec!(6, "d.normalize_u", |p: &mut wgpu::ComputePass| f
+            .dispatch_normalize(p, 0));
+        sec!(7, "d.normalize_v", |p: &mut wgpu::ComputePass| f
+            .dispatch_normalize(p, 1));
+        sec!(8, "d.normalize_w", |p: &mut wgpu::ComputePass| f
+            .dispatch_normalize(p, 2));
+        sec!(9, "d.savevel_u", |p: &mut wgpu::ComputePass| f
+            .dispatch_savevel(p, 0));
+        sec!(10, "d.savevel_v", |p: &mut wgpu::ComputePass| f
+            .dispatch_savevel(p, 1));
+        sec!(11, "d.savevel_w", |p: &mut wgpu::ComputePass| f
+            .dispatch_savevel(p, 2));
+        sec!(12, "d.forces_u", |p: &mut wgpu::ComputePass| f
+            .dispatch_forces(p, 0));
+        sec!(13, "d.forces_v", |p: &mut wgpu::ComputePass| f
+            .dispatch_forces(p, 1));
+        sec!(14, "d.forces_w", |p: &mut wgpu::ComputePass| f
+            .dispatch_forces(p, 2));
+        sec!(15, "d.bound_pre_u", |p: &mut wgpu::ComputePass| f
+            .dispatch_enforce(p, 0));
+        sec!(16, "d.bound_pre_v", |p: &mut wgpu::ComputePass| f
+            .dispatch_enforce(p, 1));
+        sec!(17, "d.bound_pre_w", |p: &mut wgpu::ComputePass| f
+            .dispatch_enforce(p, 2));
 
         // 18,19 = pressure-prelude sections; the CG iterations follow.
         if self.pressure_enabled {
-            sec!(18, "d.divergence", |p: &mut wgpu::ComputePass| f.dispatch_divergence(p));
-            sec!(19, "d.cg_init", |p: &mut wgpu::ComputePass| f.dispatch_cg_init(p));
+            sec!(18, "d.divergence", |p: &mut wgpu::ComputePass| f
+                .dispatch_divergence(p));
+            sec!(19, "d.cg_init", |p: &mut wgpu::ComputePass| f
+                .dispatch_cg_init(p));
 
             // CG iterations — clamp the timed count to the allocated slots (extra
             // live iters still run, just outside a fresh timed pass).
@@ -669,12 +641,18 @@ impl GpuContext {
                         body(&mut p);
                     }};
                 }
-                cgpass!(0, "d.cg_spmv", |p: &mut wgpu::ComputePass| f.dispatch_cg_spmv(p));
-                cgpass!(1, "d.cg_dot_dq", |p: &mut wgpu::ComputePass| f.dispatch_cg_reduce_dq(p));
-                cgpass!(2, "d.cg_alpha", |p: &mut wgpu::ComputePass| f.dispatch_cg_alpha(p));
-                cgpass!(3, "d.cg_update", |p: &mut wgpu::ComputePass| f.dispatch_cg_update(p));
-                cgpass!(4, "d.cg_dot_rr", |p: &mut wgpu::ComputePass| f.dispatch_cg_reduce_rr(p));
-                cgpass!(5, "d.cg_beta_dir", |p: &mut wgpu::ComputePass| f.dispatch_cg_beta_dir(p));
+                cgpass!(0, "d.cg_spmv", |p: &mut wgpu::ComputePass| f
+                    .dispatch_cg_spmv(p));
+                cgpass!(1, "d.cg_dot_dq", |p: &mut wgpu::ComputePass| f
+                    .dispatch_cg_reduce_dq(p));
+                cgpass!(2, "d.cg_alpha", |p: &mut wgpu::ComputePass| f
+                    .dispatch_cg_alpha(p));
+                cgpass!(3, "d.cg_update", |p: &mut wgpu::ComputePass| f
+                    .dispatch_cg_update(p));
+                cgpass!(4, "d.cg_dot_rr", |p: &mut wgpu::ComputePass| f
+                    .dispatch_cg_reduce_rr(p));
+                cgpass!(5, "d.cg_beta_dir", |p: &mut wgpu::ComputePass| f
+                    .dispatch_cg_beta_dir(p));
             }
             // Any live iters beyond `timed` still execute (untimed) for correctness.
             if live > timed {
@@ -695,17 +673,28 @@ impl GpuContext {
 
         // 20..27 = finish sections (gradient_*, bound_post_*, g2p).
         if self.pressure_enabled {
-            sec!(20, "d.gradient_u", |p: &mut wgpu::ComputePass| f.dispatch_gradient(p, 0));
-            sec!(21, "d.gradient_v", |p: &mut wgpu::ComputePass| f.dispatch_gradient(p, 1));
-            sec!(22, "d.gradient_w", |p: &mut wgpu::ComputePass| f.dispatch_gradient(p, 2));
-            sec!(23, "d.bound_post_u", |p: &mut wgpu::ComputePass| f.dispatch_enforce(p, 0));
-            sec!(24, "d.bound_post_v", |p: &mut wgpu::ComputePass| f.dispatch_enforce(p, 1));
-            sec!(25, "d.bound_post_w", |p: &mut wgpu::ComputePass| f.dispatch_enforce(p, 2));
+            sec!(20, "d.gradient_u", |p: &mut wgpu::ComputePass| f
+                .dispatch_gradient(p, 0));
+            sec!(21, "d.gradient_v", |p: &mut wgpu::ComputePass| f
+                .dispatch_gradient(p, 1));
+            sec!(22, "d.gradient_w", |p: &mut wgpu::ComputePass| f
+                .dispatch_gradient(p, 2));
+            sec!(23, "d.bound_post_u", |p: &mut wgpu::ComputePass| f
+                .dispatch_enforce(p, 0));
+            sec!(24, "d.bound_post_v", |p: &mut wgpu::ComputePass| f
+                .dispatch_enforce(p, 1));
+            sec!(25, "d.bound_post_w", |p: &mut wgpu::ComputePass| f
+                .dispatch_enforce(p, 2));
         }
         sec!(26, "d.g2p", |p: &mut wgpu::ComputePass| f.dispatch_g2p(p));
     }
 
-    pub fn render(&mut self, view_proj: &Mat4, cam_right: Vec3, cam_up: Vec3, cam_pos_local: Vec3) -> Result<(), String> {
+    pub fn render(
+        &mut self,
+        view_proj: &Mat4,
+        cam_right: Vec3,
+        cam_up: Vec3,
+    ) -> Result<(), String> {
         use wgpu::CurrentSurfaceTexture as Cur;
         let frame = match self.surface.get_current_texture() {
             Cur::Success(t) | Cur::Suboptimal(t) => t,
@@ -725,115 +714,48 @@ impl GpuContext {
             .update_camera(&self.queue, view_proj, cam_right, cam_up);
         self.slice.update_camera(&self.queue, view_proj);
 
-        // The caller passes the true camera eye already transformed into the tank's
-        // LOCAL frame (the same space the MC vertices live in), so the mesh shader's
-        // view vector / Fresnel stay correct as the tank is moved or rotated.
-        let resolution = (self.config.width as f32, self.config.height as f32);
-        if let Some(m) = &self.mesh {
-            m.update_camera(&self.queue, view_proj, cam_pos_local, self.sun_dir, resolution);
-        }
-
-        const CLEAR: wgpu::Color = wgpu::Color { r: 0.04, g: 0.05, b: 0.08, a: 1.0 };
+        const CLEAR: wgpu::Color = wgpu::Color {
+            r: 0.04,
+            g: 0.05,
+            b: 0.08,
+            a: 1.0,
+        };
 
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
 
-        match (self.mesh_enabled, self.mesh.as_ref()) {
-            // ── Water (marching-cubes) path: volume shading needs offscreen targets ──
-            // 1) opaque scene → scene_color (+depth); 2) water far-surface depth-only
-            // prepass → water_back_depth; 3) water pass to the swapchain: blit the
-            // background, then draw water sampling scene_color (refraction) and
-            // water_back_depth (thickness).
-            (true, Some(m)) => {
-                {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("opaque pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &self.scene_color,
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(CLEAR), store: wgpu::StoreOp::Store },
-                        })],
-                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                            view: &self.depth_view,
-                            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
-                            stencil_ops: None,
-                        }),
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    self.wireframe.draw(&mut pass);
-                }
-                {
-                    // Depth-only: farthest water surface (compare Greater, clear 0.0).
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("water back-depth prepass"),
-                        color_attachments: &[],
-                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                            view: &self.water_back_depth,
-                            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
-                            stencil_ops: None,
-                        }),
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    m.draw_back(&mut pass);
-                }
-                {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("water pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(CLEAR), store: wgpu::StoreOp::Store },
-                        })],
-                        // Load the opaque-pass depth so water is occluded by the tank.
-                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                            view: &self.depth_view,
-                            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                            stencil_ops: None,
-                        }),
-                        timestamp_writes: self.timers.as_ref().map(|t| t.render_writes()),
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    self.blit.draw(&mut pass);   // background (scene_color) under the water
-                    m.draw(&mut pass);
-                    if self.slice_enabled {
-                        self.slice.draw(&mut pass);
-                    }
-                }
-            }
-            // ── Default path (particles/slice): single pass straight to the swapchain ──
-            _ => {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("scene pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(CLEAR), store: wgpu::StoreOp::Store },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.depth_view,
-                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
-                        stencil_ops: None,
-                    }),
-                    timestamp_writes: self.timers.as_ref().map(|t| t.render_writes()),
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                self.wireframe.draw(&mut pass);
-                self.particles.draw(&mut pass, self.fluid.particle_count());
-                if self.slice_enabled {
-                    self.slice.draw(&mut pass);
-                }
-            }
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("scene pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(CLEAR),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: self.timers.as_ref().map(|t| t.render_writes()),
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        self.wireframe.draw(&mut pass);
+        self.particles.draw(&mut pass, self.fluid.particle_count());
+        if self.slice_enabled {
+            self.slice.draw(&mut pass);
         }
+        drop(pass);
 
         // Throttled GPU timing + liveness readback (the only allowed readback).
         let initiated = self
@@ -854,43 +776,6 @@ impl GpuContext {
     }
 }
 
-/// Allocate the marching-cubes extractor (the ~73 MB MC vertex buffer + the MC
-/// compute/render pipelines). Shared by `new`, `recreate_fluid`, and the lazy
-/// path in `set_mesh_enabled` so the arg list stays in one place.
-#[allow(clippy::too_many_arguments)]
-fn build_mesh(
-    device: &wgpu::Device,
-    format: wgpu::TextureFormat,
-    depth_format: wgpu::TextureFormat,
-    fluid: &fluid::GpuFluid,
-    nx: u32,
-    ny: u32,
-    nz: u32,
-    tank_lo: [f32; 3],
-    look: mesh::MeshLook,
-    iso: f32,
-    scene_color: &wgpu::TextureView,
-    back_depth: &wgpu::TextureView,
-) -> mesh::MeshExtractor {
-    mesh::MeshExtractor::new(
-        device,
-        format,
-        depth_format,
-        fluid.occupancy_buffer(),
-        fluid.u_vel_buffer(),
-        fluid.v_vel_buffer(),
-        fluid.w_vel_buffer(),
-        nx,
-        ny,
-        nz,
-        tank_lo,
-        look,
-        iso,
-        scene_color,
-        back_depth,
-    )
-}
-
 fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("depth"),
@@ -904,43 +789,6 @@ fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
-    tex.create_view(&wgpu::TextureViewDescriptor::default())
-}
-
-/// Offscreen color target for the water path: the opaque scene is rendered here so
-/// the water pass can blit it as background and sample it for refraction.
-fn create_scene_color(
-    device: &wgpu::Device,
-    format: wgpu::TextureFormat,
-    width: u32,
-    height: u32,
-) -> wgpu::TextureView {
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("scene_color"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    tex.create_view(&wgpu::TextureViewDescriptor::default())
-}
-
-/// Sampleable depth target holding the water's far surface (depth-only prepass),
-/// read by the water shader to compute per-pixel water thickness.
-fn create_back_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("water_back_depth"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     tex.create_view(&wgpu::TextureViewDescriptor::default())
@@ -975,6 +823,13 @@ fn log_boot_diagnostics(
         limits.max_compute_workgroup_size_x,
         limits.max_compute_workgroup_size_y,
         limits.max_compute_workgroup_size_z,
+    ));
+    log(&format!(
+        "            max_compute_workgroups_per_dimension={} particle_dispatch_limit={}",
+        limits.max_compute_workgroups_per_dimension,
+        limits
+            .max_compute_workgroups_per_dimension
+            .saturating_mul(fluid::PARTICLE_WG),
     ));
     log(&format!(
         "            max_buffer_size={} max_storage_buffer_binding_size={}",

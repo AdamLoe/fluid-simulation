@@ -35,7 +35,9 @@ pub async fn run_atomic_smoke_test(
     let storage = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("smoke counter"),
         size: 4,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     // Initialize to zero deterministically.
@@ -66,8 +68,9 @@ pub async fn run_atomic_smoke_test(
         }],
     });
 
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("smoke") });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("smoke"),
+    });
     {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("smoke pass"),

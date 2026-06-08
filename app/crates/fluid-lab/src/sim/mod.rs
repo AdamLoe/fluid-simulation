@@ -17,7 +17,6 @@
 //! - Tank walls: all boundary cells are Solid, so every Liquid cell is interior
 //!   and always has in-range 6-neighbours (no bounds checks in the solver).
 
-pub mod marching_cubes;
 pub mod pressure;
 
 /// Base (uniform) cell size in world units. An all-64 grid reproduces the exact
@@ -51,14 +50,28 @@ pub struct GridDims {
 
 impl GridDims {
     pub fn cubic(n: usize, h: f32) -> Self {
-        GridDims { nx: n, ny: n, nz: n, h, origin: [0.0, 0.0, 0.0] }
+        GridDims {
+            nx: n,
+            ny: n,
+            nz: n,
+            h,
+            origin: [0.0, 0.0, 0.0],
+        }
     }
 
     // --- counts (buffer sizing) ---
-    pub fn cell_count(&self) -> usize { self.nx * self.ny * self.nz }
-    pub fn u_count(&self) -> usize { (self.nx + 1) * self.ny * self.nz }
-    pub fn v_count(&self) -> usize { self.nx * (self.ny + 1) * self.nz }
-    pub fn w_count(&self) -> usize { self.nx * self.ny * (self.nz + 1) }
+    pub fn cell_count(&self) -> usize {
+        self.nx * self.ny * self.nz
+    }
+    pub fn u_count(&self) -> usize {
+        (self.nx + 1) * self.ny * self.nz
+    }
+    pub fn v_count(&self) -> usize {
+        self.nx * (self.ny + 1) * self.nz
+    }
+    pub fn w_count(&self) -> usize {
+        self.nx * self.ny * (self.nz + 1)
+    }
 
     // --- indexing ---
     #[inline]
@@ -83,7 +96,9 @@ impl GridDims {
 
     #[inline]
     pub fn in_cell_range(&self, i: i64, j: i64, k: i64) -> bool {
-        i >= 0 && j >= 0 && k >= 0
+        i >= 0
+            && j >= 0
+            && k >= 0
             && (i as usize) < self.nx
             && (j as usize) < self.ny
             && (k as usize) < self.nz
@@ -92,8 +107,7 @@ impl GridDims {
     /// True if (i,j,k) is on the tank wall (boundary cell → Solid by convention).
     #[inline]
     pub fn is_boundary_cell(&self, i: usize, j: usize, k: usize) -> bool {
-        i == 0 || j == 0 || k == 0
-            || i == self.nx - 1 || j == self.ny - 1 || k == self.nz - 1
+        i == 0 || j == 0 || k == 0 || i == self.nx - 1 || j == self.ny - 1 || k == self.nz - 1
     }
 
     // --- world <-> grid ---
@@ -124,7 +138,11 @@ fn clamp_idx(f: f32, n: usize) -> usize {
         0
     } else {
         let i = f as usize;
-        if i >= n { n - 1 } else { i }
+        if i >= n {
+            n - 1
+        } else {
+            i
+        }
     }
 }
 
@@ -175,7 +193,13 @@ mod tests {
         assert_eq!(d.v_count(), 16 * 17 * 16);
         assert_eq!(d.w_count(), 16 * 16 * 17);
         // Non-cubic to catch axis mix-ups.
-        let d2 = GridDims { nx: 4, ny: 5, nz: 6, h: 1.0, origin: [0.0; 3] };
+        let d2 = GridDims {
+            nx: 4,
+            ny: 5,
+            nz: 6,
+            h: 1.0,
+            origin: [0.0; 3],
+        };
         assert_eq!(d2.u_count(), 5 * 5 * 6);
         assert_eq!(d2.v_count(), 4 * 6 * 6);
         assert_eq!(d2.w_count(), 4 * 5 * 7);
@@ -183,31 +207,51 @@ mod tests {
 
     #[test]
     fn cell_and_face_indices_are_unique_and_in_range() {
-        let d = GridDims { nx: 4, ny: 5, nz: 6, h: 1.0, origin: [0.0; 3] };
+        let d = GridDims {
+            nx: 4,
+            ny: 5,
+            nz: 6,
+            h: 1.0,
+            origin: [0.0; 3],
+        };
         // Cell indices: bijection onto 0..cell_count.
         let mut seen = vec![false; d.cell_count()];
-        for k in 0..d.nz { for j in 0..d.ny { for i in 0..d.nx {
-            let c = d.cell_idx(i, j, k);
-            assert!(c < d.cell_count());
-            assert!(!seen[c], "duplicate cell index");
-            seen[c] = true;
-        }}}
+        for k in 0..d.nz {
+            for j in 0..d.ny {
+                for i in 0..d.nx {
+                    let c = d.cell_idx(i, j, k);
+                    assert!(c < d.cell_count());
+                    assert!(!seen[c], "duplicate cell index");
+                    seen[c] = true;
+                }
+            }
+        }
         assert!(seen.iter().all(|&b| b));
 
         // u faces: bijection onto 0..u_count.
         let mut su = vec![false; d.u_count()];
-        for k in 0..d.nz { for j in 0..d.ny { for i in 0..=d.nx {
-            let idx = d.u_idx(i, j, k);
-            assert!(idx < d.u_count());
-            assert!(!su[idx]);
-            su[idx] = true;
-        }}}
+        for k in 0..d.nz {
+            for j in 0..d.ny {
+                for i in 0..=d.nx {
+                    let idx = d.u_idx(i, j, k);
+                    assert!(idx < d.u_count());
+                    assert!(!su[idx]);
+                    su[idx] = true;
+                }
+            }
+        }
         assert!(su.iter().all(|&b| b));
     }
 
     #[test]
     fn world_to_cell_roundtrips_centers_and_clamps_escapes() {
-        let d = GridDims { nx: 8, ny: 8, nz: 8, h: 0.25, origin: [-1.0, -1.0, -1.0] };
+        let d = GridDims {
+            nx: 8,
+            ny: 8,
+            nz: 8,
+            h: 0.25,
+            origin: [-1.0, -1.0, -1.0],
+        };
         // Center of cell (3,4,5) must map back to (3,4,5).
         let c = d.cell_center_world(3, 4, 5);
         assert_eq!(d.world_to_cell(c), (3, 4, 5));
@@ -249,7 +293,13 @@ mod tests {
     /// A deliberately non-cubic, off-center tank to catch axis mix-ups in the
     /// world<->grid mapping and the staggered face indexers.
     fn rect_dims() -> GridDims {
-        GridDims { nx: 5, ny: 9, nz: 7, h: 0.3, origin: [-0.75, 1.35, -2.1] }
+        GridDims {
+            nx: 5,
+            ny: 9,
+            nz: 7,
+            h: 0.3,
+            origin: [-0.75, 1.35, -2.1],
+        }
     }
 
     #[test]
@@ -270,7 +320,10 @@ mod tests {
         }
         // Escapes clamp to the per-axis extremes (note nx-1, ny-1, nz-1 all differ).
         assert_eq!(d.world_to_cell([-1e3, -1e3, -1e3]), (0, 0, 0));
-        assert_eq!(d.world_to_cell([1e3, 1e3, 1e3]), (d.nx - 1, d.ny - 1, d.nz - 1));
+        assert_eq!(
+            d.world_to_cell([1e3, 1e3, 1e3]),
+            (d.nx - 1, d.ny - 1, d.nz - 1)
+        );
     }
 
     #[test]
@@ -283,7 +336,12 @@ mod tests {
             d.origin[2] + 4.5 * d.h,
         ];
         for a in 0..3 {
-            assert!((c[a] - expected[a]).abs() < 1e-6, "axis {a}: {} != {}", c[a], expected[a]);
+            assert!(
+                (c[a] - expected[a]).abs() < 1e-6,
+                "axis {a}: {} != {}",
+                c[a],
+                expected[a]
+            );
         }
     }
 
@@ -292,33 +350,239 @@ mod tests {
         let d = rect_dims();
         // u faces: dims (nx+1, ny, nz).
         let mut su = vec![false; d.u_count()];
-        for k in 0..d.nz { for j in 0..d.ny { for i in 0..=d.nx {
-            let idx = d.u_idx(i, j, k);
-            assert!(idx < d.u_count(), "u idx out of range");
-            assert!(!su[idx], "duplicate u idx");
-            su[idx] = true;
-        }}}
+        for k in 0..d.nz {
+            for j in 0..d.ny {
+                for i in 0..=d.nx {
+                    let idx = d.u_idx(i, j, k);
+                    assert!(idx < d.u_count(), "u idx out of range");
+                    assert!(!su[idx], "duplicate u idx");
+                    su[idx] = true;
+                }
+            }
+        }
         assert!(su.iter().all(|&b| b));
 
         // v faces: dims (nx, ny+1, nz).
         let mut sv = vec![false; d.v_count()];
-        for k in 0..d.nz { for j in 0..=d.ny { for i in 0..d.nx {
-            let idx = d.v_idx(i, j, k);
-            assert!(idx < d.v_count(), "v idx out of range");
-            assert!(!sv[idx], "duplicate v idx");
-            sv[idx] = true;
-        }}}
+        for k in 0..d.nz {
+            for j in 0..=d.ny {
+                for i in 0..d.nx {
+                    let idx = d.v_idx(i, j, k);
+                    assert!(idx < d.v_count(), "v idx out of range");
+                    assert!(!sv[idx], "duplicate v idx");
+                    sv[idx] = true;
+                }
+            }
+        }
         assert!(sv.iter().all(|&b| b));
 
         // w faces: dims (nx, ny, nz+1).
         let mut sw = vec![false; d.w_count()];
-        for k in 0..=d.nz { for j in 0..d.ny { for i in 0..d.nx {
-            let idx = d.w_idx(i, j, k);
-            assert!(idx < d.w_count(), "w idx out of range");
-            assert!(!sw[idx], "duplicate w idx");
-            sw[idx] = true;
-        }}}
+        for k in 0..=d.nz {
+            for j in 0..d.ny {
+                for i in 0..d.nx {
+                    let idx = d.w_idx(i, j, k);
+                    assert!(idx < d.w_count(), "w idx out of range");
+                    assert!(!sw[idx], "duplicate w idx");
+                    sw[idx] = true;
+                }
+            }
+        }
         assert!(sw.iter().all(|&b| b));
+    }
+
+    #[derive(Clone, Copy)]
+    enum Axis {
+        U,
+        V,
+        W,
+    }
+
+    fn mac_face_count(d: &GridDims, axis: Axis) -> usize {
+        match axis {
+            Axis::U => d.u_count(),
+            Axis::V => d.v_count(),
+            Axis::W => d.w_count(),
+        }
+    }
+
+    fn mac_face_idx(d: &GridDims, axis: Axis, i: usize, j: usize, k: usize) -> usize {
+        match axis {
+            Axis::U => d.u_idx(i, j, k),
+            Axis::V => d.v_idx(i, j, k),
+            Axis::W => d.w_idx(i, j, k),
+        }
+    }
+
+    fn mac_face_dims(d: &GridDims, axis: Axis) -> (usize, usize, usize) {
+        match axis {
+            Axis::U => (d.nx + 1, d.ny, d.nz),
+            Axis::V => (d.nx, d.ny + 1, d.nz),
+            Axis::W => (d.nx, d.ny, d.nz + 1),
+        }
+    }
+
+    fn mac_gather_offset(axis: Axis) -> [f32; 3] {
+        match axis {
+            Axis::U => [0.0, -0.5, -0.5],
+            Axis::V => [-0.5, 0.0, -0.5],
+            Axis::W => [-0.5, -0.5, 0.0],
+        }
+    }
+
+    fn face_touches_static_solid(d: &GridDims, axis: Axis, i: usize, j: usize, k: usize) -> bool {
+        match axis {
+            Axis::U => {
+                i <= 1 || i >= d.nx - 1 || j == 0 || j >= d.ny - 1 || k == 0 || k >= d.nz - 1
+            }
+            Axis::V => {
+                i == 0 || i >= d.nx - 1 || j <= 1 || j >= d.ny - 1 || k == 0 || k >= d.nz - 1
+            }
+            Axis::W => {
+                i == 0 || i >= d.nx - 1 || j == 0 || j >= d.ny - 1 || k <= 1 || k >= d.nz - 1
+            }
+        }
+    }
+
+    fn fill_wall_zeroed_faces(d: &GridDims, axis: Axis, value: f32) -> Vec<f32> {
+        let mut out = vec![0.0; mac_face_count(d, axis)];
+        let (nx, ny, nz) = mac_face_dims(d, axis);
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    if !face_touches_static_solid(d, axis, i, j, k) {
+                        let idx = mac_face_idx(d, axis, i, j, k);
+                        out[idx] = value;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn sample_mac_pair(
+        d: &GridDims,
+        axis: Axis,
+        p: [f32; 3],
+        final_vel: &[f32],
+        saved_vel: &[f32],
+        wall_aware: bool,
+    ) -> (f32, f32) {
+        let (nx, ny, nz) = mac_face_dims(d, axis);
+        let off = mac_gather_offset(axis);
+        let g = [
+            (p[0] - d.origin[0]) / d.h + off[0],
+            (p[1] - d.origin[1]) / d.h + off[1],
+            (p[2] - d.origin[2]) / d.h + off[2],
+        ];
+        let base = [
+            g[0].floor() as isize,
+            g[1].floor() as isize,
+            g[2].floor() as isize,
+        ];
+        let t = [
+            g[0] - base[0] as f32,
+            g[1] - base[1] as f32,
+            g[2] - base[2] as f32,
+        ];
+        let mut fin = 0.0;
+        let mut sav = 0.0;
+        let mut wsum = 0.0;
+        for dk in 0..2 {
+            let k = base[2] + dk;
+            if k < 0 || k >= nz as isize {
+                continue;
+            }
+            let wz = if dk == 1 { t[2] } else { 1.0 - t[2] };
+            for dj in 0..2 {
+                let j = base[1] + dj;
+                if j < 0 || j >= ny as isize {
+                    continue;
+                }
+                let wy = if dj == 1 { t[1] } else { 1.0 - t[1] };
+                for di in 0..2 {
+                    let i = base[0] + di;
+                    if i < 0 || i >= nx as isize {
+                        continue;
+                    }
+                    let (i, j, k) = (i as usize, j as usize, k as usize);
+                    if wall_aware && face_touches_static_solid(d, axis, i, j, k) {
+                        continue;
+                    }
+                    let wx = if di == 1 { t[0] } else { 1.0 - t[0] };
+                    let weight = wx * wy * wz;
+                    let idx = mac_face_idx(d, axis, i, j, k);
+                    fin += weight * final_vel[idx];
+                    sav += weight * saved_vel[idx];
+                    wsum += weight;
+                }
+            }
+        }
+        if wsum > 0.0 {
+            (fin / wsum, sav / wsum)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    #[test]
+    fn wall_aware_mac_gather_preserves_tangential_velocity_near_static_wall() {
+        let d = GridDims::cubic(8, 1.0);
+        let final_v = fill_wall_zeroed_faces(&d, Axis::V, 10.0);
+        let saved_v = fill_wall_zeroed_faces(&d, Axis::V, 7.0);
+        let p = [1.05, 3.5, 3.5];
+
+        let old = sample_mac_pair(&d, Axis::V, p, &final_v, &saved_v, false);
+        let fixed = sample_mac_pair(&d, Axis::V, p, &final_v, &saved_v, true);
+
+        assert!((old.0 - 5.5).abs() < 1e-6, "old final sample was {:?}", old);
+        assert!(
+            (old.1 - 3.85).abs() < 1e-6,
+            "old saved sample was {:?}",
+            old
+        );
+        assert!(
+            (fixed.0 - 10.0).abs() < 1e-6,
+            "fixed final sample was {:?}",
+            fixed
+        );
+        assert!(
+            (fixed.1 - 7.0).abs() < 1e-6,
+            "fixed saved sample was {:?}",
+            fixed
+        );
+    }
+
+    #[test]
+    fn wall_aware_mac_gather_preserves_away_from_ceiling_normal_velocity() {
+        let d = GridDims::cubic(8, 1.0);
+        let final_v = fill_wall_zeroed_faces(&d, Axis::V, -10.0);
+        let saved_v = fill_wall_zeroed_faces(&d, Axis::V, -6.0);
+        let p = [3.5, 6.95, 3.5];
+
+        let old = sample_mac_pair(&d, Axis::V, p, &final_v, &saved_v, false);
+        let fixed = sample_mac_pair(&d, Axis::V, p, &final_v, &saved_v, true);
+
+        assert!(
+            (old.0 - -0.5).abs() < 1e-5,
+            "old final sample was {:?}",
+            old
+        );
+        assert!(
+            (old.1 - -0.3).abs() < 1e-5,
+            "old saved sample was {:?}",
+            old
+        );
+        assert!(
+            (fixed.0 - -10.0).abs() < 1e-6,
+            "fixed final sample was {:?}",
+            fixed
+        );
+        assert!(
+            (fixed.1 - -6.0).abs() < 1e-6,
+            "fixed saved sample was {:?}",
+            fixed
+        );
     }
 
     #[test]
@@ -327,7 +591,13 @@ mod tests {
         // historical [-1,1]^3 cube: extent 2.0, centered origin -1.0.
         let n = 64usize;
         let origin = [-(n as f32) * H / 2.0; 3];
-        let d = GridDims { nx: n, ny: n, nz: n, h: H, origin };
+        let d = GridDims {
+            nx: n,
+            ny: n,
+            nz: n,
+            h: H,
+            origin,
+        };
         assert!((d.h * n as f32 - 2.0).abs() < 1e-6, "extent != 2.0");
         assert!((d.origin[0] - (-1.0)).abs() < 1e-6, "origin != -1.0");
     }

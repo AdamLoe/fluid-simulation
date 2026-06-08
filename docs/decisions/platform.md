@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-07
 ---
 
 # Decisions — Platform
@@ -44,8 +44,8 @@ production simulator and may be frozen or dropped if it slows the GPU path.
 **Why** — The product path is GPU; maintaining two full simulators would double
 complexity. The CPU reference earns its keep purely as host-testable algorithm sanity.
 
-**Code anchors** — host reference + tests in `app/crates/fluid-lab/src/sim/mod.rs`, `app/crates/fluid-lab/src/sim/pressure.rs`,
-`app/crates/fluid-lab/src/sim/marching_cubes.rs`.
+**Code anchors** — host reference + tests in `app/crates/fluid-lab/src/sim/mod.rs` and
+`app/crates/fluid-lab/src/sim/pressure.rs`.
 
 **Applies to** — `architecture/simulation.md`, `architecture/pressure-solver.md`,
 `agent-context/testing.md`.

@@ -10,13 +10,13 @@
     },
     {
       "id": "mac-simulation",
-      "summary": "hybrid FLIP/PIC MAC-grid sim: grid/face indexing, cell typing, fixed-point i32-atomic P2G (FIXED_SCALE 2^16) + determinism invariant, G2P PIC/FLIP blend, body forces, advection, particle recovery, liquid-volume/friction/slosh knobs, the per-substep loop (except the pressure solve)",
+      "summary": "hybrid FLIP/PIC MAC-grid sim: grid/face indexing, cell typing, fixed-point i32-atomic P2G (FIXED_SCALE 2^16) + determinism invariant, wall-aware G2P PIC/FLIP blend, body forces, advection, particle recovery, volume-correction/friction/impulse knobs, the per-substep loop (except the pressure solve)",
       "owner": "architecture/simulation.md",
       "references": ["architecture/pressure-solver.md", "architecture/gpu-resources.md", "architecture/app-shell.md"]
     },
     {
       "id": "tank-grid-dims",
-      "summary": "rectangular-tank geometry: three independent per-axis cell counts nx,ny,nz (Reset-class settings grid.res_x/y/z, default 64 each => the [-1,1]^3 cube) at a single uniform scalar cell size h = 2/64, carried in Params.gdim vec4<u32> = [nx,ny,nz,0]; all-equal counts give a cube, unequal give a box; pressure operator stays isotropic and marching cubes works per-axis",
+      "summary": "rectangular-tank geometry: three independent per-axis cell counts nx,ny,nz (Reset-class settings grid.res_x/y/z, default 64 each => the [-1,1]^3 cube) at a single uniform scalar cell size h = 2/64, carried in Params.gdim vec4<u32> = [nx,ny,nz,0]; all-equal counts give a cube, unequal give a box; pressure operator stays isotropic",
       "owner": "architecture/simulation.md",
       "references": ["architecture/gpu-resources.md", "architecture/rendering.md", "architecture/pressure-solver.md", "architecture/settings.md"]
     },
@@ -34,7 +34,7 @@
     },
     {
       "id": "rendering",
-      "summary": "GPU-native scene + debug rendering: render modes (wireframe tank, particles, grid slice, marching-cubes mesh), the no-normal-frame-readback invariant, the tank model matrix, marching-cubes surface (built, default off) + fallback policy",
+      "summary": "GPU-native scene + debug rendering: render modes (wireframe tank, particles, grid slice), the no-normal-frame-readback invariant, the tank model matrix, and the removed extracted-surface compatibility path",
       "owner": "architecture/rendering.md",
       "references": ["architecture/simulation.md", "architecture/gpu-resources.md", "architecture/app-shell.md"]
     },
@@ -46,13 +46,13 @@
     },
     {
       "id": "settings-registry",
-      "summary": "the single typed schema-driven config registry (id/label/category/type/default/validation/tooltip), apply classes (live/reset/reload), the config_json/set_setting/stats_json JS bridge surface",
+      "summary": "the single typed schema-driven config registry (id/label/category/panel_group/type/default/validation/optional tooltip/optional technical_tooltip), apply classes (live/reset/reload), the config_json/set_setting/stats_json JS bridge surface",
       "owner": "architecture/settings.md",
       "references": ["architecture/app-shell.md", "architecture/web-shell.md", "architecture/profiler.md", "architecture/gpu-resources.md"]
     },
     {
       "id": "web-shell",
-      "summary": "thin TS/HTML front-end, the two entry paths (canonical static vs stale Vite/TS), the rendered config + profiler panels, per-setting reset buttons, the simplified header/toolbar (title + Pause/Reset/Mesh/Settings, no extra chrome), the #unsupported WebGPU overlay, the headless real-GPU capture harness (tools/capture.mjs)",
+      "summary": "thin TS/HTML front-end, the two entry paths (canonical static vs stale Vite/TS), the rendered config + profiler panels, per-setting reset buttons, the simplified header/toolbar (title + Pause/Reset/Config/Profiler, no extra chrome), the #unsupported WebGPU overlay, the headless real-GPU capture harness (tools/capture.mjs)",
       "owner": "architecture/web-shell.md",
       "references": ["architecture/app-shell.md", "architecture/settings.md", "architecture/profiler.md"]
     },
@@ -70,13 +70,13 @@
     },
     {
       "id": "dec-rendering",
-      "summary": "GPU-native no-readback debug views, marching cubes demoted/default-off + fallback contract, render-mode cost registry, separate particle/grid/surface representations, visual realism subordinate to observability",
+      "summary": "GPU-native no-readback debug views, particle/liquid-cell product surface, single-pass render policy, separate particle/grid representations, visual realism subordinate to observability",
       "owner": "decisions/rendering.md",
       "references": []
     },
     {
       "id": "dec-performance",
-      "summary": "32³/64³/128³ resolution targets, one preset until the scale pass, per-stage storage-buffer pass-split, SoA/fixed/ping-pong buffers, profile-before-optimize, 1M-particle stretch",
+      "summary": "32³/64³/128³ resolution targets, measured scale limits, per-stage storage-buffer pass-split, SoA/fixed/ping-pong buffers, profile-before-optimize, dispatch-shape particle ceiling",
       "owner": "decisions/performance.md",
       "references": []
     },
@@ -94,7 +94,7 @@
     },
     {
       "id": "dec-scope",
-      "summary": "bounded tank vs ocean, fluid-lab is the direction not first-version scope, visible pipeline as product, scenarios are later work / static before dynamic, optional features are not blockers + kill switches, replay/scrub deferred, portfolio honesty",
+      "summary": "bounded tank vs ocean, fluid-lab is the direction not first-version scope, visible pipeline as product, static scenes before dynamic solids, source/drain deferred as mass-mutation work, optional features are not blockers, replay/scrub deferred, portfolio honesty",
       "owner": "decisions/scope.md",
       "references": []
     }

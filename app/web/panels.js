@@ -54,7 +54,7 @@ function getTipEl() {
   _tipEl = document.createElement("div");
   _tipEl.className = "cfg-tip";
   _tipEl.style.cssText =
-    "position:fixed;z-index:1000;max-width:260px;padding:7px 9px;" +
+    "position:fixed;z-index:1000;max-width:300px;padding:7px 9px;" +
     "background:#0f1219;color:#cdd6e4;border:1px solid #2a3142;border-radius:6px;" +
     "font-size:11px;line-height:1.45;box-shadow:0 4px 14px rgba(0,0,0,0.5);" +
     "pointer-events:none;visibility:hidden;opacity:0;white-space:normal;" +
@@ -63,9 +63,22 @@ function getTipEl() {
   return _tipEl;
 }
 
-function showTip(text, anchor) {
+function styleTip(tip, kind) {
+  if (kind === "technical") {
+    tip.style.background = "#151427";
+    tip.style.color = "#ded8ff";
+    tip.style.borderColor = "#6d5dfc";
+  } else {
+    tip.style.background = "#0f1219";
+    tip.style.color = "#cdd6e4";
+    tip.style.borderColor = "#2a3142";
+  }
+}
+
+function showTip(text, anchor, kind = "functional") {
   const tip = getTipEl();
   tip.textContent = text;
+  styleTip(tip, kind);
   // Make it laid-out-but-invisible so we can measure before positioning.
   tip.style.visibility = "hidden";
   tip.style.left = "0px";
@@ -90,10 +103,10 @@ function hideTip() {
 }
 
 // Attach instant-tooltip behaviour to an element (hover + keyboard focus).
-function attachTip(el, text) {
-  el.addEventListener("mouseenter", () => showTip(text, el));
+function attachTip(el, text, kind = "functional") {
+  el.addEventListener("mouseenter", () => showTip(text, el, kind));
   el.addEventListener("mouseleave", hideTip);
-  el.addEventListener("focus", () => showTip(text, el));
+  el.addEventListener("focus", () => showTip(text, el, kind));
   el.addEventListener("blur", hideTip);
 }
 
@@ -125,15 +138,22 @@ function saveStoredConfig(settings) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const APPLY_DOT = {
-  live:   { color: "#4ade80", title: "Live — takes effect immediately" },
-  reset:  { color: "#fbbf24", title: "Reset — takes effect after Reset" },
-  reload: { color: "#f87171", title: "Reload — takes effect after page reload" },
+  live:   { color: "#4ade80", title: "Live - takes effect immediately" },
+  reset:  { color: "#fbbf24", title: "Reset - takes effect after Reset" },
+  reload: { color: "#f87171", title: "Reload - takes effect after page reload" },
 };
 
 const APPLY_BADGE = {
   reset:  { text: "⟳ reset to apply",  cls: "badge-reset" },
   reload: { text: "⤓ reload to apply", cls: "badge-reload" },
 };
+
+const PANEL_GROUPS = [
+  { id: "default", label: "Default", collapsed: false },
+  { id: "advanced", label: "Advanced", collapsed: true },
+  { id: "dev", label: "Dev", collapsed: true },
+];
+const PRESENTATION_CATEGORIES = new Set(["Render", "Camera"]);
 
 function buildConfigPanel(container, app) {
   hideTip();
@@ -145,37 +165,34 @@ function buildConfigPanel(container, app) {
     return;
   }
 
-  // Group by category, preserving first-seen order
-  const categories = [];
-  const byCategory = {};
+  // Group by panel tier first, then category. Unknown tiers remain reachable in
+  // the default tier rather than disappearing.
+  const byGroup = {};
+  for (const group of PANEL_GROUPS) byGroup[group.id] = [];
   for (const s of settings) {
-    if (!byCategory[s.category]) {
-      byCategory[s.category] = [];
-      categories.push(s.category);
-    }
-    byCategory[s.category].push(s);
+    const group = PANEL_GROUPS.some(g => g.id === s.panel_group) ? s.panel_group : "default";
+    byGroup[group].push(s);
   }
 
   // Track row elements by id for badge/value updates
   const rowEls = {};
 
-  for (const cat of categories) {
-    const section = document.createElement("div");
-    section.className = "cfg-section";
+  const defaultSettings = byGroup.default || [];
+  const defaultCore = defaultSettings.filter(s => !PRESENTATION_CATEGORIES.has(s.category));
+  const defaultPresentation = defaultSettings.filter(s => PRESENTATION_CATEGORIES.has(s.category));
 
-    const heading = document.createElement("div");
-    heading.className = "cfg-section-heading";
-    heading.textContent = cat;
-    section.appendChild(heading);
+  appendCategorySections(container, defaultCore, rowEls, app);
 
-    for (const s of byCategory[cat]) {
-      const row = buildSettingRow(s, app, settings);
-      rowEls[s.id] = row.el;
-      section.appendChild(row.el);
-    }
-
-    container.appendChild(section);
+  const expertDrawers = document.createElement("div");
+  expertDrawers.className = "cfg-expert-drawers";
+  for (const group of PANEL_GROUPS.filter(g => g.collapsed)) {
+    appendCollapsedGroup(expertDrawers, group, byGroup[group.id], rowEls, app);
   }
+  if (expertDrawers.children.length > 0) {
+    container.appendChild(expertDrawers);
+  }
+
+  appendCategorySections(container, defaultPresentation, rowEls, app);
 
   // Bottom action buttons
   const actions = document.createElement("div");
@@ -216,7 +233,99 @@ function buildConfigPanel(container, app) {
   container.appendChild(actions);
 }
 
-function buildSettingRow(s, app, allSettings) {
+function appendCollapsedGroup(parent, group, groupSettings, rowEls, app) {
+  if (!groupSettings || !groupSettings.length) return;
+
+  const details = document.createElement("details");
+  details.className = "cfg-group cfg-group-" + group.id;
+
+  const summary = document.createElement("summary");
+  summary.className = "cfg-group-heading";
+
+  const title = document.createElement("span");
+  title.textContent = group.label;
+  const count = document.createElement("span");
+  count.className = "cfg-group-count";
+  count.textContent = groupSettings.length + " controls";
+
+  summary.appendChild(title);
+  summary.appendChild(count);
+  details.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "cfg-group-body";
+  appendCategorySections(body, groupSettings, rowEls, app);
+  details.appendChild(body);
+
+  parent.appendChild(details);
+}
+
+function appendCategorySections(parent, settings, rowEls, app) {
+  if (!settings.length) return;
+
+  const categories = [];
+  const byCategory = {};
+  for (const s of settings) {
+    if (!byCategory[s.category]) {
+      byCategory[s.category] = [];
+      categories.push(s.category);
+    }
+    byCategory[s.category].push(s);
+  }
+
+  for (const cat of categories) {
+    const section = document.createElement("div");
+    section.className = "cfg-section";
+
+    const heading = document.createElement("div");
+    heading.className = "cfg-section-heading";
+    heading.textContent = cat;
+    section.appendChild(heading);
+
+    for (const s of byCategory[cat]) {
+      const row = buildSettingRow(s, app);
+      rowEls[s.id] = row.el;
+      section.appendChild(row.el);
+    }
+
+    parent.appendChild(section);
+  }
+}
+
+function appendHelpIcons(labelWrap, s) {
+  const hasFunctional = typeof s.tooltip === "string" && s.tooltip.length > 0;
+  const hasTechnical = typeof s.technical_tooltip === "string" && s.technical_tooltip.length > 0;
+  if (!hasFunctional && !hasTechnical) return;
+
+  const help = document.createElement("span");
+  help.className = "cfg-help";
+
+  if (hasFunctional) {
+    const info = document.createElement("span");
+    info.className = "cfg-info cfg-info-functional";
+    info.textContent = "?";
+    info.tabIndex = 0;
+    info.setAttribute("role", "button");
+    info.setAttribute("aria-label", "Setting help");
+    attachTip(info, s.tooltip, "functional");
+    help.appendChild(info);
+  }
+
+  if (hasTechnical) {
+    const tech = document.createElement("span");
+    tech.className = "cfg-info cfg-info-technical";
+    tech.textContent = "T";
+    tech.tabIndex = 0;
+    tech.setAttribute("role", "button");
+    tech.setAttribute("aria-label", "Technical setting help");
+    attachTip(tech, s.technical_tooltip, "technical");
+    help.appendChild(tech);
+  }
+
+  labelWrap.appendChild(help);
+}
+
+function buildSettingRow(s, app) {
   const isF32 = s.type === "f32";
   const step = isF32 ? (s.max - s.min) / 200 : 1;
   const decimals = isF32 ? 3 : 0;
@@ -238,25 +347,19 @@ function buildSettingRow(s, app, allSettings) {
   label.className = "cfg-label";
   label.textContent = s.label;
 
-  // Visible info affordance: a dimmed ⓘ that surfaces the tooltip on hover.
-  // Uses the instant custom tooltip (no native-title delay) and is keyboard
-  // focusable so the description is reachable without a mouse.
-  const info = document.createElement("span");
-  info.className = "cfg-info";
-  info.textContent = "ⓘ";
-  info.tabIndex = 0;
-  info.style.cssText =
-    "flex-shrink:0;cursor:help;color:#5a6a98;font-size:11px;margin-left:2px;";
-  attachTip(info, s.tooltip || s.label);
-
   labelWrap.appendChild(dot);
   labelWrap.appendChild(label);
-  labelWrap.appendChild(info);
+  appendHelpIcons(labelWrap, s);
 
   // Enum-valued settings (carry `options`) render as a dropdown instead of a
   // slider. The stored value is the selected option's index.
   if (Array.isArray(s.options) && s.options.length) {
     return buildEnumRow(s, app, row, labelWrap);
+  }
+
+  // Color settings render as a native color picker.
+  if (s.slider_scale === "color") {
+    return buildColorRow(s, app, row, labelWrap);
   }
 
   // Controls: slider + number input
@@ -409,6 +512,57 @@ function buildEnumRow(s, app, row, labelWrap) {
   return { el: row };
 }
 
+// Build a color-picker row for settings with slider_scale === "color".
+// The value is a packed integer 0x00RRGGBB; the native color input expects "#rrggbb".
+function buildColorRow(s, app, row, labelWrap) {
+  function toHex(v) {
+    return "#" + Math.round(v).toString(16).padStart(6, "0");
+  }
+  function fromHex(h) {
+    return parseInt(h.slice(1), 16);
+  }
+
+  const controls = document.createElement("div");
+  controls.className = "cfg-controls";
+
+  const picker = document.createElement("input");
+  picker.type = "color";
+  picker.value = toHex(s.value);
+  picker.className = "cfg-color";
+  picker.style.cssText =
+    "width:44px;height:26px;padding:1px 2px;border:1px solid #2a3142;" +
+    "border-radius:4px;background:#0f1219;cursor:pointer;flex-shrink:0;";
+
+  const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.className = "cfg-reset-btn";
+  resetBtn.textContent = "⟲";
+  resetBtn.title = "Reset to default (" + toHex(s.default) + ")";
+
+  const badge = document.createElement("span");
+  badge.className = "cfg-badge";
+  badge.style.display = "none";
+
+  controls.appendChild(picker);
+  controls.appendChild(resetBtn);
+  row.appendChild(labelWrap);
+  row.appendChild(controls);
+  row.appendChild(badge);
+
+  function applyChange(v) {
+    app.set_setting(s.id, v);
+    s.value = v;
+    picker.value = toHex(v);
+    saveStoredConfig(safeConfigJson(app));
+    badge.style.display = "none"; // color settings are always Live
+  }
+
+  picker.addEventListener("input", () => applyChange(fromHex(picker.value)));
+  resetBtn.addEventListener("click", () => applyChange(s.default));
+
+  return { el: row };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Profiler panel
 // ─────────────────────────────────────────────────────────────────────────────
@@ -424,6 +578,8 @@ function buildProfilerPanel(container, app) {
 
   const timing = stats.timing || "unknown";
   const timingColor = timing === "gpu-timestamp" ? "#4ade80" : "#fbbf24";
+  const scaleOk = !stats.scale_status || stats.scale_status === "ok";
+  const scaleColor = scaleOk ? "#4ade80" : "#f87171";
 
   const fps = stats.fps;
   const fpsColor = fps == null ? "#6b7689" : fps >= 55 ? "#4ade80" : fps >= 30 ? "#fbbf24" : "#f87171";
@@ -436,7 +592,7 @@ function buildProfilerPanel(container, app) {
     <div class="prof-divider"></div>
     <div class="prof-row prof-header-row">
       <span class="prof-key">Timing</span>
-      <span class="prof-val" style="color:${timingColor}">${timing}</span>
+      <span class="prof-val" style="color:${timingColor}">${timing} (${stats.frame_samples ?? "—"} frames)</span>
     </div>` ;
   const liquidCells = stats.gpu && stats.gpu.liquid_cells != null ? stats.gpu.liquid_cells : null;
   html += `
@@ -449,8 +605,20 @@ function buildProfilerPanel(container, app) {
       <span class="prof-val">${stats.total_cells != null ? stats.total_cells.toLocaleString() : "—"} / ${liquidCells != null ? liquidCells.toLocaleString() : "—"}</span>
     </div>
     <div class="prof-row">
-      <span class="prof-key">Particles</span>
-      <span class="prof-val">${stats.particles != null ? stats.particles.toLocaleString() : "—"}</span>
+      <span class="prof-key">Particles actual / requested</span>
+      <span class="prof-val">${stats.particles != null ? stats.particles.toLocaleString() : "—"} / ${stats.requested_particles != null ? stats.requested_particles.toLocaleString() : "—"}</span>
+    </div>
+    <div class="prof-row">
+      <span class="prof-key">Scale preflight</span>
+      <span class="prof-val" style="color:${scaleColor}">${stats.scale_status ?? "—"}</span>
+    </div>
+    <div class="prof-row">
+      <span class="prof-key">Seeded / dispatch limit</span>
+      <span class="prof-val">${stats.estimated_particles != null ? stats.estimated_particles.toLocaleString() : "—"} / ${stats.max_particle_dispatch_count != null ? stats.max_particle_dispatch_count.toLocaleString() : "—"}</span>
+    </div>
+    <div class="prof-row">
+      <span class="prof-key">Workgroups / dimension</span>
+      <span class="prof-val">${stats.max_compute_workgroups_per_dimension != null ? stats.max_compute_workgroups_per_dimension.toLocaleString() : "—"}</span>
     </div>
     <div class="prof-row">
       <span class="prof-key">GPU buffer mem</span>
@@ -479,33 +647,30 @@ function buildProfilerPanel(container, app) {
       <span class="prof-key">Dispatches / frame</span>
       <span class="prof-val">${stats.dispatches_this_frame != null ? stats.dispatches_this_frame.toLocaleString() : "—"} &nbsp;<span class="prof-fps">(${stats.dispatches_per_substep ?? "—"}/substep)</span></span>
     </div>
+    <div class="prof-row">
+      <span class="prof-key">Pressure iters / mode</span>
+      <span class="prof-val">${stats.pressure_iterations ?? "—"} / ${stats.render_mode ?? "—"}</span>
+    </div>
   `;
 
   if (stats.gpu) {
     const g = stats.gpu;
-    const simMs = g.sim_ms ?? 0;
-    const pressurePct = simMs > 0 ? (g.pressure_ms / simMs) * 100 : 0;
+    const costs = [
+      ["Prep", g.prep_ms],
+      ["Pressure", g.pressure_ms],
+      ["Finish", g.finish_ms],
+      ["Render", g.render_ms],
+    ].sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
 
     html += `
       <div class="prof-divider"></div>
-      <div class="prof-section-label">GPU Pass Breakdown</div>
-
-      <div class="prof-row">
-        <span class="prof-key">Prep</span>
-        <span class="prof-val">${fmt(g.prep_ms, 2)} ms</span>
-      </div>
-      <div class="prof-row prof-pressure-row">
-        <span class="prof-key">Pressure <span class="prof-dominant">(dominant)</span></span>
-        <span class="prof-val">${fmt(g.pressure_ms, 2)} ms</span>
-      </div>
-      <div class="prof-pressure-bar-wrap">
-        <div class="prof-pressure-bar" style="width:${pressurePct.toFixed(1)}%"></div>
-        <span class="prof-pressure-pct">${pressurePct.toFixed(0)}% of sim</span>
-      </div>
-      <div class="prof-row">
-        <span class="prof-key">Finish</span>
-        <span class="prof-val">${fmt(g.finish_ms, 2)} ms</span>
-      </div>
+      <div class="prof-section-label">GPU Costs (sorted, ms/frame)</div>
+      ${costs.map(([name, ms], i) => `
+        <div class="prof-row${i === 0 ? " prof-total-row" : ""}">
+          <span class="prof-key">${name}${i === 0 ? ' <span class="prof-dominant">(top)</span>' : ""}</span>
+          <span class="prof-val">${fmt(ms, 2)} ms</span>
+        </div>
+      `).join("")}
       <div class="prof-row prof-total-row">
         <span class="prof-key">Sim total</span>
         <span class="prof-val">${fmt(g.sim_ms, 2)} ms</span>
@@ -528,7 +693,8 @@ function buildProfilerPanel(container, app) {
         <div class="prof-divider"></div>
         <div class="prof-section-label">Detailed sections (ms/frame)</div>
       `;
-      for (const [name, ms] of Object.entries(g.sections)) {
+      const sections = Object.entries(g.sections).sort((a, b) => b[1] - a[1]);
+      for (const [name, ms] of sections) {
         html += `
           <div class="prof-row">
             <span class="prof-key">${name}</span>

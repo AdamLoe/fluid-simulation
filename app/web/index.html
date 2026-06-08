@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
     <title>Fluid Lab — Rust · WASM · WebGPU 3D fluid</title>
     <style>
       :root { color-scheme: dark; }
@@ -80,6 +81,67 @@
         border-bottom: 1px solid #1d2230;
         margin-bottom: 2px;
       }
+      .cfg-group {
+        margin: 6px 8px 4px;
+        border: 1px solid #252c3c;
+        border-radius: 7px;
+        background: rgba(15,18,25,0.55);
+        overflow: hidden;
+      }
+      .cfg-group-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 7px 9px;
+        cursor: pointer;
+        user-select: none;
+        color: #9aa8c7;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .cfg-group-heading::-webkit-details-marker { display: none; }
+      .cfg-group-heading::before {
+        content: ">";
+        color: #6b7689;
+        font-size: 11px;
+        margin-right: 2px;
+      }
+      .cfg-group[open] .cfg-group-heading::before { content: "v"; }
+      .cfg-group-heading span:first-child {
+        flex: 1;
+      }
+      .cfg-group-count {
+        color: #6b7689;
+        font-size: 9px;
+        letter-spacing: 0.04em;
+        text-transform: none;
+        white-space: nowrap;
+      }
+      .cfg-group-body .cfg-section:last-child { margin-bottom: 0; }
+      .cfg-group-body .cfg-section-heading { padding-left: 9px; padding-right: 9px; }
+      .cfg-group-body .cfg-row { padding-left: 9px; padding-right: 9px; }
+      .cfg-expert-drawers {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 5px;
+        margin: 6px 8px 5px;
+      }
+      .cfg-expert-drawers .cfg-group {
+        margin: 0;
+      }
+      .cfg-expert-drawers .cfg-group[open] {
+        grid-column: 1 / -1;
+      }
+      .cfg-expert-drawers .cfg-group-heading {
+        gap: 5px;
+        padding: 7px 8px;
+      }
+      .cfg-expert-drawers .cfg-group-count {
+        display: none;
+      }
       .cfg-row {
         display: grid;
         grid-template-columns: 1fr auto;
@@ -110,6 +172,42 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        min-width: 0;
+      }
+      .cfg-help {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        flex-shrink: 0;
+        margin-left: 1px;
+      }
+      .cfg-info {
+        width: 14px;
+        height: 14px;
+        display: grid;
+        place-items: center;
+        border-radius: 50%;
+        border: 1px solid rgba(90,106,152,0.55);
+        background: rgba(74,158,255,0.08);
+        color: #79aaff;
+        cursor: help;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 1;
+        user-select: none;
+        opacity: 0.85;
+      }
+      .cfg-info-technical {
+        border-color: rgba(109,93,252,0.8);
+        background: rgba(109,93,252,0.14);
+        color: #c4b5fd;
+        font-size: 9px;
+      }
+      .cfg-info:hover,
+      .cfg-info:focus {
+        opacity: 1;
+        outline: none;
+        box-shadow: 0 0 0 1px rgba(141,169,255,0.35);
       }
       .cfg-controls {
         display: flex;
@@ -297,7 +395,6 @@
         <strong>Fluid Lab</strong>
         <button id="btn-pause">Pause</button>
         <button id="btn-reset">Reset</button>
-        <button id="btn-mesh">Mesh</button>
         <button id="btn-config">Config</button>
         <button id="btn-profiler">Profiler</button>
       </div>

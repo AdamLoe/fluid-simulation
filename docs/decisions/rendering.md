@@ -1,145 +1,84 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-07
 ---
 
-# Decisions — Rendering
+# Decisions - Rendering
 
-## Debug/inspection views are GPU-native — no normal-frame readback
+## Debug and inspection views are GPU-native
 
-**Decision** — Pressure, velocity, scalar, grid-slice, particle, and mesh views
-sample GPU buffers/textures directly. CPU/GPU readback is allowed only for throttled
-diagnostics, explicit captures, and profiler snapshots — never for routine frame
-rendering.
+**Decision** - Particle and grid-slice views sample GPU buffers directly; CPU/GPU
+readback is reserved for throttled diagnostics, explicit captures, and profiler
+snapshots.
 
-**Why** — A fluid lab exposes many views; if each pulled state back to the CPU the
-inspection layer would become slower than the simulation it inspects. Keeping it
-GPU-native means the same data path serves both final rendering and inspection.
+**Why** - The inspection layer must remain credible at the same scales as the
+simulation it exposes.
 
-**Tradeoffs** — Some views are harder to implement GPU-side, in exchange for credible
-performance.
+**Tradeoffs** - Render/debug views are more involved to implement GPU-side, but they
+do not turn observation into the dominant frame cost.
 
-**Applies to** — `architecture/rendering.md`, `architecture/profiler.md`.
+**Applies to** - `architecture/rendering.md`, `architecture/profiler.md`.
 
-## Marching cubes is demoted to a lazy dev-only opt-in; particles are the default
+## Particle and liquid-cell views are the product rendering surface
 
-**Decision** — MC resources (~73 MB vertex buffer + pipelines) are **not allocated at
-boot**. `GpuContext.mesh` is `Option<mesh::MeshExtractor>` — `None` by default. The
-`dev.mesh_enabled` setting (Reset-class, default 0) controls lazy allocation: enabling
-it allocates the extractor; disabling it drops it. Particles render whenever MC is
-absent or off.
+**Decision** - The product rendering surface is the particle view, tank wireframe,
+and liquid-cell/grid inspection; there is no extracted-surface compatibility path.
 
-**Why** — GPU marching cubes is the project's single biggest memory cost (73 MB) and
-a Reset-class concern. Allocating it unconditionally at boot penalises every session
-regardless of whether MC is being inspected. The observable, inspectable pipeline
-needs no mesh — MC is a dev/debugging view, not a product feature that needs to be
-cheap to reach. Lazy allocation keeps the common path lightweight.
+**Why** - These views make scale, motion, and solver state legible without carrying a
+second heavyweight representation that distracts from the fluid-lab direction.
 
-**Tradeoffs** — Enabling MC requires a Reset (the ~73 MB allocation and pipeline
-construction happen during recreate_fluid). Disabling it recovers the memory
-immediately. The web toolbar Mesh button is wired through the same lazy-alloc path.
+**Tradeoffs** - The app does not currently offer a smooth cinematic water surface. A
+future surface renderer must justify its own cost and product role as a new feature.
 
-**Code anchors** — `app/crates/fluid-lab/src/gpu/mod.rs → GpuContext.mesh`; `app/crates/fluid-lab/src/gpu/mesh.rs → MeshExtractor`; `app/crates/fluid-lab/src/gpu/shaders/mc.wgsl`; host table reference + tests in `app/crates/fluid-lab/src/sim/marching_cubes.rs`.
+**Code anchors** - `app/crates/fluid-lab/src/gpu/mod.rs -> GpuContext::render`;
+`app/crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer`;
+`app/crates/fluid-lab/src/gpu/slice.rs -> SliceRenderer`.
 
-**Applies to** — `architecture/rendering.md`, `architecture/gpu-resources.md`.
+**Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`,
+`architecture/web-shell.md`.
 
-## The marching-cubes water is shaded as a volume (absorption + refraction + reflection)
+## Rendering stays single-pass until a measured feature requires more
 
-**Decision** — The MC water surface reads as a *volume*, not a thin glass shell. Its
-color is driven by Beer-Lambert **absorption** over the per-pixel water thickness
-(deeper water tints more), **screen-space refraction** of the rendered background, and a
-procedural-sky **Fresnel reflection**. This requires the water (mesh) render path to be
-**multi-pass** with offscreen targets (`scene_color`, `water_back_depth`) and a
-background `Blitter`; the default particle/slice path stays single-pass.
+**Decision** - The wireframe, particles, and optional grid slice share one swapchain
+render pass and one depth attachment.
 
-**Why** — With only a surface shell + constant opacity, a long path through water tinted
-the background no more than a thin film — it looked like clear glass. Thickness-driven
-absorption is the dominant cue that makes water read as water; refraction and a
-structured reflection complete the look. The cost (extra passes + two screen-sized
-targets) lands only when the dev-only mesh view is on.
+**Why** - The current views need no offscreen color/depth targets, and keeping the
+path single-pass makes render timing and memory costs straightforward.
 
-**Tradeoffs / scope** — Thickness comes from the water's own front-to-back surfaces (a
-depth-only back-face prepass), **not** scene depth, because the tank is wireframe-only
-with no opaque backdrop. This is a single-volume approximation: it does not model
-nested air pockets or refraction of geometry outside the frame (screen-space limits).
-Refraction is visually subtle against the empty tank background (little structure to
-bend). This decision deliberately pushes against *"visual realism subordinate to
-observability"* (below) — justified narrowly: the MC mesh is the one cinematic surface
-view, opt-in and off by default, so polishing it does not compromise the inspectable
-default path.
+**Revisit when** - A measured, approved rendering feature requires an offscreen or
+multi-pass composition path.
 
-**Code anchors** — `app/crates/fluid-lab/src/gpu/mod.rs → GpuContext::render` (the
-two-branch pass structure, `scene_color`/`water_back_depth`/`blit`);
-`app/crates/fluid-lab/src/gpu/mesh.rs` (`back_pl`, `rebuild_render_bg`, `MeshCamera`);
-`app/crates/fluid-lab/src/gpu/blit.rs`; `app/crates/fluid-lab/src/gpu/shaders/mesh.wgsl`,
-`blit.wgsl`. Live knobs `render.water_absorb` / `render.water_refract`.
+**Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`.
 
-**Applies to** — `architecture/rendering.md`, `architecture/settings.md`.
+## Particle and grid representations stay separate
 
-## Render/debug modes are centrally organized, each with a cost contract
+**Decision** - Fluid particles and the MAC simulation grid remain distinct
+representations that can be rendered and inspected independently.
 
-**Decision** — Render/debug modes are registered/organized rather than scattered as
-ad-hoc toggles; each mode is associated with its required buffers, a profiler label,
-a cost class (cheap/medium/expensive), and low-tier availability.
+**Why** - Particles track moving mass while the grid owns pressure and velocity
+solves; preserving that distinction makes simulation behavior easier to inspect.
 
-**Why** — The product depends on many views. A registry keeps the renderer from
-becoming a pile of one-off flags and keeps every view's cost trackable.
+**Tradeoffs** - Separate buffers and renderers cost some plumbing in exchange for
+clear ownership and replaceable views.
 
-**Applies to** — `architecture/rendering.md`.
+**Applies to** - `architecture/rendering.md`, `architecture/simulation.md`.
 
-## Keep particles, grid, and surface field as separate representations
+## Visual styling must preserve observability
 
-**Decision** — Fluid particles, the 3D MAC simulation grid, and the 3D scalar surface
-field are distinct representations, not one fused buffer.
+**Decision** - Particle color, opacity, edge softness, size, and sphere shading may
+improve volume perception, but the primary view must continue to expose motion and
+simulation problems.
 
-**Why** — Each has a different job (particles track mass, the grid solves physics, the
-scalar field feeds marching cubes) and each can be visualized and replaced
-independently.
+**Why** - Rendering is useful here when it helps a viewer read the fluid, not when it
+hides solver behavior behind cinematic polish.
 
-**Tradeoffs** — More buffers and synchronization for a cleaner, more replaceable
-architecture.
-
-**Applies to** — `architecture/rendering.md`, `architecture/simulation.md`.
-
-## Visual realism is subordinate to observability — except in the opt-in MC water view
-
-**Decision** — The **default** path (readable particles/coarse voxels) plus strong
-profiler + config instrumentation stays observability-first, with no reliance on
-cinematic polish. Visual realism — translucent glassy water, velocity-driven foam,
-Fresnel/specular shading — lives only in the **opt-in marching-cubes view**
-(`dev.mesh_enabled`), tuned by Live `render.mesh_*` knobs.
-
-**Why** — Premature visual polish on the primary view hides solver problems; the
-particle view must keep exposing them. But the MC view is already a deliberate,
-heavyweight opt-in, so giving *it* believable water (rather than the old opaque white
-blob) is a usability win that costs the default path nothing.
-
-**Tradeoffs** — The MC fragment shader and the foam/smoothing fields carry more
-complexity than a flat-shaded surface, isolated behind the lazy-allocated extractor.
-
-**Applies to** — `architecture/rendering.md`, `architecture/profiler.md`.
-
-## MC water shades in tank-local space; foam is velocity-driven
-
-**Decision** — The MC water surface is shaded with the camera eye transformed into the
-tank's local frame (vertices are local; the model matrix is baked into `view_proj`
-only). White appears only as a tight sun specular and as foam keyed to a per-cell
-**speed** field (`density.wgsl` → `mc.wgsl` `nrm.w` → `mesh.wgsl`), not as a blanket
-Fresnel rim.
-
-**Why** — A world-space (or approximate) eye made the view vector swing as the tank
-moved, blowing the Fresnel term to white — the white-flash bug. Keying foam to speed
-matches the particle speed→white cue, so "white" means "fast/aerated water" in both
-views rather than an artifact of viewing angle.
-
-**Code anchors** — `app/crates/fluid-lab/src/lib.rs → FluidApp::frame` (eye_local);
-`app/crates/fluid-lab/src/gpu/shaders/mesh.wgsl`; `app/crates/fluid-lab/src/gpu/shaders/density.wgsl` (speed).
-
-**Applies to** — `architecture/rendering.md`.
+**Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
+`architecture/profiler.md`.
 
 ## See also
 
 - [`../architecture/rendering.md`](../architecture/rendering.md)
-- [`observability.md`](observability.md) · [`performance.md`](performance.md) · [`scope.md`](scope.md)
+- [`performance.md`](performance.md) - render memory/cost policy
+- [`scope.md`](scope.md) - product framing
 - [`../agent-context/maintaining-docs.md`](../agent-context/maintaining-docs.md)

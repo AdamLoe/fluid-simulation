@@ -34,7 +34,6 @@ impl TimingSource {
     }
 }
 
-
 /// One accumulated scope over the logging window.
 struct ScopeAcc {
     name: &'static str,
@@ -112,6 +111,12 @@ struct FrameFacts {
     grid_res: [u32; 3],
     buffer_bytes: u64,
     dispatches_per_substep: u32,
+    requested_particles: u32,
+    estimated_particles: u32,
+    max_compute_workgroups_per_dimension: u32,
+    max_particle_dispatch_count: u32,
+    max_particle_storage_count: u32,
+    scale_status: &'static str,
 }
 
 /// Latest real GPU-timestamp sample (from `gpu::timing`), if available. All
@@ -156,7 +161,11 @@ impl Profiler {
     /// Record the latest timestep-controller stats. `stats` is the per-frame
     /// accounting (seconds); `total_dropped` is the cumulative dropped sim time
     /// (seconds). Both are converted to milliseconds for display.
-    pub fn set_timestep_stats(&mut self, stats: crate::timestep::TimestepFrameStats, total_dropped: f32) {
+    pub fn set_timestep_stats(
+        &mut self,
+        stats: crate::timestep::TimestepFrameStats,
+        total_dropped: f32,
+    ) {
         self.timestep = TimestepStats {
             substeps_this_frame: stats.substeps,
             accumulated_before_ms: stats.accumulated_before * 1000.0,
@@ -174,6 +183,12 @@ impl Profiler {
         grid_res: [u32; 3],
         buffer_bytes: u64,
         dispatches_per_substep: u32,
+        requested_particles: u32,
+        estimated_particles: u32,
+        max_compute_workgroups_per_dimension: u32,
+        max_particle_dispatch_count: u32,
+        max_particle_storage_count: u32,
+        scale_status: &'static str,
     ) {
         self.facts = FrameFacts {
             total_cells,
@@ -181,7 +196,32 @@ impl Profiler {
             grid_res,
             buffer_bytes,
             dispatches_per_substep,
+            requested_particles,
+            estimated_particles,
+            max_compute_workgroups_per_dimension,
+            max_particle_dispatch_count,
+            max_particle_storage_count,
+            scale_status,
         };
+    }
+
+    /// Start a clean measurement window after any Reset attempt. This prevents
+    /// pre-reset frame percentiles and GPU samples from being attributed to the
+    /// newly requested scale.
+    pub fn reset_measurement(&mut self) {
+        self.timing_source = TimingSource::CpuWallClock;
+        self.frame_window.samples.clear();
+        self.frames_since_log = 0;
+        self.last_log_ms = self.now();
+        self.gpu = None;
+        self.last_substeps = 0;
+        self.timestep = TimestepStats::default();
+        self.open_stack.clear();
+        for scope in &mut self.scopes {
+            scope.total_ms = 0.0;
+            scope.calls = 0;
+            scope.open_start = None;
+        }
     }
 
     /// Record the number of physics substeps executed this frame so it can be
@@ -243,7 +283,11 @@ impl Profiler {
 
     pub fn scope_end(&mut self, name: &'static str) {
         let now = self.now();
-        if let Some(pos) = self.open_stack.iter().rposition(|&i| self.scopes[i].name == name) {
+        if let Some(pos) = self
+            .open_stack
+            .iter()
+            .rposition(|&i| self.scopes[i].name == name)
+        {
             let idx = self.open_stack.remove(pos);
             let s = &mut self.scopes[idx];
             if let Some(start) = s.open_start.take() {
@@ -339,7 +383,13 @@ impl Profiler {
 
     /// Serialize live profiler + GPU stats to a JSON object string.
     /// grid_n and particles are passed in from FluidApp (which owns settings/gpu).
-    pub fn stats_json(&self, grid_n: u32, particles: u32) -> String {
+    pub fn stats_json(
+        &self,
+        grid_n: u32,
+        particles: u32,
+        pressure_iterations: u32,
+        render_mode: &str,
+    ) -> String {
         let samples = &self.frame_window.samples;
         let count = samples.len().max(1);
         let avg = samples.iter().sum::<f64>() / count as f64;
@@ -383,14 +433,14 @@ impl Profiler {
                 };
                 format!(
                     r#"{{"sim_ms":{sim},"prep_ms":{prep},"pressure_ms":{pres},"finish_ms":{fin},"render_ms":{ren},"liquid_cells":{lc},"substeps":{subs},"detailed":{det}{detail}}}"#,
-                    sim  = fmt_ms(sim_ms as f64),
+                    sim = fmt_ms(sim_ms as f64),
                     prep = fmt_ms(g.prep_ms as f64),
                     pres = fmt_ms(g.pressure_ms as f64),
-                    fin  = fmt_ms(g.finish_ms as f64),
-                    ren  = fmt_ms(g.render_ms as f64),
-                    lc   = g.liquid_cells,
+                    fin = fmt_ms(g.finish_ms as f64),
+                    ren = fmt_ms(g.render_ms as f64),
+                    lc = g.liquid_cells,
                     subs = g.substeps,
-                    det  = g.detailed,
+                    det = g.detailed,
                     detail = detail,
                 )
             }
@@ -406,33 +456,46 @@ impl Profiler {
             format!("{grid_n}")
         };
         let total_cells = f.total_cells;
-        let particles_out = if f.particles > 0 { f.particles } else { particles };
+        let particles_out = if f.particles > 0 {
+            f.particles
+        } else {
+            particles
+        };
         let gpu_buffer_mb = format!("{:.1}", f.buffer_bytes as f64 / 1.0e6);
         let dispatches_per_substep = f.dispatches_per_substep;
         let dispatches_this_frame = dispatches_per_substep * ts.substeps_this_frame;
 
         format!(
-            r#"{{"timing":"{timing}","frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"particles":{par},"gpu_buffer_mb":{gmb},"substeps_this_frame":{stf},"accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
+            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"substeps_this_frame":{stf},"accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
             timing = self.timing_source.label(),
-            avg    = fmt_ms(avg),
-            fps    = fmt_ms(fps),
-            p50    = fmt_ms(p50),
-            p95    = fmt_ms(p95),
-            p99    = fmt_ms(p99),
-            subs   = self.last_substeps,
-            gn     = grid_n,
-            gres   = grid_res_str,
-            tc     = total_cells,
-            par    = particles_out,
-            gmb    = gpu_buffer_mb,
-            stf    = ts.substeps_this_frame,
-            ab     = fmt_ms(ts.accumulated_before_ms as f64),
-            aa     = fmt_ms(ts.accumulated_after_ms as f64),
-            drop   = fmt_ms(ts.dropped_this_frame_ms as f64),
-            tdrop  = fmt_ms(ts.total_dropped_ms as f64),
-            dps    = dispatches_per_substep,
-            dtf    = dispatches_this_frame,
-            gpu    = gpu_json,
+            sample_count = samples.len(),
+            avg = fmt_ms(avg),
+            fps = fmt_ms(fps),
+            p50 = fmt_ms(p50),
+            p95 = fmt_ms(p95),
+            p99 = fmt_ms(p99),
+            subs = self.last_substeps,
+            gn = grid_n,
+            gres = grid_res_str,
+            tc = total_cells,
+            par = particles_out,
+            req = f.requested_particles,
+            est = f.estimated_particles,
+            scale_status = f.scale_status,
+            max_wg = f.max_compute_workgroups_per_dimension,
+            max_dispatch = f.max_particle_dispatch_count,
+            max_storage = f.max_particle_storage_count,
+            pressure_iterations = pressure_iterations,
+            render_mode = render_mode,
+            gmb = gpu_buffer_mb,
+            stf = ts.substeps_this_frame,
+            ab = fmt_ms(ts.accumulated_before_ms as f64),
+            aa = fmt_ms(ts.accumulated_after_ms as f64),
+            drop = fmt_ms(ts.dropped_this_frame_ms as f64),
+            tdrop = fmt_ms(ts.total_dropped_ms as f64),
+            dps = dispatches_per_substep,
+            dtf = dispatches_this_frame,
+            gpu = gpu_json,
         )
     }
 }

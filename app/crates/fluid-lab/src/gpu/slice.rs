@@ -17,7 +17,7 @@ struct SliceUniform {
     dims: [u32; 4],
     /// x=slice_k, y=h (cell size), z=mode (0/1/2 as f32), w=0  (16 bytes)
     grid: [f32; 4],
-    origin: [f32; 4],         // xyz=world origin, w=0  (16 bytes)
+    origin: [f32; 4], // xyz=world origin, w=0  (16 bytes)
 }
 
 pub struct SliceRenderer {

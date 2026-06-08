@@ -16,7 +16,7 @@ Load only the subsystem doc that matches the task. For rationale, follow the doc
 | The hybrid FLIP/PIC MAC-grid sim — indexing, cell typing, fixed-point integer-atomic P2G, G2P blend, forces, advection, recovery, the per-substep loop | [`simulation.md`](simulation.md) |
 | The Conjugate-Gradient pressure solve (SPD MAC-Poisson), the `cg_*.wgsl` kernels, boundary conventions, host reference | [`pressure-solver.md`](pressure-solver.md) |
 | wgpu device/surface init, adapter-limit probe, SoA buffer layout, bind-group strategy, the per-stage storage-buffer constraint, the recreate path | [`gpu-resources.md`](gpu-resources.md) |
-| GPU-native render/debug views (particles, grid slice) and the marching-cubes mesh surface; the no-normal-frame-readback rule | [`rendering.md`](rendering.md) |
+| GPU-native particle, tank-wireframe, and grid-slice views; the single-pass and no-normal-frame-readback rules | [`rendering.md`](rendering.md) |
 | The hierarchical, config-tagged, timing-source-honest profiler + GPU timestamp queries | [`profiler.md`](profiler.md) |
 | The typed config registry, apply classes (live/reset/reload), the JS bridge | [`settings.md`](settings.md) |
 | The thin TS/HTML web shell, the two entry paths, the rendered config/profiler panels, the capture harness | [`web-shell.md`](web-shell.md) |

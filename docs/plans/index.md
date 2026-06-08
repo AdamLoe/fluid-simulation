@@ -19,14 +19,17 @@ an inventory (it would rot the moment one is added) — list the directory:
 ls docs/plans/
 ```
 
-[`roadmap.md`](roadmap.md) is the one long-lived plan (the remaining 1.x direction).
-Everything else should reach `shipped + okay_to_delete: true` and then be deleted.
+[`roadmap.md`](roadmap.md) is the current long-lived coordination map. Deferred ideas
+that should not be smuggled into current implementation plans live in
+[`future-roadmap.md`](future-roadmap.md). Everything else should reach
+`shipped + okay_to_delete: true` and then be deleted.
 
 ## Routing
 
 | Need | Read |
 |---|---|
-| The remaining roadmap / what's next | [`roadmap.md`](roadmap.md) |
+| Current coordination map / what's next | [`roadmap.md`](roadmap.md) |
+| Deferred future ideas | [`future-roadmap.md`](future-roadmap.md) |
 | Create a new plan | [`~/.claude/agent-docs/v1/plan-template.md`](~/.claude/agent-docs/v1/plan-template.md) |
 | Plan lifecycle / status-metadata rules | [`~/.claude/agent-docs/v1/plan-lifecycle.md`](~/.claude/agent-docs/v1/plan-lifecycle.md) |
 | The doc-update workflow a shipped plan triggers | [`../agent-context/maintaining-docs.md`](../agent-context/maintaining-docs.md) |
@@ -35,4 +38,6 @@ Everything else should reach `shipped + okay_to_delete: true` and then be delete
 
 - [`~/.claude/agent-docs/v1/plan-lifecycle.md`](~/.claude/agent-docs/v1/plan-lifecycle.md)
 - [`../agent-context/maintaining-docs.md`](../agent-context/maintaining-docs.md)
+- [`roadmap.md`](roadmap.md)
+- [`future-roadmap.md`](future-roadmap.md)
 - [`../index.md`](../index.md) — global router.

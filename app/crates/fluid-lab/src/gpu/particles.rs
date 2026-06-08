@@ -7,8 +7,11 @@ use glam::{Mat4, Vec3};
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
-    right: [f32; 4], // xyz = right, w = particle radius
-    up: [f32; 4],
+    right: [f32; 4],      // xyz = camera right, w = particle radius
+    up: [f32; 4],         // xyz = camera up,    w = speed_scale
+    slow_color: [f32; 4], // xyz = RGB, w = alpha
+    fast_color: [f32; 4], // xyz = RGB, w = unused
+    extra: [f32; 4],      // x = edge_inner_radius, y = shading_strength, zw = 0
 }
 
 pub struct ParticleRenderer {
@@ -18,6 +21,11 @@ pub struct ParticleRenderer {
     base_radius: f32,
     radius_scale: f32,
     speed_scale: f32,
+    slow_color: [f32; 3],
+    fast_color: [f32; 3],
+    particle_alpha: f32,
+    edge_inner: f32,
+    shading: f32,
 }
 
 impl ParticleRenderer {
@@ -45,7 +53,8 @@ impl ParticleRenderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // Camera uniform is read in both VS (transforms/colors) and FS (edge/shading).
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -129,6 +138,11 @@ impl ParticleRenderer {
             base_radius: radius,
             radius_scale: 1.0,
             speed_scale: 4.0,
+            slow_color: [0.10, 0.30, 0.80],
+            fast_color: [0.70, 0.92, 1.00],
+            particle_alpha: 1.0,
+            edge_inner: 0.6,
+            shading: 0.5,
         }
     }
 
@@ -140,11 +154,43 @@ impl ParticleRenderer {
         self.speed_scale = s;
     }
 
+    pub fn set_particle_look(&mut self, slow: [f32; 3], fast: [f32; 3], alpha: f32) {
+        self.slow_color = slow;
+        self.fast_color = fast;
+        self.particle_alpha = alpha;
+    }
+
+    pub fn set_edge_inner(&mut self, v: f32) {
+        self.edge_inner = v;
+    }
+
+    pub fn set_shading(&mut self, v: f32) {
+        self.shading = v;
+    }
+
     pub fn update_camera(&self, queue: &wgpu::Queue, view_proj: &Mat4, right: Vec3, up: Vec3) {
         let u = CameraUniform {
             view_proj: view_proj.to_cols_array_2d(),
-            right: [right.x, right.y, right.z, self.base_radius * self.radius_scale],
+            right: [
+                right.x,
+                right.y,
+                right.z,
+                self.base_radius * self.radius_scale,
+            ],
             up: [up.x, up.y, up.z, self.speed_scale],
+            slow_color: [
+                self.slow_color[0],
+                self.slow_color[1],
+                self.slow_color[2],
+                self.particle_alpha,
+            ],
+            fast_color: [
+                self.fast_color[0],
+                self.fast_color[1],
+                self.fast_color[2],
+                0.0,
+            ],
+            extra: [self.edge_inner, self.shading, 0.0, 0.0],
         };
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&u));
     }

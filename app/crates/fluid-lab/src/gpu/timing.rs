@@ -30,15 +30,32 @@ const THROTTLE: u32 = 20;
 /// Fine sections timed per substep (each is one begin/end pair). The CG-iteration
 /// category passes are appended AFTER these, `CG_CATS_PER_ITER` pairs per iter.
 pub const FINE_SECTIONS: [&str; 27] = [
-    "clear", "mark", "classify",
-    "scatter_u", "scatter_v", "scatter_w",
-    "normalize_u", "normalize_v", "normalize_w",
-    "savevel_u", "savevel_v", "savevel_w",
-    "forces_u", "forces_v", "forces_w",
-    "bound_pre_u", "bound_pre_v", "bound_pre_w",
-    "divergence", "cg_init",
-    "gradient_u", "gradient_v", "gradient_w",
-    "bound_post_u", "bound_post_v", "bound_post_w",
+    "clear",
+    "mark",
+    "classify",
+    "scatter_u",
+    "scatter_v",
+    "scatter_w",
+    "normalize_u",
+    "normalize_v",
+    "normalize_w",
+    "savevel_u",
+    "savevel_v",
+    "savevel_w",
+    "forces_u",
+    "forces_v",
+    "forces_w",
+    "bound_pre_u",
+    "bound_pre_v",
+    "bound_pre_w",
+    "divergence",
+    "cg_init",
+    "gradient_u",
+    "gradient_v",
+    "gradient_w",
+    "bound_post_u",
+    "bound_post_v",
+    "bound_post_w",
     "g2p",
 ];
 const N_FINE: usize = FINE_SECTIONS.len(); // 27
@@ -145,7 +162,9 @@ impl GpuTimers {
         if detailed && slots_for(alloc_iters) > MAX_SLOTS {
             let fixed = 2 * (N_FINE as u32) * max_substeps + 2;
             let per_iter = (2 * (CG_TIMED_PER_ITER as u32) * max_substeps).max(1);
-            let capped = (MAX_SLOTS.saturating_sub(fixed) / per_iter).max(1).min(alloc_iters);
+            let capped = (MAX_SLOTS.saturating_sub(fixed) / per_iter)
+                .max(1)
+                .min(alloc_iters);
             crate::log(&format!(
                 "[fluid-lab][timing] detailed profiling: query budget caps timed CG iters at \
                  {capped} (requested {alloc_iters}); lower max_substeps to time more"
@@ -238,13 +257,22 @@ impl GpuTimers {
 
     // ── FINE accessors (per substep, per section) ───────────────────────────
     /// Section index in `0..N_FINE` → its begin/end pair within the substep block.
-    pub fn fine_section_writes(&self, substep: u32, section: usize) -> wgpu::ComputePassTimestampWrites<'_> {
+    pub fn fine_section_writes(
+        &self,
+        substep: u32,
+        section: usize,
+    ) -> wgpu::ComputePassTimestampWrites<'_> {
         let b = self.substep_base(substep) + 2 * (section as u32);
         cw(&self.query_set, b, b + 1)
     }
     /// Timed-pass pair for iteration `iter` (0-based, < alloc_iters) and timed pass
     /// `tpass` in `0..CG_TIMED_PER_ITER`. Laid out after the N_FINE fixed pairs.
-    pub fn fine_cg_writes(&self, substep: u32, iter: u32, tpass: usize) -> wgpu::ComputePassTimestampWrites<'_> {
+    pub fn fine_cg_writes(
+        &self,
+        substep: u32,
+        iter: u32,
+        tpass: usize,
+    ) -> wgpu::ComputePassTimestampWrites<'_> {
         let pair = (N_FINE as u32) + iter * (CG_TIMED_PER_ITER as u32) + tpass as u32;
         let b = self.substep_base(substep) + 2 * pair;
         cw(&self.query_set, b, b + 1)
@@ -319,9 +347,8 @@ impl GpuTimers {
                     let o = i * 8;
                     u64::from_le_bytes(data[o..o + 8].try_into().unwrap())
                 };
-                let liquid = u32::from_le_bytes(
-                    data[liquid_offset..liquid_offset + 4].try_into().unwrap(),
-                );
+                let liquid =
+                    u32::from_le_bytes(data[liquid_offset..liquid_offset + 4].try_into().unwrap());
                 let span = |a: u64, b: u64| -> f32 {
                     if b > a {
                         (b - a) as f32 * period * 1e-6

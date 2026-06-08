@@ -121,9 +121,12 @@ It writes the PNG + a `<out>.console.txt` beside it. **A bare output filename (e
 location — so screenshots never pollute `app/tools/`, whatever cwd you launched from.
 Pass a path with a directory to override. The 4th positional arg overrides the Chrome
 path (default `C:/Program Files/Google/Chrome/Application/chrome.exe`). Env hooks:
-`DRAG=1` exercises the orbit camera; `EVAL=...` runs a JS expression against
-`window.__fluid`; `FRAMES` / `FRAME_INTERVAL` capture a sequence; `SEQ_RESET` exercises
-repeated resets. A console line `hasGpu: false` means the screenshot is the
+`PARTICLES=N` applies an exact requested particle count and resets; `DETAILED=1`
+enables detailed GPU profiling before that reset; `MEASURE_WAIT=ms` controls the
+post-reset sample window. `DRAG=1` exercises the orbit camera; `EVAL=...` runs a JS
+expression against `window.__fluid`; `FRAMES` / `FRAME_INTERVAL` capture a sequence;
+`SEQ_RESET` exercises repeated resets. Every run records a final machine-readable
+`stats_json` line. A console line `hasGpu: false` means the screenshot is the
 `#unsupported` overlay, not the sim — a healthy boot instead logs `navigator.gpu present:
 true`, the smoke-test PASS, and `fluid init: n=64 …`.
 

@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-07
 ---
 
 # Decisions — Scope
@@ -43,7 +43,7 @@ introducing anisotropic spacing, which would complicate the pressure operator an
 ## The fluid lab is the direction, but not the first-version scope
 
 **Decision** — The long-term product is an inspectable fluid lab (particle/grid/
-divergence/pressure/velocity/scalar views, cutaways, mesh, final render, split-view).
+divergence/pressure/velocity views, cutaways, focused rendering, and split-view).
 The first version proves the core loop first; the full lab is staged afterward.
 
 **Why** — The lab concept is what makes the project distinctive, but shipping all of
@@ -54,8 +54,8 @@ it in the first version would over-scope a build with a hard technical core.
 ## Make the simulation pipeline a first-class, visible product concept
 
 **Decision** — The app exposes the pipeline `Particles → MAC grid → divergence →
-pressure → velocity → scalar field → mesh → final render` as render modes / a pipeline
-strip, with concise honest explanations.
+pressure → velocity` through particle and liquid-cell inspection views, with concise
+honest explanations.
 
 **Why** — Viewers seeing the internal machinery is what differentiates this from an
 ordinary shader demo.
@@ -92,14 +92,30 @@ pays a large, risky solver rewrite for two-way coupling that the demo does not n
 
 **Applies to** — `plans/roadmap.md`, `architecture/simulation.md`.
 
-## Optional features are not phase blockers; use kill switches
+## Source/drain is future mass-mutation work
 
-**Decision** — Split view, guided tour, pressure-comparison UI, pouring spout, moving
-paddle, foam/spray, transparent/refractive material, replay/scrub, 128³, and 1M
-particles are optional. None blocks a phase; unstable optional work is hidden,
-deferred, or labeled experimental. When a target clearly blocks progress, take the
-documented kill switch (drop to 48³/32³; particles/voxels instead of mesh; hide an
-unstable scenario; defer 128³ / 1M particles).
+**Decision** — Source/drain stays out of the shipped interaction controls. When it
+returns, it must create and destroy particles or water volume through an explicit
+mass-accounting plan, not fake the effect with impulses or rendering.
+
+**Why** — Source/drain touches particle allocation, recycling/deletion policy,
+classification, reset/live semantics, and maybe boundary behavior. Those are different
+risks from low-risk tank pose and particle-velocity impulse tools.
+
+**Code anchors** — `crates/fluid-lab/src/settings/mod.rs → Registry` (no
+source/drain setting ids); `crates/fluid-lab/src/lib.rs → InteractionState`
+(interaction tools are scheduling/impulse only).
+
+**Applies to** — `architecture/settings.md`, `architecture/simulation.md`,
+`plans/roadmap.md`.
+
+## Optional features are deferred instead of exposed prematurely
+
+**Decision** — Split view, guided tour, pressure-comparison UI, pouring spout,
+source/drain, moving paddle, foam/spray, transparent/refractive material,
+replay/scrub, 128³, and dispatch-tiled particle counts are optional. None blocks a
+phase. Unstable or unfinished optional work is deferred or put behind an explicitly
+experimental plan, not shipped as a product-visible kill switch.
 
 **Why** — These features are valuable only after the stable inspectable core exists.
 Treating them as required turns the project into a large graphics surface before the
@@ -114,8 +130,8 @@ maximal one.
 high-value future idea, deferred until frame-state ownership, buffer layout, and render
 modes are stable.
 
-**Why** — Scrubbing the same moment across final render / particles / pressure /
-velocity / scalar / mesh would make the lab unusually inspectable, but it adds memory,
+**Why** — Scrubbing the same moment across particles / pressure / velocity / liquid
+cells would make the lab unusually inspectable, but it adds memory,
 state-capture, and UI complexity that should not be paid before the core is stable.
 
 **Applies to** — `plans/roadmap.md`.

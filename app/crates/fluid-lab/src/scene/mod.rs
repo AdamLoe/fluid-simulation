@@ -82,7 +82,11 @@ impl SceneConfig {
     /// Build the scene from the current registry: grid resolution, particle count,
     /// and the selected `scene.preset`.
     pub fn from_settings(settings: &Registry) -> Self {
-        let res = UVec3::new(settings.grid_res_x(), settings.grid_res_y(), settings.grid_res_z());
+        let res = UVec3::new(
+            settings.grid_res_x(),
+            settings.grid_res_y(),
+            settings.grid_res_z(),
+        );
         let preset = ScenePreset::from_u32(settings.scene_preset());
         Self {
             name: preset.name().to_string(),
@@ -98,7 +102,11 @@ impl SceneConfig {
     /// The historical default scene (falling blob), independent of the registry's
     /// scene selector. Kept for any caller that wants the canonical default look.
     pub fn default_tank(settings: &Registry) -> Self {
-        let res = UVec3::new(settings.grid_res_x(), settings.grid_res_y(), settings.grid_res_z());
+        let res = UVec3::new(
+            settings.grid_res_x(),
+            settings.grid_res_y(),
+            settings.grid_res_z(),
+        );
         Self {
             name: ScenePreset::FallingBlob.name().to_string(),
             preset: ScenePreset::FallingBlob,

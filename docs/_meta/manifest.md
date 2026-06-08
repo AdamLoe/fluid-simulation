@@ -28,7 +28,7 @@ code_root: app/
 Per-commit gates — all run inside WSL (see `agent-context/build-run.md`):
 
 - `wsl.exe -d Ubuntu-24.04 -- bash -lc 'cd /home/adamg/fluid-simulation/app && cargo build --target wasm32-unknown-unknown'` — WASM compile check.
-- `wsl.exe -d Ubuntu-24.04 -- bash -lc 'cd /home/adamg/fluid-simulation/app && cargo test --lib'` — host reference tests (sim math, CG, MC tables).
+- `wsl.exe -d Ubuntu-24.04 -- bash -lc 'cd /home/adamg/fluid-simulation/app && cargo test --lib'` — host reference tests (sim math, CG, settings schema, wall-aware gather).
 - For any change that alters visible/GPU behaviour: a browser capture via
   `tools/capture.mjs` against the static path (the acceptance signal that can't be
   faked). Never make a performance claim without profiler output.
@@ -48,7 +48,7 @@ doc Y." Code paths are relative to `code_root` (`app/`).
 | `app/crates/fluid-lab/src/gpu/shaders/{scatter,normalize,mark,classify,clear,forces,boundaries,g2p,gradient,divergence,save_vel,impulse}.wgsl` | `architecture/simulation.md` |
 | `app/crates/fluid-lab/src/gpu/shaders/cg_*.wgsl`, `app/crates/fluid-lab/src/gpu/shaders/pressure.wgsl`, `app/crates/fluid-lab/src/sim/pressure.rs` | `architecture/pressure-solver.md`; `decisions/pressure.md` if the solver choice/convention changes |
 | `app/crates/fluid-lab/src/gpu/mod.rs` (device, GpuCaps, buffer layout, recreate path), `app/crates/fluid-lab/src/gpu/smoke.rs` | `architecture/gpu-resources.md`; `decisions/performance.md` if the pass-split/SoA strategy changes |
-| `app/crates/fluid-lab/src/gpu/{renderer,particles,slice,mesh,blit}.rs`, `app/crates/fluid-lab/src/sim/marching_cubes.rs`, `app/crates/fluid-lab/src/gpu/shaders/{particles,slice,mesh,mc,mc_args,density,blur,blit}.wgsl` | `architecture/rendering.md`; `decisions/rendering.md` if a render-policy decision changes |
+| `app/crates/fluid-lab/src/gpu/{renderer,particles,slice}.rs`, `app/crates/fluid-lab/src/gpu/shaders/{particles,slice}.wgsl` | `architecture/rendering.md`; `decisions/rendering.md` if a render-policy decision changes |
 | `app/crates/fluid-lab/src/profiler/mod.rs`, `app/crates/fluid-lab/src/gpu/timing.rs` | `architecture/profiler.md`; `decisions/observability.md` if the timing-honesty/threshold policy changes |
 | `app/crates/fluid-lab/src/settings/mod.rs` (registry, ApplyClass, defaults, validation) | `architecture/settings.md`; `decisions/observability.md` if the apply-class policy changes |
 | `web/*` (main.js, panels.js, index.html, the orphaned Vite/TS stub), `tools/capture.mjs` | `architecture/web-shell.md`; `agent-context/build-run.md` if the build/serve/verify flow changes |
@@ -78,9 +78,8 @@ high-risk invariants against code:
   `nx,ny,nz` (Reset-class settings `grid.res_x/y/z`, default 64 each → the exact
   original `[-1,1]³` cube) at a single **uniform** scalar cell size `h = 2/64`. The cell
   counts ride in `Params.gdim: vec4<u32> = [nx,ny,nz,0]`; the pressure operator stays
-  isotropic and marching cubes works per-axis too. Not a fixed cube and not a single
-  resolution scalar.
-- Which render modes are actually wired (and that marching cubes is default-off).
+  isotropic. Not a fixed cube and not a single resolution scalar.
+- Which render modes are actually wired: tank wireframe, particles, and optional grid slice.
 
 ## Notes
 

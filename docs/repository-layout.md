@@ -37,17 +37,16 @@ app/
         timestep.rs     Fixed/clamped timestep accumulator.
         camera.rs       Orbit camera.
         sim/            CPU reference + MAC types: indexing, classification,
-                        pressure (CG host ref), marching-cubes tables. Host-tested.
+                        pressure (CG host ref), wall-aware gather tests. Host-tested.
         gpu/            wgpu resources + the GPU simulation loop + renderers + timing.
           mod.rs        Device/surface, adapter limits, buffer layout, recreate path.
           fluid.rs      GpuFluid: buffers + the per-substep pass recorders.
           renderer.rs   Scene/debug render orchestration.
           particles.rs  Particle render mode.
           slice.rs      GPU-native grid-slice inspection.
-          mesh.rs       Marching-cubes mesh extraction + draw (default off).
           timing.rs     GPU timestamp-query handling.
           smoke.rs      Boot compute/atomic/timestamp smoke test.
-          shaders/      WGSL compute + render shaders (scatter, normalize, cg_*, mc, …).
+          shaders/      WGSL compute + render shaders (scatter, normalize, cg_*, particles, slice, …).
         scene/          Typed SceneConfig + default scene initialization.
         settings/       Typed config registry + apply classes (the data model).
         profiler/       Hierarchical, config-tagged, timing-honest profiler.

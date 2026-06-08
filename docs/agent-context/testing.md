@@ -9,7 +9,7 @@ You're adding or running tests, or deciding whether a claim is proven.
 This project has two distinct verification surfaces, and they prove different things:
 
 1. **Host unit tests** prove the *math* (indexing, transfers, divergence reduction, CG
-   convergence, marching-cubes tables) on the CPU reference in `app/crates/fluid-lab/src/sim/`.
+   convergence, wall-aware gather behaviour) on the CPU reference in `app/crates/fluid-lab/src/sim/`.
 2. **Browser capture** proves the *running GPU app* — see
    [`build-run.md`](build-run.md). This is the real acceptance signal; host tests
    cannot exercise the wgpu/WGSL paths.
@@ -17,7 +17,7 @@ This project has two distinct verification surfaces, and they prove different th
 ## Host tests
 
 The `wgpu` / `web-sys` paths are wasm-only and excluded from the native test build;
-only the indexing/solver/MC math in `app/crates/fluid-lab/src/sim/` runs on the host. Run them in WSL:
+only the indexing/solver/simulation-reference math in `app/crates/fluid-lab/src/sim/` runs on the host. Run them in WSL:
 
 ```
 wsl.exe -d Ubuntu-24.04 -- bash -lc 'cd /home/adamg/fluid-simulation/app && cargo test --lib'
@@ -25,10 +25,10 @@ wsl.exe -d Ubuntu-24.04 -- bash -lc 'cd /home/adamg/fluid-simulation/app && carg
 
 What is covered (point to the `#[test]` functions, don't trust this prose to stay
 complete): cell/face index bijectivity & staggered buffer counts, world↔grid
-round-trip + escaped-particle clamp, cell classification, an interior divergence-free
-check, a deterministic divergence-reduction case, CG-vs-Jacobi convergence
-(`app/crates/fluid-lab/src/sim/pressure.rs → cg_beats_jacobi_16cubed`), and marching-cubes table
-well-formedness / watertightness (`app/crates/fluid-lab/src/sim/marching_cubes.rs`).
+round-trip + escaped-particle clamp, cell classification, wall-aware MAC gather cases,
+an interior divergence-free check, a deterministic divergence-reduction case, and
+CG-vs-Jacobi convergence
+(`app/crates/fluid-lab/src/sim/pressure.rs → cg_beats_jacobi_16cubed`).
 
 ## Acceptance honesty (non-negotiable)
 

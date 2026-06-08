@@ -63,7 +63,11 @@ CPU wall-clock around a GPU submit measures nothing about GPU execution time bec
 
 ## stats_json shape
 
-Always-present keys: `timing`, `frame_avg_ms`, `fps`, `p50`/`p95`/`p99`, `substeps`, `grid_n`, `grid_res` (e.g. `"64x64x64"`), `total_cells`, `particles`, `gpu_buffer_mb`, `substeps_this_frame`, `accumulated_before_ms`, `accumulated_after_ms`, `dropped_sim_time_ms`, `total_dropped_sim_time_ms`, `dispatches_per_substep`, `dispatches_this_frame`, `gpu` (object or null).
+Always-present keys additionally include measurement/scale facts:
+`frame_samples`, requested/estimated/actual particles, `scale_status`,
+`max_compute_workgroups_per_dimension`, particle dispatch/storage limits,
+`pressure_iterations`, and `render_mode`, alongside the existing frame percentile,
+grid, memory, dropped-time, dispatch, and GPU fields.
 
 The `gpu` sub-object always carries: `sim_ms`, `prep_ms`, `pressure_ms`, `finish_ms`, `render_ms`, `liquid_cells`, `substeps`, `detailed`. When `detailed` is true it also carries `sections` (name→ms map) and `cg` (`total_ms`, `avg_ms_per_iter`, `spmv_ms`, `reductions_ms`, `updates_ms`, `scalars_ms`, `iters`). Fine fields are only present when real timestamps and the dev toggle are both active — never fabricated.
 
@@ -76,6 +80,15 @@ The `gpu` sub-object always carries: `sim_ms`, `prep_ms`, `pressure_ms`, `finish
 **GPU readback is throttled, never per-frame.** `record_resolve_and_maybe_copy` → `app/crates/fluid-lab/src/gpu/timing.rs → GpuTimers::record_resolve_and_maybe_copy` copies to the mappable buffer only every 20 frames, and only when no map is already `pending`. Normal frames skip the copy. This is the only allowed readback class.
 
 **Scope accumulators reset on log emit.** `end_frame_and_maybe_log` resets all `total_ms` and `calls` after printing, so reported values are per-frame averages over the logging window, not lifetime totals. The `frame_window` rolling buffer (cap 240) is not reset — it persists for percentile computation.
+
+**A Reset starts a clean measurement window.** `Profiler::reset_measurement` clears
+the rolling frame window, cached GPU sample/timing source, timestep snapshot, and CPU
+scope accumulators. This runs for successful and rejected Reset attempts so scale
+measurements cannot inherit pre-reset percentiles or timestamps.
+
+**The rendered panel sorts measured costs.** Coarse prep/pressure/finish/render rows
+and detailed section rows are descending by their real timestamp values. It does not
+hardcode pressure or any other pass as dominant.
 
 **Config snapshot is caller-supplied.** The profiler receives the snapshot string at log time via `end_frame_and_maybe_log(config_snapshot)` rather than holding a reference to settings. This makes the profiler independent of the settings crate and prevents stale snapshots.
 

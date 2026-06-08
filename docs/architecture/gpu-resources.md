@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-07
 okay_to_delete: false
 long_lived:    true
 ---
@@ -14,10 +14,13 @@ At boot, `GpuContext::new` requests a `HighPerformance` adapter, clones the full
 
 ## What it owns
 
-- **`GpuCaps`** — probed-once struct: adapter name, backend, `max_storage_buffers_per_stage`, `max_compute_workgroup_storage_size`, `max_buffer_size`, `timestamp_query`. Stored on `GpuContext` but currently `#[allow(dead_code)]`; it is the authoritative source if any pass needs to branch on adapter limits at runtime.
+- **`GpuCaps`** — probed-once struct: adapter name, backend, storage-stage/workgroup
+  limits, `max_compute_workgroups_per_dimension`, `max_buffer_size`,
+  `max_storage_buffer_binding_size`, and `timestamp_query`. It is authoritative for
+  particle-scale preflight and boot diagnostics.
 - **Device / surface / depth** — created and owned here; resize re-configures surface and recreates the `Depth32Float` texture (`create_depth`).
 - **`GpuFluid`** (`app/crates/fluid-lab/src/gpu/fluid.rs`) — simulation buffer set and all compute pipelines; `GpuContext` drives it via `record_prep` / `record_pressure` / `record_finish`.
-- **Sub-renderers** — `WireframeRenderer`, `ParticleRenderer`, `SliceRenderer`; each receives buffer handles from `GpuFluid` at construction, not raw device buffers. `GpuFluid::grid_dims()` and `GpuFluid::tank_bounds()` thread the per-axis cell counts and the world-space tank AABB into the renderers on both construct and recreate. `MeshExtractor` (`app/crates/fluid-lab/src/gpu/mesh.rs`) is `Option<mesh::MeshExtractor>` on `GpuContext` — allocated only when `dev.mesh_enabled` is true (see "Lazy mesh" below).
+- **Sub-renderers** — `WireframeRenderer`, `ParticleRenderer`, `SliceRenderer`; each receives buffer handles from `GpuFluid` at construction, not raw device buffers. `GpuFluid::grid_dims()` and `GpuFluid::tank_bounds()` thread the per-axis cell counts and the world-space tank AABB into the renderers on both construct and recreate.
 - **`GpuTimers`** (`app/crates/fluid-lab/src/gpu/timing.rs`) — wraps timestamp-query sets; `None` when the feature is absent. When present, constructed with `(max_substeps, detailed, pressure_iters)` from the registry so the `QuerySet` is sized at construction time.
 
 ## Buffer layout and the per-stage storage-buffer budget
@@ -45,9 +48,17 @@ Bind groups are built once in `GpuFluid::new`; buffers never move after creation
 
 **naga drops unused bindings.** When a WGSL shader does not reference a binding, naga's reflection omits it from the auto-generated `BindGroupLayout`. If the Rust side builds a BGL from the pipeline's reflected layout and that BGL is then used to create a bind group that _does_ include the unused binding, the counts mismatch and pipeline creation fails silently. The fix is either to ensure every shader references `params` (binding 0) or to pass an explicit `BindGroupLayoutDescriptor` to `create_compute_pipeline`. Any new shader that adds a params uniform must actually read a field from it.
 
-**Reset-class settings require buffer reallocation.** The per-axis grid resolutions `grid.res_x/res_y/res_z`, particle count, `fixed_dt`, `max_substeps`, `dev.mesh_enabled`, and `dev.detailed_gpu_profiling` are baked into buffer sizes and `Params` at construction. Changing them requires calling `GpuContext::recreate_fluid`, which calls `GpuFluid::new` and rebuilds the `WireframeRenderer`, `ParticleRenderer`, `SliceRenderer`, and — if `dev.mesh_enabled` — the `MeshExtractor` from the new buffer handles. `GpuTimers` is also rebuilt from the new `max_substeps` / mode / `pressure_iters`. The `WireframeRenderer` is rebuilt because the per-axis resolutions change the tank's box dimensions (the wireframe is sized from `tank_bounds()`). The device, surface, and format are untouched. Live/tweak-class settings (gravity, flip blend, pressure iters, wall friction, etc.) are written to `params_buf` via `queue.write_buffer` without a rebuild.
+**Reset-class settings require buffer reallocation.** The per-axis grid resolutions `grid.res_x/res_y/res_z`, particle count, `fixed_dt`, `max_substeps`, and `dev.detailed_gpu_profiling` are baked into buffer sizes, uniforms, or timer layout at construction. Changing them requires calling `GpuContext::recreate_fluid`, which calls `GpuFluid::new` and rebuilds the `WireframeRenderer`, `ParticleRenderer`, and `SliceRenderer` from the new buffer handles. `GpuTimers` is also rebuilt from the new `max_substeps` / mode / `pressure_iters`. The device, surface, and format are untouched. Live/tweak-class settings are written to uniforms or renderer state without a rebuild.
 
-**Lazy mesh allocation.** `GpuContext.mesh` is `Option<mesh::MeshExtractor>`. At boot, `GpuContext::new` reads `settings.mesh_enabled()` and constructs `Some(...)` or `None`. `set_mesh_enabled(true)` lazily allocates the ~73 MB MC resources if absent; `set_mesh_enabled(false)` drops the extractor to free them. `recreate_fluid` rebuilds `Some/None` per the current flag. When `mesh` is `None` (the default), the MC path is entirely skipped and particles render. Pass-throughs `buffer_memory_bytes()`, `total_cells()`, `grid_res()`, and `dispatches_per_substep()` are forwarded from `GpuFluid` (and `buffer_memory_bytes` adds the mesh buffer size when `Some`).
+**Particle-scale preflight happens before allocation/submission.** Particle-linear
+passes currently use one-dimensional workgroup dispatches at workgroup size 64.
+`GpuContext::recreate_fluid` computes the exact deterministic seeded count before
+allocation and rejects a Reset when that count exceeds either
+`max_compute_workgroups_per_dimension * 64` or the single particle storage-binding
+limit. A rejected Reset preserves the running fluid and exposes the requested,
+estimated, actual, and limiting values through `stats_json`.
+
+**Memory accounting covers the active simulation buffers.** `GpuContext::buffer_memory_bytes()` forwards `GpuFluid::buffer_memory_bytes()`. Rendering owns only small renderer uniforms/geometry plus the shared depth texture; there is no extracted-surface vertex allocation or offscreen water-target allocation included in the runtime.
 
 **No per-frame readbacks.** The only allowed readback is the smoke test (one-shot at boot, in `smoke::run_atomic_smoke_test`) and the throttled timing + liveness readback driven by `GpuTimers::record_resolve_and_maybe_copy`. Normal sim steps submit compute encoders and return; no `map_async` on hot paths.
 
@@ -61,16 +72,15 @@ Bind groups are built once in `GpuFluid::new`; buffers never move after creation
 
 - A new compute pass is added to `GpuFluid` — update the buffer layout diagram and verify the ≤6 storage-buffer ceiling is maintained.
 - `GpuCaps` fields change — update "What it owns."
-- A new Reset-class setting is added — note it in the reallocation invariant. (The per-axis `grid.res_x/res_y/res_z`, `dev.mesh_enabled`, and `dev.detailed_gpu_profiling` are already Reset-class.)
+- A new Reset-class setting is added — note it in the reallocation invariant. (The per-axis `grid.res_x/res_y/res_z` and `dev.detailed_gpu_profiling` are already Reset-class.)
 - The adapter limit floor changes (e.g., if a WebGPU spec update guarantees ≥10) — update the constraint description.
 - `GpuTimers` construction parameters change — update "What it owns" above; `profiler.md` owns the timing readout shape.
-- The lazy-mesh lifecycle changes (e.g., mesh becomes always-on or moves to a different toggle) — update the "Lazy mesh" gotcha.
 
 ## See also
 
 - `simulation.md` — MAC loop pass sequence and FLIP/PIC blend semantics.
 - `pressure-solver.md` — CG solver pass breakdown (`cg_init` → `cg_spmv` → reduce → update cycle).
-- `rendering.md` — `WireframeRenderer`, `ParticleRenderer`, `SliceRenderer`, `MeshExtractor` internals.
+- `rendering.md` — `WireframeRenderer`, `ParticleRenderer`, and `SliceRenderer` internals.
 - `profiler.md` — `GpuTimers` throttled readback and timing readout structure.
 - `../decisions/performance.md` — rationale for SoA layout and pass-splitting strategy.
 - `../agent-context/maintaining-docs.md` — doc maintenance rules.

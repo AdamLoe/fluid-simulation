@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-07
 ---
 
 # Decisions — Performance
@@ -13,7 +13,7 @@ serious measured target and the current default; 128³ is aspirational and must 
 drive the architecture. A smaller stable preset with measured justification is an
 acceptable ship.
 
-**Why** — 128³ is 2M+ cells before particles, solver, scalar, and mesh buffers.
+**Why** — 128³ is 2M+ cells before particles and solver workspace.
 Starting there builds an impressive target instead of a working app. Correct 32³
 beats broken or unmeasured 64³.
 
@@ -103,6 +103,41 @@ once the GPU path is mature, not an MVP design target.
 and can distort the architecture toward a number nobody needs yet.
 
 **Applies to** — `architecture/gpu-resources.md`, `architecture/profiler.md`.
+
+## Reject impossible one-dimensional particle dispatches before allocation
+
+**Decision** — Until particle-linear shaders support tiled indexing, Reset preflights
+the exact seeded particle count against the adapter's one-dimensional workgroup and
+single-storage-binding limits. Impossible requests preserve the running simulation and
+report a rejected scale status instead of submitting invalid commands.
+
+**Why** — On the measured BrowserWebGpu adapter,
+`maxComputeWorkgroupsPerDimension=65,535` and workgroup size 64 impose a 4,194,240
+particle dispatch ceiling. Requested 8M seeds 7,939,819 and previously generated an
+invalid command every frame. Requested 4.20M seeds 4,171,888 and runs; requested
+4.25M seeds 4,209,137 and is rejected.
+
+**Tradeoffs** — This makes the current ceiling truthful rather than raising it.
+Dispatch tiling requires coordinated particle indexing across mark, scatter, G2P, and
+impulse paths and is deferred until it can be verified as one change.
+
+**Evidence** — `../plans/v1.3.0-scale-measurements.md`.
+
+**Applies to** — `architecture/gpu-resources.md`, `architecture/profiler.md`.
+
+## Do not carry an unused extracted-surface cost
+
+**Decision** — GPU memory accounting and render timing cover the particle/grid
+product path only; no dormant extracted-surface buffers, pipelines, or offscreen
+targets are allocated.
+
+**Why** — Unused surface infrastructure distorted memory and rendering measurements
+for the scale work the product actually prioritizes.
+
+**Tradeoffs** — Reintroducing any extracted-surface renderer requires a fresh measured
+cost case and new runtime ownership.
+
+**Applies to** — `architecture/gpu-resources.md`, `architecture/rendering.md`.
 
 ## See also
 

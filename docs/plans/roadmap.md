@@ -1,70 +1,94 @@
 ---
-status:         active
-owner:          adamg
-last_updated:   2026-06-05
+status:        active
+owner:         adamg
+last_updated:  2026-06-08
 okay_to_delete: false
-long_lived:     true
-owning_docs:    [architecture/rendering.md, architecture/simulation.md, architecture/settings.md, decisions/scope.md, decisions/rendering.md, decisions/performance.md]
+long_lived:    true
+owning_docs:
+  - architecture/web-shell.md
+  - architecture/app-shell.md
+  - architecture/settings.md
+  - architecture/profiler.md
+  - architecture/rendering.md
+  - architecture/gpu-resources.md
+  - architecture/simulation.md
+  - decisions/performance.md
+  - decisions/rendering.md
+  - decisions/scope.md
 ---
 
-# Roadmap — remaining direction
+# Roadmap - current coordination map
 
-The core is shipped: a working, inspectable, interactive **64³ FLIP/PIC** fluid lab
-with live config + real-GPU-timestamp profiler panels, GPU-native grid-slice
-inspection, CG pressure solve, and a (default-off) marching-cubes surface. This plan
-holds the remaining optional/forward direction. It is `long_lived` because it is
-genuine future product direction that doesn't belong in current-state architecture.
+This is the current coordination map for the presentation, particle-scale, and
+water-look work. It is a plan router, not canonical architecture. Architecture and
+decisions docs should be updated only while the implementation plan is in progress or
+at ship time; research agents update the relevant plan/research docs first.
 
-Remaining direction, in rough execution order — **surface extraction is demoted**:
+The orchestrator may run read-only research in parallel. Code-touching work should be
+serialized unless the orchestrator has explicit file ownership boundaries, because the
+UI work shares `web/main.js`, `web/panels.js`, and `web/index.html`, and particle work
+shares GPU shader/runtime contracts.
 
-## Surface extraction polish (demoted / optional)
+## Current implementation map
 
-Marching cubes is built and wired (`architecture/rendering.md`) but off by default and
-the project's single biggest trap (`decisions/rendering.md`). Only invest further if
-the particle/voxel view is judged insufficient. A scalar field can be built from the
-existing P2G weight (density) buffers. Keep particles the default render; any mesh work
-needs a fallback contract first (lower scalar res / update every N frames / cap
-triangle output / fall back to particles).
+| Order | Doc | Purpose | Start condition |
+|---|---|---|---|
+| v1.7.0 | [`v1.7.0-ui-shell-reorganization.md`](v1.7.0-ui-shell-reorganization.md) | Combined toolbar/header cleanup, right-side tabbed workspace, and bottom product-mode launcher. | Ready. |
+| Planning | [`particle-dispatch-audit.md`](particle-dispatch-audit.md) | Audit particle-linear paths and update the dispatch plan if needed. | Can run before or alongside v1.7.0. |
+| v1.8.0 | [`v1.8.0-particle-dispatch-tiling.md`](v1.8.0-particle-dispatch-tiling.md) | Raise the legal particle dispatch ceiling, preserve preflight safety, and measure the new scale facts. | After the audit is good enough, or as the first phase of this plan. |
+| v1.9.0 | [`v1.9.0-particle-performance-followup.md`](v1.9.0-particle-performance-followup.md) | Optimize the measured bottleneck from v1.8.0. | Blocked on v1.8.0 evidence. |
+| Research | [`water-rendering-research.md`](water-rendering-research.md) | Choose the water rendering direction and update the water implementation plan. | Can run in parallel with non-rendering work. |
+| v1.10.0 | [`v1.10.0-water-rendering-optical-depth.md`](v1.10.0-water-rendering-optical-depth.md) | Implement the selected water-look change after research sharpens the plan. | Blocked on the research doc updating the plan. |
 
-## Portfolio polish
+## Locked user decisions
 
-- Reconcile the two web entry paths (`architecture/web-shell.md`): make Vite import the
-  same modules, or drop Vite and ship the static path (the safe bet).
-- Verify the `#unsupported` WebGPU overlay renders cleanly; add a poster/GIF + honest
-  caveat copy.
-- Honest framing: "browser-native Rust/WASM/WebGPU 3D fluid lab" — FLIP/PIC, 64³, CG
-  pressure, with the volume-compaction caveat. NOT "scientific CFD", NOT
-  "photorealistic". Camera presets, a title/explainer. (`decisions/scope.md` portfolio
-  honesty.)
+- The initial bottom product mode is **Auto Rotate**.
+- Reset preserves the selected bottom mode; page reload does not. The bottom mode is
+  not saved to localStorage.
+- Auto Rotate and Waves are mutually exclusive. Manual exposes the existing pointer
+  modes.
+- Raw auto-roll and wave enable toggles should not be exposed as user config controls.
+  Mode-specific values can remain visible, grouped under the mode they affect.
+- Number keys target manual pointer modes only; they are not product-mode shortcuts.
+- The config/profiler workspace moves to the **right** side only.
+- The workspace always opens on **General**; no last-active tab restore and no tab
+  routing metadata.
+- Panels/tabs should be closed on initial load. Fix the load/init bug where panels
+  appear open during startup.
+- Remove or neutralize existing panel auto-open query behavior. Do not add query params
+  for opening a specific tab. Capture defaults should be Auto Rotate mode with tabs
+  closed.
+- The top title should read its version from `web/package.json` or the package source
+  that feeds that file.
+- Remove the Copy Config JSON product affordance, including copy-specific plumbing;
+  do not remove the `config_json` bridge needed by the rendered config panel.
+- No high-count presets are planned. Render decimation/LOD is future work unless a
+  later measured plan promotes it.
+- Water rendering should prioritize configurable controls and improve both low-count
+  density and high-count beauty where practical.
 
-## Scale / quality pass
+## Orchestration rules
 
-- **FLIP volume fidelity** is the headline open quality problem: a settled 64³ pool
-  plateaus at ~19.2k liquid cells vs an ideal ~31.8k — inherent FLIP volume loss, not
-  solver convergence (`decisions/pressure.md`). Closing it is transfer-quality work
-  (APIC/affine transfer, density correction) or higher resolution.
-- Reset-class settings now rebuild via `recreate_fluid` — the panel's reset-class path
-  triggers reset → `recreate_fluid`, so live grid-resolution changes work
-  (`grid.res_x/y/z` are per-axis Reset-class; `app/crates/fluid-lab/src/lib.rs → reset`).
-  Remaining: confirm the same path covers particle-count and the scenario selector.
-- Define low/default/high tiers from measurements (`decisions/performance.md`).
-  Optional 128³ exploration (2M+ cells) only if 64³ headroom + memory allow.
-- 1M-particle stretch test.
+- Treat v1.7.0 as one UI stream unless the orchestrator explicitly assigns non-
+  overlapping files.
+- Treat v1.8.0 as correctness first, measurement second. Do not fold the measured
+  optimization into the dispatch-tiling pass unless the win is trivial and evidenced.
+- Treat v1.9.0 as a placeholder until v1.8.0 produces the measurement table.
+- Treat v1.10.0 as blocked until `water-rendering-research.md` records the visual
+  target and chosen implementation direction.
+- Research/planning docs may update versioned plans. They should not update
+  architecture or decisions docs before implementation starts.
 
-## Floating / bouncing objects (deferred)
+## Migration notes
 
-A cube/sphere object with size + weight controls that floats and bounces in the tank.
-Deferred this cycle (`decisions/scope.md`). Two tiers were assessed; **start with
-Tier A**:
-- **Tier A (suggested start)** — CPU-side rigid body: geometric buoyancy + drag +
-  wall-bounce, rendered as a cube/sphere mesh, optional weak fluid push via the existing
-  impulse pass. Low risk — no pressure-solver, readback, or determinism changes.
-- **Tier B** — object as moving solid cells in the pressure projection. Breaks the
-  load-bearing "every Liquid cell is interior / no bounds checks" CG invariant;
-  multi-week with uncertain solver stability.
+When each version ships, migrate only the durable current-state facts and still-valid
+decisions into the owning architecture/decisions docs. Keep raw research evidence in
+the research doc or archive it; do not force screenshots and scratch comparisons into
+architecture docs.
 
 ## See also
 
-- [`index.md`](index.md) — plans landing + lifecycle.
-- [`../decisions/scope.md`](../decisions/scope.md) — what's optional and the kill switches.
-- [`../architecture/rendering.md`](../architecture/rendering.md) · [`../architecture/simulation.md`](../architecture/simulation.md)
+- [`future-roadmap.md`](future-roadmap.md)
+- [`index.md`](index.md)
+- [`../agent-context/orchestrating.md`](../agent-context/orchestrating.md)
+- [`../agent-context/build-run.md`](../agent-context/build-run.md)

@@ -1,123 +1,112 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-07
 okay_to_delete: false
 long_lived:    true
 ---
 
 # Rendering & debug views
 
-The GPU-native render/debug-view layer draws the wireframe tank and the active render mode — particles (default), grid-slice inspection, or the marching-cubes water mesh — all sampling GPU buffers directly with no normal-frame CPU/GPU readback. Readback is restricted to the throttled diagnostics path in `app/crates/fluid-lab/src/gpu/timing.rs`.
+The GPU-native render layer draws the wireframe tank, particles, and an optional
+grid-slice inspection overlay. These views sample live GPU buffers directly; normal
+frames do not read simulation state back to the CPU. Throttled diagnostics in
+`app/crates/fluid-lab/src/gpu/timing.rs` own the only runtime readback.
 
 ## What it owns
 
-`app/crates/fluid-lab/src/gpu/mod.rs → GpuContext` holds and orchestrates all renderer instances. It owns the surface, the depth texture, and the `mesh_enabled` / `slice_enabled` flags that gate per-mode work each frame. For the water (mesh) path it also owns screen-sized offscreen targets — `scene_color`, `water_back_depth` — and a fullscreen `blit::Blitter`; these are recreated on `resize` and unused by the default path. The model matrix `translate(box_pos) · from_quat(box_orient)` is folded into view-projection in `app/crates/fluid-lab/src/lib.rs → FluidApp::frame` before being passed to all renderers; no renderer recomputes it.
+`app/crates/fluid-lab/src/gpu/mod.rs -> GpuContext` owns the surface, depth texture,
+renderer instances, render-mode state, and the single render pass. The tank model
+matrix `translate(box_pos) * from_quat(box_orient)` is folded into `view_proj` by
+`app/crates/fluid-lab/src/lib.rs -> FluidApp::frame`; renderers receive that combined
+matrix and do not recompute the tank transform.
 
 ```
-frame()
-  model    = translate(box_pos) · from_quat(box_orient)
-  vp       = camera.view_proj(aspect) · model
-  eye_local = box_orient⁻¹ · (camera.eye − box_pos)   ← eye in tank-local space
-  GpuContext::step(n)             ← sim + optional MC extract
-  GpuContext::render(vp, …, eye_local)
-    ├─ default path:  one pass → swapchain (wireframe + particles/slice)
-    └─ water path:    opaque pass → scene_color(+depth);
-                      depth-only back-face prepass → water_back_depth;
-                      water pass → swapchain (blit bg, then volume-shaded water)
+FluidApp::frame
+  -> GpuContext::step(n)
+  -> GpuContext::render(view_proj, billboard_right, billboard_up)
+       single pass to swapchain:
+       wireframe -> particles -> optional grid slice
 ```
 
-The MC vertices live in **tank-local** space (the model matrix is baked into `vp`
-only), so the camera eye is transformed into that same local frame in
-`app/crates/fluid-lab/src/lib.rs → FluidApp::frame` and threaded through
-`GpuContext::render` to the mesh shader. View-dependent shading (Fresnel/specular)
-therefore stays correct while the tank is moved or rotated.
+The render pass is timestamped through `GpuTimers` when the adapter supports timestamp
+queries. It clears the swapchain and shared depth attachment once, then draws each
+enabled view in order.
 
-## Render modes
+## Views
 
-| Mode | Default | Renderer | Shader |
-|------|---------|----------|--------|
-| Wireframe tank | always on | `app/crates/fluid-lab/src/gpu/renderer.rs → WireframeRenderer` | inline WGSL in `renderer.rs` |
-| Particles | on when mesh off | `app/crates/fluid-lab/src/gpu/particles.rs → ParticleRenderer` | `app/crates/fluid-lab/src/gpu/shaders/particles.wgsl` |
-| Mesh (MC surface) | off (`dev.mesh_enabled=0`, lazily allocated) | `app/crates/fluid-lab/src/gpu/mesh.rs → MeshExtractor` | `app/crates/fluid-lab/src/gpu/shaders/mesh.wgsl` (opaque volume: absorption + refraction + reflection) |
-| Grid-slice debug | off (`slice_enabled=false`) | `app/crates/fluid-lab/src/gpu/slice.rs → SliceRenderer` | `app/crates/fluid-lab/src/gpu/shaders/slice.wgsl` |
+| View | Runtime state | Renderer | Shader |
+|---|---|---|---|
+| Wireframe tank | always on | `app/crates/fluid-lab/src/gpu/renderer.rs -> WireframeRenderer` | inline WGSL in `renderer.rs` |
+| Particles | always on | `app/crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer` | `app/crates/fluid-lab/src/gpu/shaders/particles.wgsl` |
+| Grid slice | optional overlay | `app/crates/fluid-lab/src/gpu/slice.rs -> SliceRenderer` | `app/crates/fluid-lab/src/gpu/shaders/slice.wgsl` |
 
-Mesh and particles are mutually exclusive: `GpuContext::render` draws `mesh` when `mesh_enabled`, otherwise `particles`. Slice is additive — drawn after either, when `slice_enabled`. Cost summary: wireframe is a fixed 24-vertex line-list; particles are instanced quads (one per particle, 6 verts); mesh uses an indirect draw from a pre-built vertex buffer; slice draws `nx*ny` instanced quads for the mid-depth XY cross-section.
+The tank is a uniform-cell-size rectangular box. `GpuFluid::tank_bounds()` sizes the
+wireframe, and `GpuFluid::grid_dims()` supplies the per-axis dimensions used by the
+slice renderer.
 
-The tank is rectangular (uniform cell size `crate::sim::H`, independent per-axis cell counts `nx, ny, nz` — see `gpu-resources.md`). The wireframe and both debug-visualization paths are parameterized to the actual per-axis grid rather than assuming a cube.
+**Wireframe tank.** `WireframeRenderer::new` builds a fixed line-list for the current
+tank AABB. Floor edges use a distinct tint for orientation. It is rebuilt with the
+other renderers when Reset-class settings change the tank bounds.
 
-**Wireframe** (`app/crates/fluid-lab/src/gpu/renderer.rs → WireframeRenderer`) is parameterized to an arbitrary AABB: `WireframeRenderer::new` and `tank_wireframe(lo, hi)` take the box `lo`/`hi`, supplied from `GpuFluid::tank_bounds()`. Floor edges are tinted blue for orientation.
+**Particles.** `ParticleRenderer` binds the simulation particle buffer directly as
+read-only storage and draws one instanced camera-facing quad per particle. The camera
+uniform carries the tank-local billboard basis, particle radius, speed scale, slow
+and fast colors, opacity, edge softness, and sphere-shading strength. Live render
+settings update renderer state; `update_camera` uploads the complete uniform before
+each draw.
 
-**Particles** (`app/crates/fluid-lab/src/gpu/particles.rs → ParticleRenderer`) bind the simulation position buffer directly as a read-only storage buffer. Camera uniform carries `right`/`up` billboard axes plus radius and speed-scale for velocity-tinted quads.
+The billboard basis starts in world space and is rotated into tank-local space by
+`FluidApp::frame`. This cancels the tank rotation baked into `view_proj`, keeping the
+quads camera-facing while the tank moves or rotates.
 
-**Grid slice** (`app/crates/fluid-lab/src/gpu/slice.rs → SliceRenderer`) binds `cell_type`, `pressure`, `u_vel`, `v_vel`, `w_vel` buffers from `GpuFluid` as read-only storage. Three sub-modes (0 = cell-type, 1 = pressure diverging palette, 2 = speed sequential palette) are controlled by `set_slice_mode`; the slice is fixed at `k = nz/2` and draws `nx*ny` instanced quads. `SliceUniform` (112 B) carries `dims: [u32;4] = [nx, ny, nz, 0]` plus the grid origin and cell size; `slice.wgsl` decomposes the per-axis cell index, so the slice is correct on a non-cubic tank. No readback.
+**Grid slice.** `SliceRenderer` binds cell type, pressure, and staggered velocity
+buffers directly. `set_slice_mode` selects cell-type, pressure, or speed inspection.
+The overlay draws the mid-depth XY cross-section and derives its shape from
+`[nx, ny, nz]`, so non-cubic tanks remain correctly indexed.
 
-## Marching cubes (scalar field → mesh)
+## Removed surface path
 
-**Status: dev-only, off by default, lazily allocated.**
-
-The MC feature is controlled by `dev.mesh_enabled` (Reset-class, default 0). `GpuContext.mesh` is `Option<mesh::MeshExtractor>`: it is `None` until the feature is enabled. Allocation timing:
-
-- **Boot:** `GpuContext::new` reads `settings.mesh_enabled()` — `Some` only if the setting is on at boot.
-- **Runtime enable:** `set_mesh_enabled(true)` lazily allocates the ~73 MB MC GPU resources if `mesh` is currently `None`.
-- **Runtime disable:** `set_mesh_enabled(false)` drops `mesh` to `None`, freeing the resources.
-- **Reset:** `recreate_fluid` rebuilds `Some/None` per the current flag.
-
-All MC paths are Option-guarded: `set_mesh_iso`, `update_camera`, `step`'s `record_extract`, and `render`'s draw branch each check `self.mesh.as_mut/ref()` and skip when absent.
-
-`app/crates/fluid-lab/src/gpu/mesh.rs → MeshExtractor` owns a GPU pipeline of compute passes feeding one indirect draw:
-
-```
-density.wgsl   occupancy → scalar[] (light blur); MAC velocities → speed[] (foam)
-blur.wgsl      ×N ping-pong (scalar↔scalar2) smoothing  ← render.mesh_smooth
-mc.wgsl        (nx-1)·(ny-1)·(nz-1) cubes → verts[] (pos, normal, nrm.w=foam) + atomic counter
-mc_args.wgsl   counter → indirect draw args
-mesh.wgsl      opaque volume water render (storage-buffer vertex fetch)
-```
-
-The density source is the `occupancy` buffer from `GpuFluid` (i32 per cell, populated by the P2G classify pass); `density.wgsl` also samples the staggered `u/v/w_vel` buffers into a cell-centered `speed[]` field that drives **velocity foam** (the mesh whitens only where the water moves fast, mirroring the particle speed→white cue). `blur.wgsl` runs `render.mesh_smooth` ping-pong iterations (each = two passes, `scalar→scalar2→scalar`) so the raw per-cell occupancy blobs round off into a smooth surface — the fix for the lumpy-surface problem. `MeshExtractor::record_extract` is called inside `GpuContext::step` after the final substep, gated by `mesh_enabled`. The vertex buffer is allocated at `MAX_VERTS = 2_400_000` (~73 MB, dominating; plus three cell-sized `scalar`/`scalar2`/`speed` buffers) only when the extractor is constructed; the atomic counter is cleared each frame and the indirect-draw arg buffer is written by `mc_args.wgsl`.
-
-**Volume water shading** (`app/crates/fluid-lab/src/gpu/shaders/mesh.wgsl`): the water reads as a *volume*, not a thin shell. It is drawn **opaque** (`wgpu::BlendState` = `None`) over a blit of `scene_color`, compositing the background itself:
-
-- **Absorption (depth tint).** A depth-only back-face prepass (`MeshExtractor::draw_back`, `back_pl`, compare `Greater`, clear 0.0) writes the water's *farthest* surface into `water_back_depth`. The fragment reconstructs that position via `inv_view_proj` and takes `thickness = |back − front|`; per-channel Beer-Lambert `transmittance = exp(−σ·thickness)` (with `σ = water_absorb·(1 − tint)`, so red absorbs most) tints the refracted background toward the water color. Thick water deepens to blue-green; thin films stay clear — the fix for the old "clear glass" look.
-- **Refraction.** The background (`scene_color`) is sampled at a screen-space UV offset along the screen-projected surface normal (`view_proj`-projected, no scene reconstruction), scaled by `water_refract` and thickness.
-- **Reflection.** A procedural sky gradient + sun disc (no cubemap) mixed in by Schlick-Fresnel, replacing the old flat sky constant; plus a tight sun specular and `nrm.w` velocity foam.
-
-The render pipeline depth-tests+writes against the wireframe depth (occlusion + nearest-water resolution come for free; no manual test needed). Normals are flipped toward the camera to neutralize MC's ambiguous winding. The look is tuned Live via `render.mesh_opacity` / `render.mesh_fresnel` / `render.mesh_foam` / `render.water_absorb` / `render.water_refract` (carried in the camera uniform) and `render.mesh_iso`; `MeshLook` preserves these across (re)allocation. The `MeshCamera` uniform carries `view_proj`, `inv_view_proj`, eye, sun, the look knobs, and the render-target resolution; the render bind group adds `scene_color` (binding 2) and `water_back_depth` (binding 3), rebuilt by `MeshExtractor::rebuild_render_bg` on resize.
-
-Both the density blur and the MC march are per-axis: `MeshParams` carries `dims: [u32;4] = [nx, ny, nz, 0]` and `origin: [f32;4]`, with `h = crate::sim::H` and `cell_count = nx·ny·nz`. The MC cube grid is `(nx-1)·(ny-1)·(nz-1)`; `density.wgsl`/`mc.wgsl` decompose the per-axis cell index, so the mesh extracts correctly on a non-cubic tank.
-
-The host reference lives in `app/crates/fluid-lab/src/sim/marching_cubes.rs → polygonize` with `EDGE_TABLE` and `TRI_TABLE` — the same tables embedded in `mc.wgsl`. The host module has three `#[test]` gates: `edge_table_matches_tri_table`, `tri_table_well_formed`, and `sphere_surface_is_watertight` (the gold-standard manifold test on an analytic sphere). If any of these fail, the WGSL tables are wrong.
-
-**Fallback contract**: particles render whenever `dev.mesh_enabled = 0` (the default) or whenever `GpuContext.mesh` is `None`. There is no automatic fallback — the caller (TypeScript or `set_mesh_enabled`) chooses the mode explicitly.
-
-**Camera eye is passed in tank-local space.** The mesh vertices are in tank-local space (model matrix baked into `view_proj` only), so `FluidApp::frame` transforms the true camera eye into the local frame (`box_orient⁻¹·(eye − box_pos)`) and threads it through `GpuContext::render` into the mesh camera uniform. This is load-bearing: an eye in the wrong space makes the view vector swing as the tank moves and the Fresnel term blow up to white (the old white-flash bug). Do not substitute a world-space or approximate eye.
+There is no extracted surface renderer. Marching-cubes modules, shaders, host tables,
+settings, web controls, and offscreen water targets are absent from the runtime. A
+future surface technique would be a new product and architecture decision, not a
+hidden compatibility path.
 
 ## Non-obvious invariants and gotchas
 
-- **No normal-frame readback.** `GpuContext::render` never calls `map_async` or copies buffers to the CPU on the hot path. The only readback is in `timing::GpuTimers::map_readback`, which is throttled and opt-in.
-- **Tank model matrix is baked into `view_proj`.** All renderers receive a single pre-multiplied matrix; none is aware of `box_pos`/`box_orient` separately. If you add a renderer that needs the raw model matrix, thread it through `GpuContext::render`.
-- **The default path is single-pass; the water path is multi-pass.** With the mesh off (particles/slice/default) there is exactly one `begin_render_pass` straight to the swapchain. With the mesh on, `render` runs three passes in one encoder (opaque → `scene_color`; depth-only back-face → `water_back_depth`; water → swapchain) because volume shading must sample a background the water can't read from the swapchain it is drawing into. The two branches are explicit arms in `GpuContext::render`.
-- **The mesh is opaque and composites its own background.** The water pipeline no longer alpha-blends; it samples the blitted `scene_color` and outputs a final opaque color (absorption + refraction + reflection). It depth-tests+writes, so overlapping water resolves to the nearest surface. The background blit (`Blitter`) runs first in the water pass with depth compare `Always`/no-write so it never disturbs the loaded wireframe depth.
-- **Water thickness comes from a back-face depth prepass, not scene depth.** The tank is wireframe-only — there is no opaque backdrop behind the water — so absorption is driven by the water's own front-to-back extent (`water_back_depth`, compare `Greater`), not the distance to the background. Reconstruction uses `inv_view_proj` and the resolution passed in the camera uniform.
-- **MC extract happens in `step`, not `render`.** `record_extract` submits its own command encoder via `queue.submit`. The render pass then reads the already-written vertex buffer. If `step` is skipped (paused, no pending steps), the stale vertex buffer from the prior frame is drawn.
-- **Slice bind group references live GPU buffers.** If `recreate_fluid` is called (on reset), `SliceRenderer` is rebuilt entirely — the old bind group becomes invalid. `GpuContext::recreate_fluid` rebuilds all sub-renderers atomically — including `WireframeRenderer` (tank box dimensions can change) and the `MeshExtractor` (`Some/None` per the current flag) — and preserves live settings (`slice_mode`, `particle_size`, `mesh_iso`).
-- **MC vertex buffer is STORAGE only, not VERTEX.** `mesh.wgsl` fetches vertices by index from a storage binding, not via the vertex pipeline. Cull mode is `None` because MC winding can be ambiguous.
-- **`WireframeRenderer`'s shader is inline** (not a separate `.wgsl` file).
+- **No normal-frame readback.** Renderers bind live simulation buffers. Only the
+  throttled profiler/timing path may map GPU data during routine execution.
+- **Rendering is single-pass.** `GpuContext::render` has one swapchain render pass and
+  one shared depth attachment. Adding a multi-pass renderer changes the resource and
+  timing contracts and must be documented explicitly.
+- **The model matrix is baked into `view_proj`.** Renderers operate in tank-local
+  coordinates. Thread a separate model matrix only if a new renderer genuinely needs
+  it.
+- **Slice bind groups reference live GPU buffers.** `GpuContext::recreate_fluid`
+  rebuilds `WireframeRenderer`, `ParticleRenderer`, and `SliceRenderer` after
+  recreating `GpuFluid`; old renderer bind groups must not survive that reset.
+- **Particle look survives fluid recreation.** `GpuContext` stores current particle
+  look values and reapplies them to the newly built `ParticleRenderer`.
+- **`WireframeRenderer` uses inline WGSL.** It has no separate shader file.
 
 ## Update when
 
-- A new render mode is added → add a flag to `GpuContext`, a new renderer struct under `app/crates/fluid-lab/src/gpu/`, and a draw call in `GpuContext::render`.
-- The grid buffers or occupancy layout change → update `SliceRenderer::new` and `MeshExtractor::new` bind group entries.
-- Box transform is exposed to shaders → thread the model matrix separately into `GpuContext::render`.
-- MC tables change → regenerate both `app/crates/fluid-lab/src/sim/marching_cubes.rs` tables and the embedded constants in `app/crates/fluid-lab/src/gpu/shaders/mc.wgsl`; the three host unit tests must pass.
-- The water look (color/opacity/Fresnel/foam/absorption/refraction) or the smoothing/foam fields change → update the "Volume water shading" section here and the `render.mesh_*` / `render.water_*` entries owned by `settings.md`; the velocity-foam path spans `density.wgsl` (speed) → `mc.wgsl` (`nrm.w`) → `mesh.wgsl`.
-- The water render-pass structure or offscreen targets change (`scene_color`, `water_back_depth`, the `Blitter`, the back-face prepass) → update the `frame()` sketch, the "Volume water shading" section, and the multi-pass invariant here; the targets are created in `GpuContext` and recreated in `resize`, and the mesh bind group is re-pointed via `MeshExtractor::rebuild_render_bg`.
-- The MC lazy-allocation lifecycle changes (e.g., mesh becomes always-on) → update the "Marching cubes" section and the `gpu-resources.md` "Lazy mesh" invariant.
+- A view is added or removed: update the view table, render-pass order, settings, and
+  `decisions/rendering.md`.
+- A renderer starts requiring an additional pass or texture: update this doc and
+  `gpu-resources.md`.
+- Particle uniform/look semantics change: update the particle section and
+  `settings.md`.
+- Grid buffer layout or slice indexing changes: update `SliceRenderer::new` and the
+  grid-slice contract here.
+- The no-normal-frame-readback rule changes: update this doc, `profiler.md`, and the
+  rendering decision.
 
 ## See also
 
-- `simulation.md` — the buffers (`particle_buffer`, `cell_type_buffer`, `pressure_buffer`, `u/v/w_vel_buffer`, `occupancy_buffer`) that renderers sample.
-- `app-shell.md` — `FluidApp::frame`, model-matrix construction, TS/WASM boundary for mode controls.
-- `../decisions/rendering.md` — GPU-native no-readback rule, and marching cubes demoted/default-off with a fallback contract.
-- `../agent-context/maintaining-docs.md`
+- `gpu-resources.md` - device, surface, buffers, renderer recreation, and timing
+- `simulation.md` - simulation buffers sampled by the renderers
+- `app-shell.md` - frame loop and tank-local billboard basis
+- `settings.md` - particle render controls and apply classes
+- `../decisions/rendering.md` - particle/liquid-cell product direction
+- `../agent-context/maintaining-docs.md` - doc maintenance rules

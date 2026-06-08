@@ -24,13 +24,19 @@ pub struct ProjectionParams {
 }
 
 impl ProjectionParams {
-    pub fn unit() -> Self { ProjectionParams { rho: 1.0, dt: 1.0 } }
+    pub fn unit() -> Self {
+        ProjectionParams { rho: 1.0, dt: 1.0 }
+    }
 
     /// RHS scale `ρ h² / dt` in `sum(p_n) - n·p_c = scale·div_c`.
-    fn rhs_scale(&self, h: f32) -> f32 { self.rho * h * h / self.dt }
+    fn rhs_scale(&self, h: f32) -> f32 {
+        self.rho * h * h / self.dt
+    }
 
     /// Velocity-correction coefficient `(dt/ρ)/h` in `u -= coeff·(p_hi - p_lo)`.
-    fn grad_coeff(&self, h: f32) -> f32 { (self.dt / self.rho) / h }
+    fn grad_coeff(&self, h: f32) -> f32 {
+        (self.dt / self.rho) / h
+    }
 }
 
 /// Compute divergence at every cell. Non-liquid cells get 0 (they don't
@@ -94,12 +100,19 @@ pub fn jacobi_iteration(
                 let mut n = 0.0f32;
                 for &nb in &neighbours {
                     match cell_type[nb] {
-                        CellType::Solid => {}                // Neumann: excluded
-                        CellType::Air => n += 1.0,           // Dirichlet p=0
-                        CellType::Liquid => { sum += p_in[nb]; n += 1.0; }
+                        CellType::Solid => {}      // Neumann: excluded
+                        CellType::Air => n += 1.0, // Dirichlet p=0
+                        CellType::Liquid => {
+                            sum += p_in[nb];
+                            n += 1.0;
+                        }
                     }
                 }
-                p_out[c] = if n > 0.0 { (sum - scale * div[c]) / n } else { 0.0 };
+                p_out[c] = if n > 0.0 {
+                    (sum - scale * div[c]) / n
+                } else {
+                    0.0
+                };
             }
         }
     }
@@ -151,9 +164,12 @@ pub fn apply_poisson(dims: &GridDims, cell_type: &[CellType], x: &[f32]) -> Vec<
                 let mut sum = 0.0f32;
                 for &nb in &neighbours {
                     match cell_type[nb] {
-                        CellType::Solid => {}                // Neumann: excluded
-                        CellType::Air => n += 1.0,           // Dirichlet p=0
-                        CellType::Liquid => { n += 1.0; sum += x[nb]; }
+                        CellType::Solid => {}      // Neumann: excluded
+                        CellType::Air => n += 1.0, // Dirichlet p=0
+                        CellType::Liquid => {
+                            n += 1.0;
+                            sum += x[nb];
+                        }
                     }
                 }
                 out[c] = n * x[c] - sum;
@@ -242,8 +258,16 @@ pub fn subtract_gradient(
         for j in 0..dims.ny {
             for i in 0..=dims.nx {
                 let idx = dims.u_idx(i, j, k);
-                let lo = if i == 0 { None } else { Some(dims.cell_idx(i - 1, j, k)) };
-                let hi = if i == dims.nx { None } else { Some(dims.cell_idx(i, j, k)) };
+                let lo = if i == 0 {
+                    None
+                } else {
+                    Some(dims.cell_idx(i - 1, j, k))
+                };
+                let hi = if i == dims.nx {
+                    None
+                } else {
+                    Some(dims.cell_idx(i, j, k))
+                };
                 apply_face(coeff, p, cell_type, lo, hi, &mut u[idx]);
             }
         }
@@ -253,8 +277,16 @@ pub fn subtract_gradient(
         for j in 0..=dims.ny {
             for i in 0..dims.nx {
                 let idx = dims.v_idx(i, j, k);
-                let lo = if j == 0 { None } else { Some(dims.cell_idx(i, j - 1, k)) };
-                let hi = if j == dims.ny { None } else { Some(dims.cell_idx(i, j, k)) };
+                let lo = if j == 0 {
+                    None
+                } else {
+                    Some(dims.cell_idx(i, j - 1, k))
+                };
+                let hi = if j == dims.ny {
+                    None
+                } else {
+                    Some(dims.cell_idx(i, j, k))
+                };
                 apply_face(coeff, p, cell_type, lo, hi, &mut v[idx]);
             }
         }
@@ -264,8 +296,16 @@ pub fn subtract_gradient(
         for j in 0..dims.ny {
             for i in 0..dims.nx {
                 let idx = dims.w_idx(i, j, k);
-                let lo = if k == 0 { None } else { Some(dims.cell_idx(i, j, k - 1)) };
-                let hi = if k == dims.nz { None } else { Some(dims.cell_idx(i, j, k)) };
+                let lo = if k == 0 {
+                    None
+                } else {
+                    Some(dims.cell_idx(i, j, k - 1))
+                };
+                let hi = if k == dims.nz {
+                    None
+                } else {
+                    Some(dims.cell_idx(i, j, k))
+                };
                 apply_face(coeff, p, cell_type, lo, hi, &mut w[idx]);
             }
         }
@@ -351,16 +391,25 @@ mod tests {
 
         // Sanity: top interior layer is air, layer below is liquid.
         assert_eq!(cell_type[dims.cell_idx(8, dims.ny - 2, 8)], CellType::Air);
-        assert_eq!(cell_type[dims.cell_idx(8, dims.ny - 3, 8)], CellType::Liquid);
+        assert_eq!(
+            cell_type[dims.cell_idx(8, dims.ny - 3, 8)],
+            CellType::Liquid
+        );
 
         // Deterministic divergent velocity field.
         let mut st = 12345u32;
         let mut u = vec![0.0f32; dims.u_count()];
         let mut v = vec![0.0f32; dims.v_count()];
         let mut w = vec![0.0f32; dims.w_count()];
-        for x in u.iter_mut() { *x = lcg(&mut st); }
-        for x in v.iter_mut() { *x = lcg(&mut st); }
-        for x in w.iter_mut() { *x = lcg(&mut st); }
+        for x in u.iter_mut() {
+            *x = lcg(&mut st);
+        }
+        for x in v.iter_mut() {
+            *x = lcg(&mut st);
+        }
+        for x in w.iter_mut() {
+            *x = lcg(&mut st);
+        }
 
         // Zero faces touching solids so the only divergence is inside the fluid
         // (also what enforce_solid_boundaries does before the solve).
@@ -404,7 +453,9 @@ mod tests {
                 for i in 0..=dims.nx {
                     let lo_solid = i == 0 || ct[dims.cell_idx(i - 1, j, k)] == CellType::Solid;
                     let hi_solid = i == dims.nx || ct[dims.cell_idx(i, j, k)] == CellType::Solid;
-                    if lo_solid || hi_solid { u[dims.u_idx(i, j, k)] = 0.0; }
+                    if lo_solid || hi_solid {
+                        u[dims.u_idx(i, j, k)] = 0.0;
+                    }
                 }
             }
         }
@@ -413,7 +464,9 @@ mod tests {
                 for i in 0..dims.nx {
                     let lo_solid = j == 0 || ct[dims.cell_idx(i, j - 1, k)] == CellType::Solid;
                     let hi_solid = j == dims.ny || ct[dims.cell_idx(i, j, k)] == CellType::Solid;
-                    if lo_solid || hi_solid { v[dims.v_idx(i, j, k)] = 0.0; }
+                    if lo_solid || hi_solid {
+                        v[dims.v_idx(i, j, k)] = 0.0;
+                    }
                 }
             }
         }
@@ -422,7 +475,9 @@ mod tests {
                 for i in 0..dims.nx {
                     let lo_solid = k == 0 || ct[dims.cell_idx(i, j, k - 1)] == CellType::Solid;
                     let hi_solid = k == dims.nz || ct[dims.cell_idx(i, j, k)] == CellType::Solid;
-                    if lo_solid || hi_solid { w[dims.w_idx(i, j, k)] = 0.0; }
+                    if lo_solid || hi_solid {
+                        w[dims.w_idx(i, j, k)] = 0.0;
+                    }
                 }
             }
         }
@@ -453,9 +508,15 @@ mod tests {
         let mut u = vec![0.0f32; dims.u_count()];
         let mut v = vec![0.0f32; dims.v_count()];
         let mut w = vec![0.0f32; dims.w_count()];
-        for x in u.iter_mut() { *x = lcg(&mut st); }
-        for x in v.iter_mut() { *x = lcg(&mut st); }
-        for x in w.iter_mut() { *x = lcg(&mut st); }
+        for x in u.iter_mut() {
+            *x = lcg(&mut st);
+        }
+        for x in v.iter_mut() {
+            *x = lcg(&mut st);
+        }
+        for x in w.iter_mut() {
+            *x = lcg(&mut st);
+        }
         zero_solid_faces(&dims, &cell_type, &mut u, &mut v, &mut w);
 
         let div0 = compute_divergence(&dims, &u, &v, &w, &cell_type);
@@ -466,21 +527,35 @@ mod tests {
         let pj = jacobi_solve(&dims, &cell_type, &div0, params, 200);
         let (mut uj, mut vj, mut wj) = (u.clone(), v.clone(), w.clone());
         subtract_gradient(&dims, params, &pj, &cell_type, &mut uj, &mut vj, &mut wj);
-        let l2_jac = l2_divergence(&dims, &compute_divergence(&dims, &uj, &vj, &wj, &cell_type), &cell_type);
+        let l2_jac = l2_divergence(
+            &dims,
+            &compute_divergence(&dims, &uj, &vj, &wj, &cell_type),
+            &cell_type,
+        );
 
         // CG at 40 iters.
         let pc = cg_solve(&dims, &cell_type, &div0, params, 40);
         let (mut uc, mut vc, mut wc) = (u.clone(), v.clone(), w.clone());
         subtract_gradient(&dims, params, &pc, &cell_type, &mut uc, &mut vc, &mut wc);
-        let l2_cg = l2_divergence(&dims, &compute_divergence(&dims, &uc, &vc, &wc, &cell_type), &cell_type);
+        let l2_cg = l2_divergence(
+            &dims,
+            &compute_divergence(&dims, &uc, &vc, &wc, &cell_type),
+            &cell_type,
+        );
 
         println!(
             "16^3 residual L2 (start {l2_before:.4}): Jacobi-200 -> {l2_jac:.6}, CG-40 -> {l2_cg:.6}"
         );
 
         // CG-40 should be at least as good as Jacobi-200, and well under 1% of start.
-        assert!(l2_cg < 0.01 * l2_before, "CG-40 should cut L2 div by >99%: {l2_cg}");
-        assert!(l2_cg <= l2_jac, "CG-40 should beat Jacobi-200: cg={l2_cg} jac={l2_jac}");
+        assert!(
+            l2_cg < 0.01 * l2_before,
+            "CG-40 should cut L2 div by >99%: {l2_cg}"
+        );
+        assert!(
+            l2_cg <= l2_jac,
+            "CG-40 should beat Jacobi-200: cg={l2_cg} jac={l2_jac}"
+        );
     }
 
     #[test]

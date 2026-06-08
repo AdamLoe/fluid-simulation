@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-07
 ---
 
 # Decisions — Simulation
@@ -112,6 +112,52 @@ the default 2 stays well within both.
 `app/crates/fluid-lab/src/gpu/fluid.rs → set_cfl` (writes `Params.cls[2]`).
 
 **Applies to** — `architecture/simulation.md`.
+
+## Wall-aware G2P sampling gives free slip without opening the tank
+
+**Decision** — G2P interpolation excludes static domain-edge / Solid-boundary face
+stencils and renormalizes the remaining MAC weights for both final and saved velocity
+samples. Boundary enforcement still zeroes those faces before pressure and after the
+gradient, and particle recovery still clamps escaped particles inside and zeroes the
+crossed wall-normal velocity.
+
+**Why** — The old gather interpolated boundary-zeroed MAC faces into near-wall
+particles. With `physics.wall_friction = 0`, that still acted like hidden wall drag:
+wall-adjacent tangential motion retained only about 55% per substep in the host repro,
+and a particle just below the ceiling sampled only about 5% of the downward
+away-from-wall normal velocity. Applying the same wall-aware gather to saved and final
+velocities keeps FLIP deltas consistent while preserving free-slip contact.
+
+**Tradeoffs** — This assumes Solid cells are the static tank boundary, not arbitrary
+moving obstacles. A future obstacle system must either bind cell type into G2P or
+provide an equivalent obstacle-aware sampling mask. It is intentionally not bounce,
+negative-pressure clamping, or a floor/ceiling special case.
+
+**Code anchors** — `app/crates/fluid-lab/src/gpu/shaders/g2p.wgsl`
+(`sample_u/sample_v/sample_w`); host reference tests in
+`app/crates/fluid-lab/src/sim/mod.rs`.
+
+**Applies to** — `architecture/simulation.md`, `architecture/settings.md`.
+
+## Interaction tools stay app-side pose/impulse tools
+
+**Decision** — Automatic tank roll is app-side tank-pose scheduling, and wave making
+is periodic particle velocity impulses through the existing impulse pass. Neither tool
+changes pressure-solver topology, cell classification, or particle allocation.
+
+**Why** — Tank pose and one-shot impulses compose with the current closed-tank FLIP/PIC
+contract and make the sim more lively without adding a new mass/source/drain model or
+moving-solid boundary semantics.
+
+**Tradeoffs** — The wave maker is not a physical paddle and auto-roll is bounded target
+motion rather than a scripted "best physics" choreography. More realistic machinery can
+be planned later if it earns the solver risk.
+
+**Code anchors** — `crates/fluid-lab/src/lib.rs → InteractionState`;
+`crates/fluid-lab/src/gpu/fluid.rs → apply_impulse`.
+
+**Applies to** — `architecture/app-shell.md`, `architecture/simulation.md`,
+`architecture/settings.md`.
 
 ## See also
 

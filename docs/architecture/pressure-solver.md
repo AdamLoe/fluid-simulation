@@ -77,9 +77,10 @@ not solver under-convergence — brute-force Jacobi at 400 iters reaches the sam
 ceiling. Raising iterations past ~30 has no visible effect on fluid volume.
 
 **Scale consistency.** Relative divergence reduction is independent of ρ. Host tests
-use `ρ = dt = h = 1` (`ProjectionParams::unit`). Runtime uses `ρ = 1000` (registry
-`solver.density`, Reset). `app/crates/fluid-lab/src/sim/pressure.rs → cg_beats_jacobi_16cubed` asserts
-CG-40 cuts L2 divergence by >99 % and beats Jacobi-200 on the same 16³ case.
+use `ρ = dt = h = 1` (`ProjectionParams::unit`). Runtime uses a hardcoded
+`ρ = 1000`; there is no user-facing `solver.density` setting.
+`app/crates/fluid-lab/src/sim/pressure.rs → cg_beats_jacobi_16cubed` asserts CG cuts
+L2 divergence sharply and beats Jacobi on the same reference case.
 
 **CG float ≠ integer P2G determinism.** The pressure solve has always been f32; CG
 dot-product reductions are fixed-order but still floating-point. This is a separate,

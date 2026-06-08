@@ -3,7 +3,7 @@
 **fluid-lab** is a browser-native, observability-first 3D fluid lab: a bounded-tank
 hybrid particle-grid (FLIP/PIC) liquid simulation that runs on the GPU via WebGPU and
 exposes its internal pipeline — particles, MAC grid, divergence, pressure, velocity,
-scalar field, mesh — as inspectable render modes with a live config panel and a
+and liquid-cell slices — as inspectable render modes with a live config panel and a
 real-GPU-timestamp profiler. It is one Rust crate compiled to WASM plus a thin
 TypeScript shell.
 
@@ -31,8 +31,7 @@ TypeScript shell.
  │     └─ gpu       wgpu device · SoA buffers · WGSL pipelines │
  │                    │                                         │
  │                    ▼  render (GPU-native, no frame readback)│
- │            tank · particles · grid slice · MC mesh (off by  │
- │            default)                                          │
+ │            tank · particles · grid slice                      │
  └─────────────────────────────────────────────────────────────┘
         ▲ verified out-of-band by tools/capture.mjs (real Chrome GPU)
 ```
@@ -59,7 +58,7 @@ relative to it. (The Rust crate manifest is `app/Cargo.toml`; its source is `app
 |---|---|---|
 | Particles | 3D points carrying liquid mass + free-surface motion | [simulation](architecture/simulation.md) |
 | MAC grid | staggered face velocities + cell-centered pressure/divergence/type | [simulation](architecture/simulation.md) · [pressure-solver](architecture/pressure-solver.md) |
-| Scalar/surface field | density field feeding marching cubes | [rendering](architecture/rendering.md) |
+| Liquid-cell slice | GPU-native cross-section through cell type, pressure, or speed | [rendering](architecture/rendering.md) |
 
 ## Hard-to-grep facts
 

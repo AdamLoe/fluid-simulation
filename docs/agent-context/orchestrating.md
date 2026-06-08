@@ -22,7 +22,7 @@ Prefer **Sonnet** for implementation, documentation, validation, and routine tas
 Reserve **Opus** for work where it earns its cost:
 
 - resolving ambiguous architecture / simulation-invariant decisions,
-- reviewing high-risk GPU/WGSL, pressure-solver, P2G, or marching-cubes work,
+- reviewing high-risk GPU/WGSL, pressure-solver, P2G, G2P, or particle-scale work,
 - debugging failures multiple Sonnet attempts couldn't isolate,
 - gate calls where the evidence is mixed or risky.
 

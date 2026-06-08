@@ -160,7 +160,10 @@ mod tests {
         let mut tc2 = TimestepController::new(fixed_dt, 2);
         let n2 = tc2.steps_for_frame(1.0); // clamped to 1/30 → 4 natural, cap at 2
         assert_eq!(n2, 2);
-        assert!(tc2.dropped_time() > 0.0, "dropped_time should be positive after cap");
+        assert!(
+            tc2.dropped_time() > 0.0,
+            "dropped_time should be positive after cap"
+        );
         // Under the new policy accumulator is zeroed when capped.
         assert!(tc2.accumulator.abs() < 1e-6, "accumulator zeroed after cap");
         assert!(tc2.last_stats().dropped_this_frame > 0.0);
@@ -192,11 +195,17 @@ mod tests {
         let n = tc.steps_for_frame(1.0); // 1 s hitch
         assert_eq!(n, 1, "should run exactly 1 substep");
         assert_eq!(tc.last_stats().substeps, 1);
-        assert!(tc.last_stats().dropped_this_frame > 0.0, "excess must be dropped");
+        assert!(
+            tc.last_stats().dropped_this_frame > 0.0,
+            "excess must be dropped"
+        );
         assert!(
             tc.last_stats().accumulated_after.abs() < 1e-6,
             "accumulator must be zeroed after cap"
         );
-        assert!(tc.total_dropped() > 0.0, "cumulative dropped_time must be positive");
+        assert!(
+            tc.total_dropped() > 0.0,
+            "cumulative dropped_time must be positive"
+        );
     }
 }

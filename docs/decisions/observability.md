@@ -6,42 +6,55 @@ last_updated:  2026-06-05
 
 # Decisions — Observability
 
-## The core product is observability-first — instrumentation early, rendered panels late
+## The core product is observability-first
 
 **Decision** — The project is framed as an observability-first, highly configurable
 3D fluid lab: the sim is real enough to inspect, and its performance and parameters
 are explainable and tunable. The split is deliberate: the **instrumentation data
-model** (hierarchical profiler + console logging + typed config registry) is early
-infrastructure; the **rendered** config/profiler side panels (localStorage, tooltips,
-search, colored apply-class dots) are deferred to the lab-inspection phase.
+model** (hierarchical profiler + console logging + typed config registry) remains the
+source of truth, while the rendered config/profiler side panels are consumers of that
+model.
 
 **Why** — The distinctive portfolio value is exposing how the sim works and where time
-goes — it reads as a systems tool, not a graphics toy. But "no human touches this
-until the late pass" still holds: logging earns its place early because the
-developer/orchestrator consume it throughout the build; persisted end-user UI does
-not, because no human consumes it yet.
+goes — it reads as a systems tool, not a graphics toy. The visible panels should make
+that instrumentation inspectable without creating a second source of truth.
 
 **Tradeoffs** — The MVP carries more instrumentation than a pure visual demo, but not
 more rendered UI; measurements become reproducible from the first GPU loop.
 
 **Applies to** — `architecture/profiler.md`, `architecture/settings.md`, `architecture/web-shell.md`.
 
-## Configuration flows through one schema-driven registry (data model early, panel late)
+## Configuration flows through one schema-driven registry
 
 **Decision** — Every tunable parameter is declared once in a single typed,
-schema-driven registry (id, label, category, type, default, validation, tooltip,
-apply class, persistence policy). UI controls are *rendered from* the registry, never
-hand-wired against ad-hoc state. The data model is early; the rendered panel and
-localStorage persistence ship with the lab-UI phase.
+schema-driven registry. UI controls are rendered from the registry, never hand-wired
+against ad-hoc state.
 
 **Why** — The sim has many knobs; a registry keeps Rust config, defaults, validation,
-persistence, and tooltips from drifting apart, and lets profiler samples be tagged
-with a config snapshot.
+persistence, help copy, grouping, and runtime behavior from drifting apart, and lets
+profiler samples be tagged with a config snapshot.
 
-**Code anchors** — `app/crates/fluid-lab/src/settings/mod.rs → Registry`; bridge `app/crates/fluid-lab/src/lib.rs → config_json,
+**Code anchors** — `crates/fluid-lab/src/settings/mod.rs → Registry`; bridge `crates/fluid-lab/src/lib.rs → config_json,
 set_setting, stats_json`.
 
 **Applies to** — `architecture/settings.md`.
+
+## Help copy and panel tiers are schema metadata
+
+**Decision** — Functional help (`tooltip`), technical help (`technical_tooltip`), and
+top-level panel tier (`panel_group`) are explicit registry metadata. The panel may
+render rows with no help, functional help only, or functional plus technical help, and
+it groups controls by `default`, `advanced`, and `dev` without parsing tooltip text.
+
+**Why** — A single long help string makes every row heavier and hides technical detail
+inside prose conventions. Explicit optional fields let obvious rows stay quiet,
+technical rows remain inspectable, and the default panel stay compact while expert
+controls are still reachable.
+
+**Code anchors** — `crates/fluid-lab/src/settings/mod.rs → Setting`,
+`Registry::config_json`; `web/panels.js → buildConfigPanel`, `appendHelpIcons`.
+
+**Applies to** — `architecture/settings.md`, `architecture/web-shell.md`.
 
 ## Every setting declares an apply class (live / reset / reload)
 

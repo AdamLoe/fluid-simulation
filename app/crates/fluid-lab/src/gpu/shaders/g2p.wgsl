@@ -26,6 +26,27 @@ struct Params {
 @group(0) @binding(6) var<storage, read> v_saved: array<f32>;
 @group(0) @binding(7) var<storage, read> w_saved: array<f32>;
 
+fn u_face_touches_static_solid(ii: i32, jj: i32, kk: i32) -> bool {
+    let nx = i32(params.gdim.x);
+    let ny = i32(params.gdim.y);
+    let nz = i32(params.gdim.z);
+    return ii <= 1 || ii >= nx - 1 || jj <= 0 || jj >= ny - 1 || kk <= 0 || kk >= nz - 1;
+}
+
+fn v_face_touches_static_solid(ii: i32, jj: i32, kk: i32) -> bool {
+    let nx = i32(params.gdim.x);
+    let ny = i32(params.gdim.y);
+    let nz = i32(params.gdim.z);
+    return ii <= 0 || ii >= nx - 1 || jj <= 1 || jj >= ny - 1 || kk <= 0 || kk >= nz - 1;
+}
+
+fn w_face_touches_static_solid(ii: i32, jj: i32, kk: i32) -> bool {
+    let nx = i32(params.gdim.x);
+    let ny = i32(params.gdim.y);
+    let nz = i32(params.gdim.z);
+    return ii <= 0 || ii >= nx - 1 || jj <= 0 || jj >= ny - 1 || kk <= 1 || kk >= nz - 1;
+}
+
 fn sample_u(P: vec3<f32>) -> vec2<f32> {
     let dim = vec3<i32>(i32(params.gdim.x) + 1, i32(params.gdim.y), i32(params.gdim.z));
     let g = (P - params.origin.xyz) / params.geom.x + vec3<f32>(0.0, -0.5, -0.5);
@@ -40,6 +61,7 @@ fn sample_u(P: vec3<f32>) -> vec2<f32> {
             let wy = select(1.0 - t.y, t.y, dj == 1);
             for (var di = 0; di < 2; di++) {
                 let ii = base.x + di; if (ii < 0 || ii >= dim.x) { continue; }
+                if (u_face_touches_static_solid(ii, jj, kk)) { continue; }
                 let wx = select(1.0 - t.x, t.x, di == 1);
                 let w = wx * wy * wz;
                 let idx = ii + dim.x * (jj + dim.y * kk);
@@ -64,6 +86,7 @@ fn sample_v(P: vec3<f32>) -> vec2<f32> {
             let wy = select(1.0 - t.y, t.y, dj == 1);
             for (var di = 0; di < 2; di++) {
                 let ii = base.x + di; if (ii < 0 || ii >= dim.x) { continue; }
+                if (v_face_touches_static_solid(ii, jj, kk)) { continue; }
                 let wx = select(1.0 - t.x, t.x, di == 1);
                 let w = wx * wy * wz;
                 let idx = ii + dim.x * (jj + dim.y * kk);
@@ -88,6 +111,7 @@ fn sample_w(P: vec3<f32>) -> vec2<f32> {
             let wy = select(1.0 - t.y, t.y, dj == 1);
             for (var di = 0; di < 2; di++) {
                 let ii = base.x + di; if (ii < 0 || ii >= dim.x) { continue; }
+                if (w_face_touches_static_solid(ii, jj, kk)) { continue; }
                 let wx = select(1.0 - t.x, t.x, di == 1);
                 let w = wx * wy * wz;
                 let idx = ii + dim.x * (jj + dim.y * kk);
