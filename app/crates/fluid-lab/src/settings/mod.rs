@@ -37,6 +37,7 @@ pub enum Category {
     Solver,
     Camera,
     Render,
+    Water,
     Dev,
 }
 
@@ -51,6 +52,7 @@ impl Category {
             Category::Solver => "Solver",
             Category::Camera => "Camera",
             Category::Render => "Render",
+            Category::Water => "Water",
             Category::Dev => "Dev",
         }
     }
@@ -166,6 +168,30 @@ impl Setting {
             },
         }
     }
+}
+
+/// A flat snapshot of the Water-tab (hero-water) settings. The renderer mirrors
+/// this into the composite's std140 uniform whenever a hero slider changes, so
+/// there is no per-setting GPU plumbing. Plain data — no GPU types — keeps the
+/// registry renderer-agnostic.
+#[derive(Clone, Copy, Debug)]
+pub struct HeroParams {
+    pub mode_enabled: bool,
+    pub debug_view: u32,
+    pub ior: f32,
+    pub refraction_strength: f32,
+    pub refraction_thickness_scale: f32,
+    pub refraction_max_offset_px: f32,
+    pub invalid_refraction_fallback: u32,
+    pub absorption_color: [f32; 3],
+    pub absorption_strength: f32,
+    pub base_tint: [f32; 3],
+    pub transparency: f32,
+    pub deep_water_darkening: f32,
+    pub floor_pattern_scale: f32,
+    pub floor_pattern_strength: f32,
+    pub backdrop_strength: f32,
+    pub wall_visibility: f32,
 }
 
 /// The authoritative settings table. Order is stable; lookups are by id.
@@ -486,6 +512,18 @@ impl Default for Registry {
                 apply: ApplyClass::Live,
             },
             Setting {
+                id: "render.particle_view",
+                label: "Water view",
+                category: Category::Render,
+                panel_group: PanelGroup::Default,
+                default: Value::U32(0),
+                value: Value::U32(0),
+                validation: Validation::U32Range { min: 0, max: 2 },
+                tooltip: Some("Switches between screen-space water and particle renderers."),
+                technical_tooltip: Some("Live enum. 0 selects screen-space water; 1 selects the v1.10 optical-depth particle path; 2 selects the pre-v1.10 simple alpha billboard path."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
                 id: "render.fps_target",
                 label: "FPS target",
                 category: Category::Render,
@@ -571,14 +609,14 @@ impl Default for Registry {
             },
             Setting {
                 id: "render.water_optical_density",
-                label: "Water optical density",
+                label: "Water absorption",
                 category: Category::Render,
                 panel_group: PanelGroup::Default,
                 default: Value::F32(1.25),
                 value: Value::F32(1.25),
                 validation: Validation::F32Range { min: 0.0, max: 8.0 },
-                tooltip: Some("Controls how strongly particle thickness absorbs light; higher makes overlapping water read denser."),
-                technical_tooltip: Some("Live render-only Beer-Lambert density used with per-fragment sphere thickness. This is not direct alpha/opacity."),
+                tooltip: Some("Controls how strongly accumulated water thickness absorbs light; higher makes deep water read denser."),
+                technical_tooltip: Some("Live Beer-Lambert absorption k for normalized screen-space thickness. This is not direct alpha/opacity, and particle size must not change represented volume."),
                 apply: ApplyClass::Live,
             },
             Setting {
@@ -595,14 +633,244 @@ impl Default for Registry {
             },
             Setting {
                 id: "render.particle_shading",
-                label: "Sphere shading",
+                label: "Surface lighting",
                 category: Category::Render,
                 panel_group: PanelGroup::Default,
                 default: Value::F32(0.25),
                 value: Value::F32(0.25),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("Adds diffuse sphere-style shading to particles."),
-                technical_tooltip: None,
+                tooltip: Some("Controls the strength of screen-space water surface lighting."),
+                technical_tooltip: Some("Live surface-lighting gain for the screen-space water composite."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.whitewater_strength",
+                label: "Whitewater",
+                category: Category::Render,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(0.65),
+                value: Value::F32(0.65),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Adds white highlights where fast water makes the surface look rough."),
+                technical_tooltip: Some("Live screen-space mix toward white/ice-blue from the speed-weighted thickness target."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.whitewater_threshold",
+                label: "Whitewater speed",
+                category: Category::Render,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(0.38),
+                value: Value::F32(0.38),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Sets how much normalized speed is needed before whitewater appears."),
+                technical_tooltip: Some("Live threshold over speed-weighted thickness divided by total thickness. Lower values show more rough water."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.whitewater_softness",
+                label: "Whitewater softness",
+                category: Category::Render,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(0.22),
+                value: Value::F32(0.22),
+                validation: Validation::F32Range { min: 0.01, max: 1.0 },
+                tooltip: Some("Controls how gradually whitewater fades in around the speed threshold."),
+                technical_tooltip: Some("Live smoothing width for the whitewater threshold in normalized speed units."),
+                apply: ApplyClass::Live,
+            },
+            // --- Hero water (Water tab). All Live: sliders auto-apply by
+            // rebuilding the HeroParams uniform; no pipeline rebuilds, no reset. ---
+            Setting {
+                id: "render.hero.mode_enabled",
+                label: "Hero water",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::U32(1),
+                value: Value::U32(1),
+                validation: Validation::U32Range { min: 0, max: 1 },
+                tooltip: Some("Master toggle for the hero-water look (scene-color refraction). Off renders the plain non-refractive composite over the environment."),
+                technical_tooltip: Some("Live enum. Gates the hero sub-features in the screen-space water composite; when off, the refraction offset is forced to zero."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.debug_view",
+                label: "Debug view",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::U32(0),
+                value: Value::U32(0),
+                validation: Validation::U32Range { min: 0, max: 7 },
+                tooltip: Some("Routes an intermediate hero-water buffer to the screen for debugging."),
+                technical_tooltip: Some("Live enum. 0 = normal composite; other values blit a single stage (scene color/depth, thickness, refraction offset, Fresnel, absorption, water-only) to the swapchain."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.ior",
+                label: "Index of refraction",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(1.33),
+                value: Value::F32(1.33),
+                validation: Validation::F32Range { min: 1.0, max: 2.0 },
+                tooltip: Some("Optical density of the water; drives both the Fresnel rim and the bend strength."),
+                technical_tooltip: Some("Live. Schlick f0 = ((ior-1)/(ior+1))^2 is derived from this, so f0 is never an independent knob."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.refraction_strength",
+                label: "Refraction strength",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(0.6),
+                value: Value::F32(0.6),
+                validation: Validation::F32Range { min: 0.0, max: 2.0 },
+                tooltip: Some("How strongly the floor and backdrop bend as they pass through the water."),
+                technical_tooltip: Some("Live. Scales the screen-space UV offset taken along the water surface normal's xy."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.refraction_thickness_scale",
+                label: "Refraction thickness",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(1.0),
+                value: Value::F32(1.0),
+                validation: Validation::F32Range { min: 0.0, max: 4.0 },
+                tooltip: Some("Makes thicker water bend the background more than thin water."),
+                technical_tooltip: Some("Live. Multiplies normalized thickness into the refraction offset so deep water refracts harder than rim water."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.refraction_max_offset_px",
+                label: "Max bend (px)",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::U32(48),
+                value: Value::U32(48),
+                validation: Validation::U32Range { min: 0, max: 256 },
+                tooltip: Some("Caps how far the refracted sample can travel; keeps grazing angles from smearing."),
+                technical_tooltip: Some("Live. Clamps the refraction UV offset to this many pixels before sampling scene color."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.invalid_refraction_fallback",
+                label: "Invalid sample",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::U32(0),
+                value: Value::U32(0),
+                validation: Validation::U32Range { min: 0, max: 1 },
+                tooltip: Some("What to show when the refracted sample would grab geometry in front of the water."),
+                technical_tooltip: Some("Live enum. 0 = fall back to the unrefracted scene-color tap; 1 = fall back to the flat base tint."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.absorption_color",
+                label: "Absorption color",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::U32(0x3366_80),
+                value: Value::U32(0x3366_80),
+                validation: Validation::U32Range { min: 0, max: 0x00FF_FFFF },
+                tooltip: Some("Per-channel Beer-Lambert extinction color; higher channels are absorbed faster with depth."),
+                technical_tooltip: Some("Live. Used as extinction coefficients exp(-absorption_color*strength*thickness) applied to the refracted background."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.absorption_strength",
+                label: "Absorption strength",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(1.5),
+                value: Value::F32(1.5),
+                validation: Validation::F32Range { min: 0.0, max: 8.0 },
+                tooltip: Some("Overall strength of how much the water dims the background it passes through."),
+                technical_tooltip: Some("Live Beer-Lambert k multiplier over normalized screen-space thickness."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.base_tint",
+                label: "Water tint",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::U32(0x194C_CC),
+                value: Value::U32(0x194C_CC),
+                validation: Validation::U32Range { min: 0, max: 0x00FF_FFFF },
+                tooltip: Some("The water's own body color, mixed in as the water gets deeper."),
+                technical_tooltip: Some("Live. Blended toward by the thickness-driven body factor."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.transparency",
+                label: "Transparency",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(0.4),
+                value: Value::F32(0.4),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("How much of the refracted background remains visible through deep water."),
+                technical_tooltip: Some("Live. Scales down the body-color opacity so 1.0 keeps the background fully visible."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.deep_water_darkening",
+                label: "Deep darkening",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(1.5),
+                value: Value::F32(1.5),
+                validation: Validation::F32Range { min: 0.0, max: 6.0 },
+                tooltip: Some("How quickly the water turns to its body color with depth."),
+                technical_tooltip: Some("Live. Controls the 1-exp(-k*thickness) body factor used for tint and opacity."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.floor_pattern_scale",
+                label: "Floor pattern scale",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(8.0),
+                value: Value::F32(8.0),
+                validation: Validation::F32Range { min: 1.0, max: 32.0 },
+                tooltip: Some("Size of the checker/grid pattern on the tank floor; gives refraction something to bend."),
+                technical_tooltip: Some("Live. Tiling frequency of the procedural floor pattern in tank-UV space."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.floor_pattern_strength",
+                label: "Floor pattern strength",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(0.5),
+                value: Value::F32(0.5),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Contrast of the floor pattern."),
+                technical_tooltip: Some("Live. Mix amount between the floor base color and the pattern color."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.backdrop_strength",
+                label: "Backdrop strength",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(0.6),
+                value: Value::F32(0.6),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Brightness of the gradient backdrop behind the tank."),
+                technical_tooltip: Some("Live. Scales the procedural backdrop gradient written into scene color."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.wall_visibility",
+                label: "Wall visibility",
+                category: Category::Water,
+                panel_group: PanelGroup::Default,
+                default: Value::F32(0.3),
+                value: Value::F32(0.3),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("How visible the matte tank walls are."),
+                technical_tooltip: Some("Live. Opacity/brightness of the matte side walls in the environment prepass."),
                 apply: ApplyClass::Live,
             },
             Setting {
@@ -727,6 +995,26 @@ impl Registry {
             .map(|s| s.as_f32())
             .unwrap_or(4.0)
     }
+    pub fn particle_view(&self) -> u32 {
+        self.get("render.particle_view")
+            .map(|s| s.as_u32())
+            .unwrap_or(0)
+    }
+    pub fn whitewater_strength(&self) -> f32 {
+        self.get("render.whitewater_strength")
+            .map(|s| s.as_f32())
+            .unwrap_or(0.65)
+    }
+    pub fn whitewater_threshold(&self) -> f32 {
+        self.get("render.whitewater_threshold")
+            .map(|s| s.as_f32())
+            .unwrap_or(0.38)
+    }
+    pub fn whitewater_softness(&self) -> f32 {
+        self.get("render.whitewater_softness")
+            .map(|s| s.as_f32())
+            .unwrap_or(0.22)
+    }
     pub fn fps_target(&self) -> u32 {
         self.get("render.fps_target")
             .map(|s| s.as_u32())
@@ -812,6 +1100,37 @@ impl Registry {
         self.get("dev.detailed_gpu_profiling")
             .map(|s| s.as_u32() != 0)
             .unwrap_or(false)
+    }
+
+    fn f32_or(&self, id: &str, default: f32) -> f32 {
+        self.get(id).map(|s| s.as_f32()).unwrap_or(default)
+    }
+    fn u32_or(&self, id: &str, default: u32) -> u32 {
+        self.get(id).map(|s| s.as_u32()).unwrap_or(default)
+    }
+
+    /// Build a flat snapshot of all Water-tab (hero-water) settings. The renderer
+    /// mirrors this into the composite uniform whenever a `render.hero.*` slider
+    /// changes.
+    pub fn hero_params(&self) -> HeroParams {
+        HeroParams {
+            mode_enabled: self.u32_or("render.hero.mode_enabled", 1) != 0,
+            debug_view: self.u32_or("render.hero.debug_view", 0),
+            ior: self.f32_or("render.hero.ior", 1.33),
+            refraction_strength: self.f32_or("render.hero.refraction_strength", 0.6),
+            refraction_thickness_scale: self.f32_or("render.hero.refraction_thickness_scale", 1.0),
+            refraction_max_offset_px: self.u32_or("render.hero.refraction_max_offset_px", 48) as f32,
+            invalid_refraction_fallback: self.u32_or("render.hero.invalid_refraction_fallback", 0),
+            absorption_color: unpack_rgb(self.u32_or("render.hero.absorption_color", 0x3366_80)),
+            absorption_strength: self.f32_or("render.hero.absorption_strength", 1.5),
+            base_tint: unpack_rgb(self.u32_or("render.hero.base_tint", 0x194C_CC)),
+            transparency: self.f32_or("render.hero.transparency", 0.4),
+            deep_water_darkening: self.f32_or("render.hero.deep_water_darkening", 1.5),
+            floor_pattern_scale: self.f32_or("render.hero.floor_pattern_scale", 8.0),
+            floor_pattern_strength: self.f32_or("render.hero.floor_pattern_strength", 0.5),
+            backdrop_strength: self.f32_or("render.hero.backdrop_strength", 0.6),
+            wall_visibility: self.f32_or("render.hero.wall_visibility", 0.3),
+        }
     }
 
     /// Set a setting value by id, clamping to its validation range.
@@ -913,6 +1232,23 @@ impl Registry {
 fn enum_options(id: &str) -> Option<&'static [&'static str]> {
     match id {
         "scene.preset" => Some(&["Falling blob", "Dam break", "Double splash"]),
+        "render.particle_view" => Some(&[
+            "Screen-space water",
+            "Optical particles",
+            "Simple particles",
+        ]),
+        "render.hero.mode_enabled" => Some(&["Disabled", "Enabled"]),
+        "render.hero.invalid_refraction_fallback" => Some(&["Unrefracted", "Base tint"]),
+        "render.hero.debug_view" => Some(&[
+            "Off",
+            "Scene color",
+            "Scene depth",
+            "Thickness",
+            "Refraction UV offset",
+            "Fresnel",
+            "Absorption",
+            "Final water only",
+        ]),
         _ => None,
     }
 }
@@ -925,7 +1261,10 @@ fn enum_options(id: &str) -> Option<&'static [&'static str]> {
 fn slider_scale(id: &str) -> Option<&'static str> {
     match id {
         "particles.count" => Some("log2"),
-        "render.particle_slow_color" | "render.particle_fast_color" => Some("color"),
+        "render.particle_slow_color"
+        | "render.particle_fast_color"
+        | "render.hero.absorption_color"
+        | "render.hero.base_tint" => Some("color"),
         _ => None,
     }
 }
@@ -1077,20 +1416,78 @@ mod tests {
         let setting = registry
             .get("render.water_optical_density")
             .expect("missing water optical density setting");
+        let view = registry
+            .get("render.particle_view")
+            .expect("missing particle view setting");
 
         assert_eq!(setting.category, Category::Render);
         assert_eq!(setting.panel_group, PanelGroup::Default);
         assert_eq!(setting.apply, ApplyClass::Live);
+        assert_eq!(view.category, Category::Render);
+        assert_eq!(view.panel_group, PanelGroup::Default);
+        assert_eq!(view.apply, ApplyClass::Live);
         assert!(matches!(
             setting.validation,
             Validation::F32Range { min: 0.0, max: 8.0 }
         ));
         assert!((registry.water_optical_density() - 1.25).abs() < f32::EPSILON);
+        assert_eq!(registry.particle_view(), 0);
         assert!((registry.particle_shading() - 0.25).abs() < f32::EPSILON);
+        assert!((registry.whitewater_strength() - 0.65).abs() < f32::EPSILON);
+        assert!((registry.whitewater_threshold() - 0.38).abs() < f32::EPSILON);
+        assert!((registry.whitewater_softness() - 0.22).abs() < f32::EPSILON);
 
         let json = registry.config_json();
         assert!(json.contains(r#""id":"render.water_optical_density""#));
+        assert!(json.contains(r#""id":"render.particle_view""#));
+        assert!(json.contains(r#""id":"render.whitewater_strength""#));
+        assert!(json.contains(
+            r#""options":["Screen-space water","Optical particles","Simple particles"]"#
+        ));
         assert!(!json.contains(r#""id":"render.particle_alpha""#));
         assert!(!json.contains("Particle opacity"));
+    }
+
+    #[test]
+    fn hero_water_settings_are_live_water_tab_controls() {
+        let registry = Registry::default();
+        let json = registry.config_json();
+        let ids = [
+            "render.hero.mode_enabled",
+            "render.hero.debug_view",
+            "render.hero.ior",
+            "render.hero.refraction_strength",
+            "render.hero.refraction_thickness_scale",
+            "render.hero.refraction_max_offset_px",
+            "render.hero.invalid_refraction_fallback",
+            "render.hero.absorption_color",
+            "render.hero.absorption_strength",
+            "render.hero.base_tint",
+            "render.hero.transparency",
+            "render.hero.deep_water_darkening",
+            "render.hero.floor_pattern_scale",
+            "render.hero.floor_pattern_strength",
+            "render.hero.backdrop_strength",
+            "render.hero.wall_visibility",
+        ];
+        for id in ids {
+            let s = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
+            assert_eq!(s.category, Category::Water, "{id} must be in the Water tab");
+            assert_eq!(s.apply, ApplyClass::Live, "{id} must be Live");
+            assert!(json.contains(&format!(r#""id":"{id}""#)));
+        }
+        // Color + enum metadata is emitted for the right ids.
+        assert!(json.contains(r#""options":["Disabled","Enabled"]"#));
+        assert!(json.contains(
+            r#""options":["Off","Scene color","Scene depth","Thickness","Refraction UV offset","Fresnel","Absorption","Final water only"]"#
+        ));
+
+        // hero_params() reads the registry defaults and derives nothing nonsensical.
+        let hero = registry.hero_params();
+        assert!(hero.mode_enabled);
+        assert_eq!(hero.debug_view, 0);
+        assert!((hero.ior - 1.33).abs() < 1e-6);
+        assert!((hero.refraction_max_offset_px - 48.0).abs() < 1e-6);
+        assert_eq!(hero.invalid_refraction_fallback, 0);
     }
 }

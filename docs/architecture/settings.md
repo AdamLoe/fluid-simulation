@@ -136,21 +136,60 @@ from the persisted `localStorage` payload. `web/main.js` owns product-mode selec
 mode-specific strength/cadence/frequency settings, rendered under the workspace's
 Modes tab.
 
-## Particle Render Controls
+## Water Render Controls
 
 The public transparency control is `render.water_optical_density`, a Live render
-setting exposed in `config_json` as "Water optical density". It replaces the old
-`render.particle_alpha` product-facing opacity control because the particle shader now
-interprets the value as optical density inside a Beer-Lambert-style thickness
-equation, not as a flat alpha multiplier.
+setting exposed in `config_json` as "Water absorption". It controls Beer-Lambert
+absorption over normalized screen-space thickness, not a flat alpha multiplier.
+`render.particle_size` changes raster coverage and smoothing feel, but the represented
+volume normalization prevents it from acting as an opacity control.
+
+`render.particle_view` is a Live enum that switches between the default screen-space
+water composite, the v1.10 optical-depth particle renderer, and the pre-v1.10 simple
+alpha particle renderer. Both particle views preserve direct per-particle motion/speed
+inspection while the default view presents the accumulated liquid body.
+`render.particle_shading` is the Live lighting strength for screen-space water and
+the shaded particle billboard modes.
+
+Whitewater controls are Live screen-space composite controls. `render.whitewater_strength`
+sets how far fast water mixes toward white/ice-blue, `render.whitewater_threshold`
+sets the normalized speed needed before the effect appears, and
+`render.whitewater_softness` controls the fade around that threshold. These controls
+act on a speed-weighted thickness target; they do not change simulation velocity or
+particle mass.
 
 `render.particle_alpha` is not serialized into `config_json` and is not a visible or
 persisted user setting anymore. `FluidApp::set_setting("render.particle_alpha", ...)`
 is accepted only as a legacy compatibility no-op that logs a redirect to
-`render.water_optical_density`. The remaining particle look controls —
-`render.particle_size`, `render.particle_edge`, `render.particle_shading`,
-`render.particle_slow_color`, `render.particle_fast_color`, and
-`render.speed_scale` — stay Live and keep their existing UI roles.
+`render.water_optical_density`. The remaining water/debug look controls —
+`render.particle_size`, `render.particle_edge`, `render.particle_slow_color`,
+`render.particle_fast_color`, and `render.speed_scale` — stay Live.
+
+## Hero Water Controls
+
+The `Water` category (v1.12) holds the hero-water controls, rendered under their own
+**Water** workspace tab (`web/panels.js -> TAB_CATEGORY_ALLOWLIST.water = {"Water"}`).
+Every `render.hero.*` setting is **Live** and in the `default` panel group, so sliders
+auto-apply with no reset:
+
+- `render.hero.mode_enabled` — enum master toggle. Off forces the refraction offset to
+  zero (the non-refractive comparison baseline).
+- `render.hero.debug_view` — enum routing an intermediate composite stage to the
+  swapchain (scene color/depth, thickness, refraction UV offset, Fresnel, absorption,
+  water-only).
+- Refraction: `ior` (drives Schlick `f0` — `f0` is never an independent setting),
+  `refraction_strength`, `refraction_thickness_scale`, `refraction_max_offset_px`,
+  `invalid_refraction_fallback` (enum).
+- Material: `absorption_color` (+`absorption_strength`), `base_tint`, `transparency`,
+  `deep_water_darkening`. The two colors use the `color` `slider_scale`.
+- Environment: `floor_pattern_scale`, `floor_pattern_strength`, `backdrop_strength`,
+  `wall_visibility`.
+
+Unlike other Live settings (one GPU setter per id in `set_setting`), the hero settings
+share a **single uniform**: `set_setting` matches the `render.hero.` id prefix, rebuilds
+the flat `Registry::hero_params() -> HeroParams` snapshot, and pushes it to the composite
++ environment via `GpuContext::set_hero_params`. There is no per-setting GPU plumbing;
+adding a hero knob means a registry row plus a field in `HeroParams`/`hero_uniform`.
 
 ## Gotchas
 
@@ -177,7 +216,7 @@ is accepted only as a legacy compatibility no-op that logs a redirect to
 - The JSON bridge shape changes, including optional help or panel-rendering metadata.
 - Interaction control semantics, defaults, grouping, or Live scheduling behavior change.
 - The shell's hidden-setting/persistence rules change for internal interaction toggles.
-- Particle render control semantics or legacy compatibility behavior change.
+- Water render control semantics, view modes, or legacy compatibility behavior change.
 - Compactness, particle seeding, liquid-cell inclusion, or pressure-quality semantics
   change.
 

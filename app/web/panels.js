@@ -12,9 +12,10 @@ const HIDDEN_SETTING_IDS = new Set([
   "interaction.auto_roll_enabled",
   "interaction.wave_enabled",
 ]);
-const TAB_ORDER = ["render", "general", "physics", "modes", "profiler"];
+const TAB_ORDER = ["render", "water", "general", "physics", "modes", "profiler"];
 const TAB_META = {
   render:   { label: "Render" },
+  water:    { label: "Water" },
   general:  { label: "General" },
   physics:  { label: "Physics" },
   modes:    { label: "Modes" },
@@ -22,6 +23,7 @@ const TAB_META = {
 };
 const TAB_CATEGORY_ALLOWLIST = {
   render: new Set(["Render", "Camera"]),
+  water: new Set(["Water"]),
   general: new Set(["Scene", "Grid", "Particles"]),
   physics: new Set(["Physics", "Solver"]),
   modes: new Set(["Interaction"]),

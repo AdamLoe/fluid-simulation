@@ -40,6 +40,27 @@ shares GPU shader/runtime contracts.
 | Research | [`water-rendering-research.md`](water-rendering-research.md) | Choose the water rendering direction and update the water implementation plan. | Can run in parallel with non-rendering work. |
 | v1.10.0 | [`v1.10.0-water-rendering-optical-depth.md`](v1.10.0-water-rendering-optical-depth.md) | Implement the selected water-look change after research sharpens the plan. | Blocked on the research doc updating the plan. |
 
+## Hero-water series (v1.12 → v1.18)
+
+Seven sequential plans decomposed from [`chatgpt_plan.md`](chatgpt_plan.md), each
+shippable on its own and capture-gated against the simple-particle baseline. They
+**evolve the existing screen-space composite** into a hero water path rather than adding a
+parallel renderer; the cross-cutting decisions live in the v1.12 plan and the rest inherit
+them. Workflow per plan: detailed rewrite, then implementation.
+
+| Order | Plan | Depends on | Note |
+|---|---|---|---|
+| v1.12.0 | [`v1.12.0-hero-water-refraction.md`](v1.12.0-hero-water-refraction.md) | — | Refraction **+ shared foundation** (RenderMode enum, Water tab, scene-color prepass, refractable environment). Build first. |
+| v1.13.0 | [`v1.13.0-hero-water-foam.md`](v1.13.0-hero-water-foam.md) | v1.12 (loose) | Persistent diffuse particles. Most independent; order with v1.14 is flexible. |
+| v1.14.0 | [`v1.14.0-hero-water-marching-cubes.md`](v1.14.0-hero-water-marching-cubes.md) | v1.12 | **Reverses the removed-surface decision.** Gated by a de-risk experiment (occupancy quads vs the v1.12 composite) — may exit without building MC. |
+| v1.15.0 | [`v1.15.0-hero-water-environment-reflection.md`](v1.15.0-hero-water-environment-reflection.md) | v1.12 | Reflected procedural sky/room (distinct from v1.12's refracted background). |
+| v1.16.0 | [`v1.16.0-hero-water-caustics.md`](v1.16.0-hero-water-caustics.md) | v1.12 | Needs the v1.12 floor/wall receivers + a light dir (shared with v1.15). |
+| v1.17.0 | [`v1.17.0-hero-water-wet-walls.md`](v1.17.0-hero-water-wet-walls.md) | v1.12 (v1.13 helps) | Wet walls + meniscus; needs rendered walls + waterline. |
+| v1.18.0 | [`v1.18.0-hero-water-temporal.md`](v1.18.0-hero-water-temporal.md) | v1.12–v1.17 | History-blend + camera-reset (NOT reprojection — no motion-vector infra). Lands last. |
+
+Open decision recorded here when resolved: **does v1.14 marching cubes beat the v1.12
+screen-space composite?** (the de-risk gate outcome).
+
 ## Locked user decisions
 
 - The initial bottom product mode is **Auto Rotate**.

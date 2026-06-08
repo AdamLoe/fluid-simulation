@@ -12,19 +12,37 @@ struct Camera { view_proj: mat4x4<f32> };
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) color: vec3<f32>,
+    @location(1) eye: f32,
 };
 
 @vertex
 fn vs(@location(0) pos: vec3<f32>, @location(1) color: vec3<f32>) -> VsOut {
     var out: VsOut;
-    out.clip = camera.view_proj * vec4<f32>(pos, 1.0);
+    let clip = camera.view_proj * vec4<f32>(pos, 1.0);
+    out.clip = clip;
     out.color = color;
+    out.eye = clip.w; // -z_eye, positive eye distance
     return out;
 }
 
+// Direct-to-swapchain (optical/simple particle modes).
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color, 1.0);
+}
+
+// Hero-water scene prepass: color into scene_color + eye distance into scene_depth.
+struct SceneOut {
+    @location(0) color: vec4<f32>,
+    @location(1) eye: f32,
+};
+
+@fragment
+fn fs_scene(in: VsOut) -> SceneOut {
+    var out: SceneOut;
+    out.color = vec4<f32>(in.color, 1.0);
+    out.eye = in.eye;
+    return out;
 }
 "#;
 
@@ -43,6 +61,7 @@ struct CameraUniform {
 
 pub struct WireframeRenderer {
     pipeline: wgpu::RenderPipeline,
+    scene_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
     camera_buffer: wgpu::Buffer,
@@ -53,6 +72,8 @@ impl WireframeRenderer {
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
+        scene_color_format: wgpu::TextureFormat,
+        scene_depth_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         lo: [f32; 3],
         hi: [f32; 3],
@@ -144,8 +165,57 @@ impl WireframeRenderer {
             cache: None,
         });
 
+        // Scene-prepass variant: same geometry, two color targets (scene_color +
+        // scene_depth), used by the hero-water Water mode.
+        let scene_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wireframe scene pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<LineVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_scene"),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: scene_color_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: scene_depth_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: depth_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Self {
             pipeline,
+            scene_pipeline,
             vertex_buffer,
             vertex_count: verts.len() as u32,
             camera_buffer,
@@ -162,6 +232,14 @@ impl WireframeRenderer {
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.draw(0..self.vertex_count, 0..1);
+    }
+
+    /// Draw into the hero-water scene prepass (scene_color + scene_depth targets).
+    pub fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_pipeline(&self.scene_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(0..self.vertex_count, 0..1);

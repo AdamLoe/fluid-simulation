@@ -12,7 +12,7 @@
       "id": "mac-simulation",
       "summary": "hybrid FLIP/PIC MAC-grid sim: grid/face indexing, cell typing, fixed-point i32-atomic P2G (FIXED_SCALE 2^16) + determinism invariant, wall-aware G2P PIC/FLIP blend, body forces, advection, particle recovery, volume-correction/friction/impulse knobs, the per-substep loop (except the pressure solve)",
       "owner": "architecture/simulation.md",
-      "references": ["architecture/pressure-solver.md", "architecture/gpu-resources.md", "architecture/app-shell.md"]
+      "references": ["architecture/pressure-solver.md", "architecture/gpu-resources.md", "architecture/app-shell.md", "architecture/fluid-system-llm-brief.md"]
     },
     {
       "id": "tank-grid-dims",
@@ -34,9 +34,9 @@
     },
     {
       "id": "rendering",
-      "summary": "GPU-native scene + debug rendering: render modes (wireframe tank, particles, grid slice), the no-normal-frame-readback invariant, the tank model matrix, and the removed extracted-surface compatibility path",
+      "summary": "GPU-native scene + inspection rendering: the typed RenderMode enum (Water/OpticalParticles/SimpleParticles) + wireframe tank + grid slice, the hero-water screen-space path (scene_color/scene_depth prepass, refractable environment, scene-color refraction composite, HeroParams Water-tab controls + debug views), water thickness/whitewater/composite ownership, the no-normal-frame-readback invariant, the tank model matrix, and the removed extracted-surface compatibility path",
       "owner": "architecture/rendering.md",
-      "references": ["architecture/simulation.md", "architecture/gpu-resources.md", "architecture/app-shell.md"]
+      "references": ["architecture/simulation.md", "architecture/gpu-resources.md", "architecture/app-shell.md", "architecture/fluid-system-llm-brief.md"]
     },
     {
       "id": "profiler",
@@ -70,13 +70,13 @@
     },
     {
       "id": "dec-rendering",
-      "summary": "GPU-native no-readback debug views, particle/liquid-cell product surface, single-pass render policy, separate particle/grid representations, visual realism subordinate to observability",
+      "summary": "GPU-native no-readback inspection views, screen-space water plus optical/simple particle and liquid-cell inspection, multi-pass render policy (now with a scene-color refraction prepass), hero features as Live sub-features of the Water view rather than new render modes, separate particle/grid representations, visual realism subordinate to observability",
       "owner": "decisions/rendering.md",
       "references": []
     },
     {
       "id": "dec-performance",
-      "summary": "32³/64³/128³ resolution targets, measured scale limits, per-stage storage-buffer pass-split, SoA/fixed/ping-pong buffers, profile-before-optimize, dispatch-shape particle ceiling",
+      "summary": "32³/64³/128³ resolution targets, measured scale limits, per-stage storage-buffer pass-split, SoA/fixed/ping-pong buffers, profile-before-optimize, dispatch-shape particle ceiling, screen-space render-cost/memory policy",
       "owner": "decisions/performance.md",
       "references": []
     },

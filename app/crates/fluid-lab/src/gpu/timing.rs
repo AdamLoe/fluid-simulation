@@ -278,11 +278,21 @@ impl GpuTimers {
         cw(&self.query_set, b, b + 1)
     }
 
-    /// Render pair: the last two slots in the set.
-    pub fn render_writes(&self) -> wgpu::RenderPassTimestampWrites<'_> {
+    /// Render pair: the last two slots in the set. Multi-pass rendering writes
+    /// the begin timestamp on the first render pass and the end timestamp on the
+    /// final render pass so public `gpu.render_ms` still spans the whole render.
+    pub fn render_begin_writes(&self) -> wgpu::RenderPassTimestampWrites<'_> {
         wgpu::RenderPassTimestampWrites {
             query_set: &self.query_set,
             beginning_of_pass_write_index: Some(self.slots - 2),
+            end_of_pass_write_index: None,
+        }
+    }
+
+    pub fn render_end_writes(&self) -> wgpu::RenderPassTimestampWrites<'_> {
+        wgpu::RenderPassTimestampWrites {
+            query_set: &self.query_set,
+            beginning_of_pass_write_index: None,
             end_of_pass_write_index: Some(self.slots - 1),
         }
     }

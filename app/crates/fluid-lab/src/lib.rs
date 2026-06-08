@@ -592,6 +592,14 @@ impl FluidApp {
         if !self.settings.set_value_f64(id, value) {
             return false; // unknown id
         }
+        // Hero-water (Water tab) settings are all Live: rebuild the single
+        // HeroParams snapshot and push it to the composite + environment, instead
+        // of plumbing each id individually.
+        if id.starts_with("render.hero.") {
+            self.gpu.set_hero_params(self.settings.hero_params());
+            log(&format!("[fluid-lab] live {id} = {value}"));
+            return true;
+        }
         match self.settings.apply_class_str(id) {
             Some("live") => {
                 match id {
@@ -643,6 +651,11 @@ impl FluidApp {
                         self.gpu.set_speed_scale(value as f32);
                         log(&format!("[fluid-lab] live speed_scale = {value}"));
                     }
+                    "render.particle_view" => {
+                        let view = self.settings.particle_view();
+                        self.gpu.set_particle_view(view);
+                        log(&format!("[fluid-lab] live particle_view = {view}"));
+                    }
                     "render.particle_slow_color" => {
                         self.gpu.set_particle_slow_color(unpack_rgb(value as u32));
                     }
@@ -658,6 +671,15 @@ impl FluidApp {
                     }
                     "render.particle_shading" => {
                         self.gpu.set_particle_shading(value as f32);
+                    }
+                    "render.whitewater_strength" => {
+                        self.gpu.set_whitewater_strength(value as f32);
+                    }
+                    "render.whitewater_threshold" => {
+                        self.gpu.set_whitewater_threshold(value as f32);
+                    }
+                    "render.whitewater_softness" => {
+                        self.gpu.set_whitewater_softness(value as f32);
                     }
                     "render.fps_target" => {
                         // FPS target is consumed by the JS rAF loop; no GPU dispatch needed.

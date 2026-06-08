@@ -55,7 +55,11 @@ CPU wall-clock around a GPU submit measures nothing about GPU execution time bec
 
 `GpuTimers` operates in two modes, selected at construction (Reset-class; controlled by `dev.detailed_gpu_profiling`):
 
-**COARSE (default):** each substep gets three begin/end pairs — prep / pressure / finish — plus one render pair at the end of the frame. `Readout.prep_ms`, `pressure_ms`, `finish_ms` are **frame totals** summed across all substeps that ran.
+**COARSE (default):** each substep gets three begin/end pairs — prep / pressure /
+finish — plus one render pair for the frame. The render pair writes its begin timestamp
+on the first render pass and its end timestamp on the final render pass, so
+`gpu.render_ms` is one coarse total for the whole render path. `Readout.prep_ms`,
+`pressure_ms`, `finish_ms` are **frame totals** summed across all substeps that ran.
 
 **DETAILED (dev toggle):** each substep gets one begin/end pair per fine section. Fine sections are the 27 passes in `app/crates/fluid-lab/src/gpu/timing.rs → FINE_SECTIONS`. In addition, per CG iteration, six contiguous passes are timed and bucketed into four reported categories: `spmv` (SpMV pass), `reductions` (both dot-product passes — d·q and r·r), `updates` (the vector update p += α·d; r -= α·q), `scalars` (the alpha/beta/dir one-thread dispatches). All values are frame totals summed across substeps.
 

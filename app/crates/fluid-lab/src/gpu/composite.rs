@@ -1,0 +1,436 @@
+//! Screen-space water composite. Samples normalized thickness and smoothed front
+//! depth, then composites a lit, refracting Beer-Lambert water over the offscreen
+//! `scene_color`/`scene_depth` hero-water prepass. The refracted background is
+//! tapped from `scene_color` at a normal-driven UV offset; a depth guard against
+//! `scene_depth` keeps geometry in front of the water from smearing.
+
+use crate::settings::HeroParams;
+use wgpu::util::DeviceExt;
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CompositeUniform {
+    tint_density: [f32; 4], // rgb = water tint, a = optical density
+    params: [f32; 4],       // x = shading strength, y = tan(fov_y/2), zw = target size
+    whitewater: [f32; 4],   // x = strength, y = threshold, z = softness, w = unused
+}
+
+/// Hero-water (Water-tab) parameters, mirrored from the settings registry each
+/// time a `render.hero.*` slider changes. `f0` is derived from `ior` here so the
+/// shader never sees two disagreeing knobs.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct HeroUniform {
+    refr: [f32; 4],   // x = effective strength, y = thickness scale, z = max offset px, w = f0
+    absorb: [f32; 4], // rgb = absorption color, w = absorption strength
+    tint: [f32; 4],   // rgb = base tint, w = transparency
+    misc: [f32; 4],   // x = deep darkening, y = invalid fallback, z = debug view, w = mode enabled
+}
+
+fn hero_uniform(hero: &HeroParams) -> HeroUniform {
+    let ratio = (hero.ior - 1.0) / (hero.ior + 1.0);
+    let f0 = (ratio * ratio).clamp(0.0, 1.0);
+    let effective_strength = if hero.mode_enabled {
+        hero.refraction_strength.max(0.0)
+    } else {
+        0.0
+    };
+    HeroUniform {
+        refr: [
+            effective_strength,
+            hero.refraction_thickness_scale.max(0.0),
+            hero.refraction_max_offset_px.max(0.0),
+            f0,
+        ],
+        absorb: [
+            hero.absorption_color[0],
+            hero.absorption_color[1],
+            hero.absorption_color[2],
+            hero.absorption_strength.max(0.0),
+        ],
+        tint: [
+            hero.base_tint[0],
+            hero.base_tint[1],
+            hero.base_tint[2],
+            hero.transparency.clamp(0.0, 1.0),
+        ],
+        misc: [
+            hero.deep_water_darkening.max(0.0),
+            hero.invalid_refraction_fallback as f32,
+            hero.debug_view as f32,
+            if hero.mode_enabled { 1.0 } else { 0.0 },
+        ],
+    }
+}
+
+pub struct CompositeRenderer {
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    uniform_buf: wgpu::Buffer,
+    hero_buf: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    tint: [f32; 3],
+    optical_density: f32,
+    shading: f32,
+    whitewater_strength: f32,
+    whitewater_threshold: f32,
+    whitewater_softness: f32,
+    size: [f32; 2],
+}
+
+impl CompositeRenderer {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+        thickness_view: &wgpu::TextureView,
+        whitewater_view: &wgpu::TextureView,
+        smoothed_z_view: &wgpu::TextureView,
+        scene_color_view: &wgpu::TextureView,
+        scene_depth_view: &wgpu::TextureView,
+        hero: &HeroParams,
+        tint: [f32; 3],
+        optical_density: f32,
+        shading: f32,
+        whitewater_strength: f32,
+        whitewater_threshold: f32,
+        whitewater_softness: f32,
+        size: [u32; 2],
+    ) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("water composite shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/composite.wgsl").into()),
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("thickness sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let uniform = CompositeUniform {
+            tint_density: [tint[0], tint[1], tint[2], optical_density.max(0.0)],
+            params: [
+                shading.max(0.0),
+                (50.0_f32.to_radians() * 0.5).tan(),
+                size[0].max(1) as f32,
+                size[1].max(1) as f32,
+            ],
+            whitewater: [
+                whitewater_strength.clamp(0.0, 1.0),
+                whitewater_threshold.clamp(0.0, 1.0),
+                whitewater_softness.clamp(0.01, 1.0),
+                0.0,
+            ],
+        };
+        let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("water composite uniform"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let hero_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("hero water uniform"),
+            contents: bytemuck::bytes_of(&hero_uniform(hero)),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("water composite bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // scene_color (refractable background, filterable).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // scene_depth (eye distance for the refraction depth guard).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let bind_group = create_bind_group(
+            device,
+            &bind_group_layout,
+            &sampler,
+            thickness_view,
+            whitewater_view,
+            smoothed_z_view,
+            &uniform_buf,
+            &hero_buf,
+            scene_color_view,
+            scene_depth_view,
+        );
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("water composite layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("water composite pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                // Opaque: the composite samples scene_color itself and outputs the
+                // final pixel (refracted background where there's no water, blended
+                // water where there is), so there is no separate blit pass.
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            bind_group_layout,
+            sampler,
+            uniform_buf,
+            hero_buf,
+            bind_group,
+            tint,
+            optical_density: optical_density.max(0.0),
+            shading: shading.max(0.0),
+            whitewater_strength: whitewater_strength.clamp(0.0, 1.0),
+            whitewater_threshold: whitewater_threshold.clamp(0.0, 1.0),
+            whitewater_softness: whitewater_softness.clamp(0.01, 1.0),
+            size: [size[0].max(1) as f32, size[1].max(1) as f32],
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_views(
+        &mut self,
+        device: &wgpu::Device,
+        thickness_view: &wgpu::TextureView,
+        whitewater_view: &wgpu::TextureView,
+        smoothed_z_view: &wgpu::TextureView,
+        scene_color_view: &wgpu::TextureView,
+        scene_depth_view: &wgpu::TextureView,
+    ) {
+        self.bind_group = create_bind_group(
+            device,
+            &self.bind_group_layout,
+            &self.sampler,
+            thickness_view,
+            whitewater_view,
+            smoothed_z_view,
+            &self.uniform_buf,
+            &self.hero_buf,
+            scene_color_view,
+            scene_depth_view,
+        );
+    }
+
+    /// Mirror the latest Water-tab settings into the hero uniform. Called whenever
+    /// a `render.hero.*` slider changes (Live, no pipeline rebuild).
+    pub fn set_hero_params(&self, queue: &wgpu::Queue, hero: &HeroParams) {
+        queue.write_buffer(&self.hero_buf, 0, bytemuck::bytes_of(&hero_uniform(hero)));
+    }
+
+    pub fn set_tint(&mut self, queue: &wgpu::Queue, tint: [f32; 3]) {
+        self.tint = tint;
+        self.write_uniform(queue);
+    }
+
+    pub fn set_optical_density(&mut self, queue: &wgpu::Queue, density: f32) {
+        self.optical_density = density.max(0.0);
+        self.write_uniform(queue);
+    }
+
+    pub fn set_shading(&mut self, queue: &wgpu::Queue, shading: f32) {
+        self.shading = shading.max(0.0);
+        self.write_uniform(queue);
+    }
+
+    pub fn set_whitewater_strength(&mut self, queue: &wgpu::Queue, strength: f32) {
+        self.whitewater_strength = strength.clamp(0.0, 1.0);
+        self.write_uniform(queue);
+    }
+
+    pub fn set_whitewater_threshold(&mut self, queue: &wgpu::Queue, threshold: f32) {
+        self.whitewater_threshold = threshold.clamp(0.0, 1.0);
+        self.write_uniform(queue);
+    }
+
+    pub fn set_whitewater_softness(&mut self, queue: &wgpu::Queue, softness: f32) {
+        self.whitewater_softness = softness.clamp(0.01, 1.0);
+        self.write_uniform(queue);
+    }
+
+    pub fn set_size(&mut self, queue: &wgpu::Queue, width: u32, height: u32) {
+        self.size = [width.max(1) as f32, height.max(1) as f32];
+        self.write_uniform(queue);
+    }
+
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    fn write_uniform(&self, queue: &wgpu::Queue) {
+        let uniform = CompositeUniform {
+            tint_density: [
+                self.tint[0],
+                self.tint[1],
+                self.tint[2],
+                self.optical_density,
+            ],
+            params: [
+                self.shading,
+                (50.0_f32.to_radians() * 0.5).tan(),
+                self.size[0],
+                self.size[1],
+            ],
+            whitewater: [
+                self.whitewater_strength,
+                self.whitewater_threshold,
+                self.whitewater_softness,
+                0.0,
+            ],
+        };
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniform));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    thickness_view: &wgpu::TextureView,
+    whitewater_view: &wgpu::TextureView,
+    smoothed_z_view: &wgpu::TextureView,
+    uniform_buf: &wgpu::Buffer,
+    hero_buf: &wgpu::Buffer,
+    scene_color_view: &wgpu::TextureView,
+    scene_depth_view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("water composite bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(thickness_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(whitewater_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(smoothed_z_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: uniform_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: hero_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(scene_color_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::TextureView(scene_depth_view),
+            },
+        ],
+    })
+}

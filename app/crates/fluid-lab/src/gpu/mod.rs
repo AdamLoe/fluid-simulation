@@ -1,22 +1,56 @@
 //! WebGPU context: adapter/device init, surface configuration, boot diagnostics,
 //! the compute/integer-atomic smoke test, the GPU fluid sim, and rendering.
 
+mod composite;
+mod environment;
 mod fluid;
 mod particles;
 mod renderer;
 mod slice;
 mod smoke;
+mod smoothing;
 mod timing;
 
-pub use timing::FINE_SECTIONS;
 pub use timing::Readout as GpuReadout;
+pub use timing::FINE_SECTIONS;
 
 use crate::log;
 use crate::scene::SceneConfig;
-use crate::settings::Registry;
+use crate::settings::{self, Registry};
 use glam::{Mat4, Vec3};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// Offscreen scene-color format for the hero-water prepass: linear HDR so the
+/// environment + wireframe can be sampled (and refraction-tapped) before the
+/// water composites over it. See [`composite`].
+const SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// How the fluid is drawn. Replaces the bare `u32 particle_view` dispatch
+/// (`render.particle_view` still maps 0/1/2 to these for compatibility). The
+/// optical/simple particle views are the explicit fallbacks the hero-water
+/// series must never break; hero features are Live sub-features of `Water`, not
+/// new modes here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RenderMode {
+    /// Screen-space water composite — the hero path (refraction, environment, …).
+    Water,
+    /// v1.10 optical-depth particle billboards.
+    OpticalParticles,
+    /// pre-v1.10 simple alpha billboards.
+    SimpleParticles,
+}
+
+impl RenderMode {
+    /// Map the `render.particle_view` u32 (0/1/2) to a mode, defaulting unknown
+    /// values to `Water`.
+    fn from_u32(v: u32) -> Self {
+        match v {
+            1 => RenderMode::OpticalParticles,
+            2 => RenderMode::SimpleParticles,
+            _ => RenderMode::Water,
+        }
+    }
+}
 
 /// Boot facts probed once at startup and used by later phases.
 #[derive(Clone)]
@@ -37,20 +71,38 @@ pub struct GpuContext {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     depth_view: wgpu::TextureView,
+    thickness_view: wgpu::TextureView,
+    whitewater_view: wgpu::TextureView,
+    nearest_z_view: wgpu::TextureView,
+    smooth_z_ping_view: wgpu::TextureView,
+    smooth_z_view: wgpu::TextureView,
+    /// Hero-water scene prepass targets: the environment + wireframe are drawn
+    /// here (linear HDR color + linear eye-distance) so the composite can sample
+    /// them for the refracted background.
+    scene_color_view: wgpu::TextureView,
+    scene_depth_view: wgpu::TextureView,
     fluid: fluid::GpuFluid,
     wireframe: renderer::WireframeRenderer,
     particles: particles::ParticleRenderer,
+    environment: environment::EnvironmentRenderer,
+    composite: composite::CompositeRenderer,
+    smoothing: smoothing::WaterSmoothRenderer,
     slice: slice::SliceRenderer,
     pressure_enabled: bool,
     slice_enabled: bool,
     slice_mode: u32,
     particle_size: f32,
     speed_scale: f32,
+    render_mode: RenderMode,
+    hero: settings::HeroParams,
     particle_slow_rgb: [f32; 3],
     particle_fast_rgb: [f32; 3],
     water_optical_density: f32,
     particle_edge: f32,
     particle_shading: f32,
+    whitewater_strength: f32,
+    whitewater_threshold: f32,
+    whitewater_softness: f32,
     timers: Option<timing::GpuTimers>,
     caps: GpuCaps,
     requested_particles: u32,
@@ -147,6 +199,13 @@ impl GpuContext {
         surface.configure(&device, &config);
 
         let depth_view = create_depth(&device, width, height);
+        let thickness_view = create_r16_target(&device, width, height, "water thickness");
+        let whitewater_view = create_r16_target(&device, width, height, "water whitewater");
+        let nearest_z_view = create_r16_target(&device, width, height, "water nearest z");
+        let smooth_z_ping_view = create_r16_target(&device, width, height, "water smooth z ping");
+        let smooth_z_view = create_r16_target(&device, width, height, "water smooth z");
+        let scene_color_view = create_scene_color_target(&device, width, height);
+        let scene_depth_view = create_r16_target(&device, width, height, "hero scene depth");
 
         let requested_particles = settings.particle_count();
         let estimated_particles = fluid::estimated_particle_count(settings, scene);
@@ -167,8 +226,23 @@ impl GpuContext {
         let particle_radius = crate::sim::H * 0.35;
 
         let (tank_lo, tank_hi) = fluid.tank_bounds();
-        let wireframe =
-            renderer::WireframeRenderer::new(&device, format, DEPTH_FORMAT, tank_lo, tank_hi);
+        let wireframe = renderer::WireframeRenderer::new(
+            &device,
+            format,
+            SCENE_COLOR_FORMAT,
+            wgpu::TextureFormat::R16Float,
+            DEPTH_FORMAT,
+            tank_lo,
+            tank_hi,
+        );
+        let environment = environment::EnvironmentRenderer::new(
+            &device,
+            SCENE_COLOR_FORMAT,
+            wgpu::TextureFormat::R16Float,
+            DEPTH_FORMAT,
+            tank_lo,
+            tank_hi,
+        );
         let mut particles = particles::ParticleRenderer::new(
             &device,
             format,
@@ -177,6 +251,9 @@ impl GpuContext {
             particle_radius,
         );
         particles.set_radius_scale(settings.particle_size());
+        particles.set_particle_volume(
+            represented_liquid_volume(scene) / (fluid.particle_count().max(1) as f32),
+        );
         particles.set_speed_scale(settings.speed_scale());
         particles.set_particle_colors(
             settings.particle_slow_color(),
@@ -185,6 +262,27 @@ impl GpuContext {
         particles.set_water_optical_density(settings.water_optical_density());
         particles.set_edge_inner(settings.particle_edge());
         particles.set_shading(settings.particle_shading());
+        let hero = settings.hero_params();
+        let composite = composite::CompositeRenderer::new(
+            &device,
+            format,
+            &thickness_view,
+            &whitewater_view,
+            &smooth_z_view,
+            &scene_color_view,
+            &scene_depth_view,
+            &hero,
+            settings.particle_slow_color(),
+            settings.water_optical_density(),
+            settings.particle_shading(),
+            settings.whitewater_strength(),
+            settings.whitewater_threshold(),
+            settings.whitewater_softness(),
+            [width, height],
+        );
+        environment.set_params(&queue, &hero);
+        let smoothing =
+            smoothing::WaterSmoothRenderer::new(&device, &nearest_z_view, &smooth_z_ping_view);
 
         let [grid_nx, grid_ny, grid_nz] = fluid.grid_dims();
         let slice_h = crate::sim::H;
@@ -223,20 +321,35 @@ impl GpuContext {
             surface,
             config,
             depth_view,
+            thickness_view,
+            whitewater_view,
+            nearest_z_view,
+            smooth_z_ping_view,
+            smooth_z_view,
+            scene_color_view,
+            scene_depth_view,
             fluid,
             wireframe,
             particles,
+            environment,
+            composite,
+            smoothing,
             slice,
             pressure_enabled: true,
             slice_enabled: false,
             slice_mode: 0,
             particle_size: settings.particle_size(),
             speed_scale: settings.speed_scale(),
+            render_mode: RenderMode::from_u32(settings.particle_view()),
+            hero,
             particle_slow_rgb: settings.particle_slow_color(),
             particle_fast_rgb: settings.particle_fast_color(),
             water_optical_density: settings.water_optical_density(),
             particle_edge: settings.particle_edge(),
             particle_shading: settings.particle_shading(),
+            whitewater_strength: settings.whitewater_strength(),
+            whitewater_threshold: settings.whitewater_threshold(),
+            whitewater_softness: settings.whitewater_softness(),
             timers,
             caps,
             requested_particles,
@@ -286,10 +399,21 @@ impl GpuContext {
         self.wireframe = renderer::WireframeRenderer::new(
             &self.device,
             self.config.format,
+            SCENE_COLOR_FORMAT,
+            wgpu::TextureFormat::R16Float,
             DEPTH_FORMAT,
             tank_lo,
             tank_hi,
         );
+        self.environment = environment::EnvironmentRenderer::new(
+            &self.device,
+            SCENE_COLOR_FORMAT,
+            wgpu::TextureFormat::R16Float,
+            DEPTH_FORMAT,
+            tank_lo,
+            tank_hi,
+        );
+        self.environment.set_params(&self.queue, &self.hero);
         let particles = particles::ParticleRenderer::new(
             &self.device,
             self.config.format,
@@ -330,6 +454,9 @@ impl GpuContext {
             ));
         }
         self.slice.set_mode(self.slice_mode);
+        self.particles.set_particle_volume(
+            represented_liquid_volume(scene) / (self.fluid.particle_count().max(1) as f32),
+        );
         self.particles.set_radius_scale(self.particle_size);
         self.particles.set_speed_scale(self.speed_scale);
         self.particles
@@ -418,6 +545,25 @@ impl GpuContext {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth(&self.device, width, height);
+        self.thickness_view = create_r16_target(&self.device, width, height, "water thickness");
+        self.whitewater_view = create_r16_target(&self.device, width, height, "water whitewater");
+        self.nearest_z_view = create_r16_target(&self.device, width, height, "water nearest z");
+        self.smooth_z_ping_view =
+            create_r16_target(&self.device, width, height, "water smooth z ping");
+        self.smooth_z_view = create_r16_target(&self.device, width, height, "water smooth z");
+        self.scene_color_view = create_scene_color_target(&self.device, width, height);
+        self.scene_depth_view = create_r16_target(&self.device, width, height, "hero scene depth");
+        self.composite.set_views(
+            &self.device,
+            &self.thickness_view,
+            &self.whitewater_view,
+            &self.smooth_z_view,
+            &self.scene_color_view,
+            &self.scene_depth_view,
+        );
+        self.composite.set_size(&self.queue, width, height);
+        self.smoothing
+            .set_views(&self.device, &self.nearest_z_view, &self.smooth_z_ping_view);
     }
 
     pub fn reset(&mut self) {
@@ -491,10 +637,23 @@ impl GpuContext {
         self.particles.set_speed_scale(s);
     }
 
+    pub fn set_particle_view(&mut self, v: u32) {
+        self.render_mode = RenderMode::from_u32(v);
+    }
+
+    /// Mirror the Water-tab settings into the hero uniform + environment params.
+    /// Called whenever a `render.hero.*` slider changes (all Live).
+    pub fn set_hero_params(&mut self, hero: settings::HeroParams) {
+        self.hero = hero;
+        self.composite.set_hero_params(&self.queue, &hero);
+        self.environment.set_params(&self.queue, &hero);
+    }
+
     pub fn set_particle_slow_color(&mut self, rgb: [f32; 3]) {
         self.particle_slow_rgb = rgb;
         self.particles
             .set_particle_colors(self.particle_slow_rgb, self.particle_fast_rgb);
+        self.composite.set_tint(&self.queue, rgb);
     }
 
     pub fn set_particle_fast_color(&mut self, rgb: [f32; 3]) {
@@ -506,6 +665,7 @@ impl GpuContext {
     pub fn set_water_optical_density(&mut self, density: f32) {
         self.water_optical_density = density;
         self.particles.set_water_optical_density(density);
+        self.composite.set_optical_density(&self.queue, density);
     }
 
     pub fn set_particle_edge(&mut self, v: f32) {
@@ -516,6 +676,22 @@ impl GpuContext {
     pub fn set_particle_shading(&mut self, v: f32) {
         self.particle_shading = v;
         self.particles.set_shading(v);
+        self.composite.set_shading(&self.queue, v);
+    }
+
+    pub fn set_whitewater_strength(&mut self, v: f32) {
+        self.whitewater_strength = v;
+        self.composite.set_whitewater_strength(&self.queue, v);
+    }
+
+    pub fn set_whitewater_threshold(&mut self, v: f32) {
+        self.whitewater_threshold = v;
+        self.composite.set_whitewater_threshold(&self.queue, v);
+    }
+
+    pub fn set_whitewater_softness(&mut self, v: f32) {
+        self.whitewater_softness = v;
+        self.composite.set_whitewater_softness(&self.queue, v);
     }
 
     pub fn gpu_timing(&self) -> Option<GpuReadout> {
@@ -705,48 +881,20 @@ impl GpuContext {
         sec!(26, "d.g2p", |p: &mut wgpu::ComputePass| f.dispatch_g2p(p));
     }
 
-    pub fn render(
-        &mut self,
-        view_proj: &Mat4,
-        cam_right: Vec3,
-        cam_up: Vec3,
-    ) -> Result<(), String> {
-        use wgpu::CurrentSurfaceTexture as Cur;
-        let frame = match self.surface.get_current_texture() {
-            Cur::Success(t) | Cur::Suboptimal(t) => t,
-            Cur::Outdated | Cur::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                return Ok(());
-            }
-            Cur::Timeout | Cur::Occluded => return Ok(()),
-            Cur::Validation => return Err("surface validation error".to_string()),
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        self.wireframe.update_camera(&self.queue, view_proj);
-        self.particles
-            .update_camera(&self.queue, view_proj, cam_right, cam_up);
-        self.slice.update_camera(&self.queue, view_proj);
-
+    /// Opaque pass for the optical/simple particle modes: clear the swapchain +
+    /// depth and draw the wireframe tank directly. (The Water mode draws into the
+    /// offscreen scene prepass instead.)
+    fn record_opaque_into_view(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
         const CLEAR: wgpu::Color = wgpu::Color {
             r: 0.04,
             g: 0.05,
             b: 0.08,
             a: 1.0,
         };
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame"),
-            });
-
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("scene pass"),
+            label: Some("opaque pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
+                view,
                 resolve_target: None,
                 depth_slice: None,
                 ops: wgpu::Operations {
@@ -762,16 +910,374 @@ impl GpuContext {
                 }),
                 stencil_ops: None,
             }),
-            timestamp_writes: self.timers.as_ref().map(|t| t.render_writes()),
+            timestamp_writes: self.timers.as_ref().map(|t| t.render_begin_writes()),
             occlusion_query_set: None,
             multiview_mask: None,
         });
         self.wireframe.draw(&mut pass);
-        self.particles.draw(&mut pass, self.fluid.particle_count());
+    }
+
+    pub fn render(
+        &mut self,
+        view_proj: &Mat4,
+        cam_right: Vec3,
+        cam_up: Vec3,
+    ) -> Result<(), String> {
+        use wgpu::CurrentSurfaceTexture as Cur;
+        let frame = match self.surface.get_current_texture() {
+            Cur::Success(t) | Cur::Suboptimal(t) => t,
+            Cur::Outdated | Cur::Lost => {
+                self.surface.configure(&self.device, &self.config);
+                self.depth_view = create_depth(&self.device, self.config.width, self.config.height);
+                self.thickness_view = create_r16_target(
+                    &self.device,
+                    self.config.width,
+                    self.config.height,
+                    "water thickness",
+                );
+                self.whitewater_view = create_r16_target(
+                    &self.device,
+                    self.config.width,
+                    self.config.height,
+                    "water whitewater",
+                );
+                self.nearest_z_view = create_r16_target(
+                    &self.device,
+                    self.config.width,
+                    self.config.height,
+                    "water nearest z",
+                );
+                self.smooth_z_ping_view = create_r16_target(
+                    &self.device,
+                    self.config.width,
+                    self.config.height,
+                    "water smooth z ping",
+                );
+                self.smooth_z_view = create_r16_target(
+                    &self.device,
+                    self.config.width,
+                    self.config.height,
+                    "water smooth z",
+                );
+                self.scene_color_view = create_scene_color_target(
+                    &self.device,
+                    self.config.width,
+                    self.config.height,
+                );
+                self.scene_depth_view = create_r16_target(
+                    &self.device,
+                    self.config.width,
+                    self.config.height,
+                    "hero scene depth",
+                );
+                self.composite.set_views(
+                    &self.device,
+                    &self.thickness_view,
+                    &self.whitewater_view,
+                    &self.smooth_z_view,
+                    &self.scene_color_view,
+                    &self.scene_depth_view,
+                );
+                self.composite
+                    .set_size(&self.queue, self.config.width, self.config.height);
+                self.smoothing.set_views(
+                    &self.device,
+                    &self.nearest_z_view,
+                    &self.smooth_z_ping_view,
+                );
+                return Ok(());
+            }
+            Cur::Timeout | Cur::Occluded => return Ok(()),
+            Cur::Validation => return Err("surface validation error".to_string()),
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        self.wireframe.update_camera(&self.queue, view_proj);
+        self.environment.update_camera(&self.queue, view_proj);
+        self.particles
+            .update_camera(&self.queue, view_proj, cam_right, cam_up);
+        self.slice.update_camera(&self.queue, view_proj);
+
+        const CLEAR: wgpu::Color = wgpu::Color {
+            r: 0.04,
+            g: 0.05,
+            b: 0.08,
+            a: 1.0,
+        };
+        // Eye-distance "no geometry" sentinel for the scene_depth target (matches
+        // the R16Float convention used by nearest_z / smooth_z).
+        const SCENE_DEPTH_FAR: wgpu::Color = wgpu::Color {
+            r: 65504.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
+
+        match self.render_mode {
+            RenderMode::Water => {
+                // Scene prepass: environment + wireframe into scene_color +
+                // scene_depth, ahead of the water passes.
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("hero scene prepass"),
+                        color_attachments: &[
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.scene_color_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(CLEAR),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.scene_depth_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(SCENE_DEPTH_FAR),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                        ],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &self.depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: self.timers.as_ref().map(|t| t.render_begin_writes()),
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    self.environment.draw(&mut pass);
+                    self.wireframe.draw_scene(&mut pass);
+                }
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("water thickness pass"),
+                        color_attachments: &[
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.thickness_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.nearest_z_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: 65504.0,
+                                        g: 0.0,
+                                        b: 0.0,
+                                        a: 0.0,
+                                    }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.whitewater_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                        ],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &self.depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    self.particles
+                        .draw_thickness(&mut pass, self.fluid.particle_count());
+                }
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("water smooth x pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &self.smooth_z_ping_view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 65504.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 0.0,
+                                }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    self.smoothing.draw_x(&mut pass);
+                }
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("water smooth y pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &self.smooth_z_view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 65504.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 0.0,
+                                }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    self.smoothing.draw_y(&mut pass);
+                }
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("water composite pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: if self.slice_enabled {
+                            None
+                        } else {
+                            self.timers.as_ref().map(|t| t.render_end_writes())
+                        },
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    self.composite.draw(&mut pass);
+                }
+            }
+            RenderMode::OpticalParticles => {
+                self.record_opaque_into_view(&mut encoder, &view);
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("optical particle pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: if self.slice_enabled {
+                        None
+                    } else {
+                        self.timers.as_ref().map(|t| t.render_end_writes())
+                    },
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                self.particles.draw(&mut pass, self.fluid.particle_count());
+            }
+            RenderMode::SimpleParticles => {
+                self.record_opaque_into_view(&mut encoder, &view);
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("simple particle pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: if self.slice_enabled {
+                        None
+                    } else {
+                        self.timers.as_ref().map(|t| t.render_end_writes())
+                    },
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                self.particles
+                    .draw_simple(&mut pass, self.fluid.particle_count());
+            }
+        }
+
         if self.slice_enabled {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("slice overlay pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: self.timers.as_ref().map(|t| t.render_end_writes()),
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
             self.slice.draw(&mut pass);
         }
-        drop(pass);
 
         // Throttled GPU timing + liveness readback (the only allowed readback).
         let initiated = self
@@ -808,6 +1314,70 @@ fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture
         view_formats: &[],
     });
     tex.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn create_scene_color_target(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> wgpu::TextureView {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("hero scene color"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: SCENE_COLOR_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    tex.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn create_r16_target(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    label: &'static str,
+) -> wgpu::TextureView {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    tex.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn represented_liquid_volume(scene: &SceneConfig) -> f32 {
+    let h = crate::sim::H;
+    let extent = Vec3::new(
+        scene.grid_resolution.x as f32 * h,
+        scene.grid_resolution.y as f32 * h,
+        scene.grid_resolution.z as f32 * h,
+    );
+    scene
+        .initial_liquid
+        .blocks
+        .iter()
+        .map(|b| {
+            let e = (b.max - b.min).max(Vec3::ZERO) * extent;
+            (e.x * e.y * e.z).max(0.0)
+        })
+        .sum::<f32>()
+        .max(1e-6)
 }
 
 fn max_particle_storage_count_for(caps: &GpuCaps) -> u32 {

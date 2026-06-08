@@ -18,9 +18,22 @@ At boot, `GpuContext::new` requests a `HighPerformance` adapter, clones the full
   limits, `max_compute_workgroups_per_dimension`, `max_buffer_size`,
   `max_storage_buffer_binding_size`, and `timestamp_query`. It is authoritative for
   particle-scale preflight and boot diagnostics.
-- **Device / surface / depth** — created and owned here; resize re-configures surface and recreates the `Depth32Float` texture (`create_depth`).
+- **Device / surface / render targets** — created and owned here; resize re-configures
+  the surface and recreates the shared `Depth32Float` texture, the screen-space water
+  `R16Float` targets (`create_depth`, `create_r16_target`), and the hero-water scene
+  prepass targets `scene_color` (`Rgba16Float`, `create_scene_color_target`) +
+  `scene_depth` (`R16Float`, eye distance).
 - **`GpuFluid`** (`app/crates/fluid-lab/src/gpu/fluid.rs`) — simulation buffer set and all compute pipelines; `GpuContext` drives it via `record_prep` / `record_pressure` / `record_finish`.
-- **Sub-renderers** — `WireframeRenderer`, `ParticleRenderer`, `SliceRenderer`; each receives buffer handles from `GpuFluid` at construction, not raw device buffers. `GpuFluid::grid_dims()` and `GpuFluid::tank_bounds()` thread the per-axis cell counts and the world-space tank AABB into the renderers on both construct and recreate.
+- **Sub-renderers** — `WireframeRenderer`, `EnvironmentRenderer`, `ParticleRenderer`,
+  `CompositeRenderer`, `WaterSmoothRenderer`, `SliceRenderer`; renderers that need
+  simulation data receive buffer handles from `GpuFluid` at construction, not raw
+  device buffers. `GpuFluid::grid_dims()` and `GpuFluid::tank_bounds()` thread the
+  per-axis cell counts and the world-space tank AABB into the renderers (the wireframe
+  + environment geometry are sized from the tank AABB) on both construct and recreate.
+- **`HeroParams` snapshot** — `RenderMode` and the flat `HeroParams` (mirrored from the
+  `render.hero.*` registry settings) live on `GpuContext`. `set_hero_params` pushes the
+  snapshot into the composite + environment uniforms; it is also re-applied after
+  `recreate_fluid` rebuilds the environment.
 - **`GpuTimers`** (`app/crates/fluid-lab/src/gpu/timing.rs`) — wraps timestamp-query sets; `None` when the feature is absent. When present, constructed with `(max_substeps, detailed, pressure_iters)` from the registry so the `QuerySet` is sized at construction time.
 - **Particle-scale preflight/status** — `GpuContext::new` and
   `GpuContext::recreate_fluid` validate the requested seeded particle count against the
@@ -54,7 +67,7 @@ Bind groups are built once in `GpuFluid::new`; buffers never move after creation
 
 **naga drops unused bindings.** When a WGSL shader does not reference a binding, naga's reflection omits it from the auto-generated `BindGroupLayout`. If the Rust side builds a BGL from the pipeline's reflected layout and that BGL is then used to create a bind group that _does_ include the unused binding, the counts mismatch and pipeline creation fails silently. The fix is either to ensure every shader references `params` (binding 0) or to pass an explicit `BindGroupLayoutDescriptor` to `create_compute_pipeline`. Any new shader that adds a params uniform must actually read a field from it.
 
-**Reset-class settings require buffer reallocation.** The per-axis grid resolutions `grid.res_x/res_y/res_z`, particle count, `fixed_dt`, `max_substeps`, and `dev.detailed_gpu_profiling` are baked into buffer sizes, uniforms, or timer layout at construction. Changing them requires calling `GpuContext::recreate_fluid`, which calls `GpuFluid::new` and rebuilds the `WireframeRenderer`, `ParticleRenderer`, and `SliceRenderer` from the new buffer handles. `GpuTimers` is also rebuilt from the new `max_substeps` / mode / `pressure_iters`. The device, surface, and format are untouched. Live/tweak-class settings are written to uniforms or renderer state without a rebuild.
+**Reset-class settings require buffer reallocation.** The per-axis grid resolutions `grid.res_x/res_y/res_z`, particle count, `fixed_dt`, `max_substeps`, and `dev.detailed_gpu_profiling` are baked into buffer sizes, uniforms, or timer layout at construction. Changing them requires calling `GpuContext::recreate_fluid`, which calls `GpuFluid::new` and rebuilds the `WireframeRenderer`, `EnvironmentRenderer`, `ParticleRenderer`, and `SliceRenderer` from the new buffer handles (and re-applies the current `HeroParams` to the rebuilt environment). `GpuTimers` is also rebuilt from the new `max_substeps` / mode / `pressure_iters`. The device, surface, and format are untouched. Live/tweak-class settings are written to uniforms or renderer state without a rebuild.
 
 **Particle-linear work uses one shared tiled dispatch shape.**
 `gpu/fluid.rs -> particle_dispatch_shape` is the contract for every particle-linear
@@ -80,7 +93,15 @@ the legal tiled-dispatch ceiling only; it proves the app no longer fails on the 
 common one-dimensional `65,535 x 64` workgroup limit, not that 8M is a practical
 frame-time target.
 
-**Memory accounting covers the active simulation buffers.** `GpuContext::buffer_memory_bytes()` forwards `GpuFluid::buffer_memory_bytes()`. Rendering owns only small renderer uniforms/geometry plus the shared depth texture; there is no extracted-surface vertex allocation or offscreen water-target allocation included in the runtime. The v1.10 water-look change stayed inside the existing particle pass, so it did not add accumulation textures, composite targets, or persistent render buffers to this budget.
+**Memory accounting exposes active simulation buffers; water targets are render
+memory.** `GpuContext::buffer_memory_bytes()` forwards `GpuFluid::buffer_memory_bytes()`,
+so `stats_json.gpu_buffer_mb` is the simulation-buffer budget. Rendering also owns the
+shared depth texture and four persistent swapchain-sized `R16Float` water targets:
+thickness, speed-weighted whitewater, nearest-Z, and smoothed-Z, plus a transient ping
+target for the separable smoothing pass. The hero-water Water mode adds two more
+swapchain-sized prepass targets: `scene_color` (`Rgba16Float`, ~8 bytes/px) and
+`scene_depth` (`R16Float`). At 1280×800 the five R16 water targets are ~10 MB and the
+two scene targets ~12 MB. There is still no extracted-surface vertex allocation.
 
 **No per-frame readbacks.** The only allowed readback is the smoke test (one-shot at boot, in `smoke::run_atomic_smoke_test`) and the throttled timing + liveness readback driven by `GpuTimers::record_resolve_and_maybe_copy`. Normal sim steps submit compute encoders and return; no `map_async` on hot paths.
 
@@ -99,6 +120,8 @@ frame-time target.
 - `GpuTimers` construction parameters change — update "What it owns" above; `profiler.md` owns the timing readout shape.
 - The shared particle dispatch contract changes (workgroup size, tiling formula, or
   preflight status names).
+- Screen-space water target formats or recreation rules change — update render-target
+  ownership and memory notes here, and the pass order in `rendering.md`.
 
 ## See also
 

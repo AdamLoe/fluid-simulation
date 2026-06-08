@@ -157,21 +157,22 @@ than something to bundle into a transfer-kernel patch.
 
 **Applies to** — `architecture/simulation.md`, `architecture/profiler.md`.
 
-## Accept the same-pass optical-depth renderer while default-frame cost stays honest
+## Accept screen-space water while render cost and memory stay explicit
 
-**Decision** — Keep the v1.10 water-look upgrade in the existing particle pass as
-long as the measured render cost remains small enough to explain honestly and does not
-force new render resources.
+**Decision** — The water renderer may use screen-space R16 targets and multiple render
+passes for thickness, speed-weighted whitewater, nearest depth, smoothing, and
+composite, as long as captures keep reporting one honest `gpu.render_ms` total and
+docs name the extra render memory.
 
-**Why** — The shipped captures support that trade: at the default case,
-`gpu.render_ms` rose `0.180 -> 0.920 ms` while frame p95 stayed effectively flat
-(`20.8 -> 20.9 ms`); the 32k case stayed unchanged (`0.025 -> 0.025 ms`), and the
-2M capture did not regress render cost in the after sample (`2.884 -> 1.416 ms`).
+**Why** — Per-billboard particle shading could not make deep volumes read as a coherent
+lit body. The default screen-space capture measured `gpu.render_ms` around `0.62 ms`; the
+requested 32k capture settled around `0.053 ms`; the requested 2M capture accepted
+1,957,500 particles and reported `1.915 ms` in the final `stats_json` sample.
 
-**Tradeoffs** — Same-pass unsorted transparency remains a known visual limitation, and
-the default-case render cost still rose by about `0.74 ms`. If future captures show
-that artifact or cost dominating, the next step is a measured rendering plan, not an
-untracked pass addition.
+**Tradeoffs** — The path now owns persistent screen-sized render targets in addition
+to simulation buffers, and render timing is a coarse multi-pass total rather than one
+draw-pass cost. Refraction remains deferred because it would add a sampleable
+scene-color target and only pays off with visible scene detail to distort.
 
 **Applies to** — `architecture/rendering.md`, `architecture/gpu-resources.md`,
 `architecture/profiler.md`.
