@@ -1,13 +1,13 @@
 // Particle billboard renderer. Each particle is a camera-facing quad (6 verts,
 // instanced). Positions come from the simulation's storage buffer directly — no
-// readback. Color encodes speed: slow_color → fast_color ramp. Optional sphere
-// shading adds a diffuse highlight to make each billboard read as a 3D sphere.
+// readback. Color encodes speed: slow_color -> fast_color ramp. Alpha comes from
+// optical density through sphere-like billboard thickness.
 
 struct Camera {
     view_proj: mat4x4<f32>,
     right: vec4<f32>,      // xyz = camera right, w = particle radius (world units, scaled)
     up: vec4<f32>,         // xyz = camera up,    w = speed_scale
-    slow_color: vec4<f32>, // xyz = slow-end RGB, w = particle alpha
+    slow_color: vec4<f32>, // xyz = slow-end RGB, w = water optical density
     fast_color: vec4<f32>, // xyz = fast-end RGB, w = unused
     extra: vec4<f32>,      // x = edge_inner_radius, y = shading_strength, zw = unused
 };
@@ -21,7 +21,7 @@ struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec3<f32>,
-    @location(2) alpha: f32,
+    @location(2) optical_density: f32,
 };
 
 @vertex
@@ -43,7 +43,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     out.clip  = cam.view_proj * vec4<f32>(world, 1.0);
     out.uv    = c;
     out.color = color;
-    out.alpha = cam.slow_color.w;
+    out.optical_density = cam.slow_color.w;
     return out;
 }
 
@@ -55,12 +55,15 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let edge_inner = cam.extra.x; // [0, 0.99] — inner radius where soft fade begins
     let shading    = cam.extra.y; // [0, 1]    — sphere shading strength
 
-    // Soft-edge alpha: opaque inside edge_inner, fades to 0 at r=1.
-    let a = smoothstep(1.0, edge_inner, r) * in.alpha;
+    // Sphere-like chord length through the billboard volume. The soft-edge control
+    // modulates thickness near the rim instead of directly multiplying opacity.
+    let nz = sqrt(max(0.0, 1.0 - r * r));
+    let edge = 1.0 - smoothstep(edge_inner, 1.0, r);
+    let thickness = nz * edge;
+    let a = 1.0 - exp(-max(0.0, in.optical_density) * thickness);
 
     // Sphere shading: treat the billboard as a sphere surface.
     // Normal in billboard local space: (u, v, z) where z points toward the viewer.
-    let nz = sqrt(max(0.0, 1.0 - r * r));
     let n = normalize(vec3<f32>(in.uv.x, in.uv.y, nz));
 
     // Fixed key light in billboard space: slightly above, slightly behind viewer.

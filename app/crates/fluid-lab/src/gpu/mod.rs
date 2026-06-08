@@ -8,8 +8,8 @@ mod slice;
 mod smoke;
 mod timing;
 
-pub use timing::Readout as GpuReadout;
 pub use timing::FINE_SECTIONS;
+pub use timing::Readout as GpuReadout;
 
 use crate::log;
 use crate::scene::SceneConfig;
@@ -48,7 +48,7 @@ pub struct GpuContext {
     speed_scale: f32,
     particle_slow_rgb: [f32; 3],
     particle_fast_rgb: [f32; 3],
-    particle_alpha: f32,
+    water_optical_density: f32,
     particle_edge: f32,
     particle_shading: f32,
     timers: Option<timing::GpuTimers>,
@@ -169,13 +169,22 @@ impl GpuContext {
         let (tank_lo, tank_hi) = fluid.tank_bounds();
         let wireframe =
             renderer::WireframeRenderer::new(&device, format, DEPTH_FORMAT, tank_lo, tank_hi);
-        let particles = particles::ParticleRenderer::new(
+        let mut particles = particles::ParticleRenderer::new(
             &device,
             format,
             DEPTH_FORMAT,
             fluid.particle_buffer(),
             particle_radius,
         );
+        particles.set_radius_scale(settings.particle_size());
+        particles.set_speed_scale(settings.speed_scale());
+        particles.set_particle_colors(
+            settings.particle_slow_color(),
+            settings.particle_fast_color(),
+        );
+        particles.set_water_optical_density(settings.water_optical_density());
+        particles.set_edge_inner(settings.particle_edge());
+        particles.set_shading(settings.particle_shading());
 
         let [grid_nx, grid_ny, grid_nz] = fluid.grid_dims();
         let slice_h = crate::sim::H;
@@ -221,11 +230,11 @@ impl GpuContext {
             pressure_enabled: true,
             slice_enabled: false,
             slice_mode: 0,
-            particle_size: 1.0,
-            speed_scale: 4.0,
+            particle_size: settings.particle_size(),
+            speed_scale: settings.speed_scale(),
             particle_slow_rgb: settings.particle_slow_color(),
             particle_fast_rgb: settings.particle_fast_color(),
-            particle_alpha: settings.particle_alpha(),
+            water_optical_density: settings.water_optical_density(),
             particle_edge: settings.particle_edge(),
             particle_shading: settings.particle_shading(),
             timers,
@@ -323,11 +332,10 @@ impl GpuContext {
         self.slice.set_mode(self.slice_mode);
         self.particles.set_radius_scale(self.particle_size);
         self.particles.set_speed_scale(self.speed_scale);
-        self.particles.set_particle_look(
-            self.particle_slow_rgb,
-            self.particle_fast_rgb,
-            self.particle_alpha,
-        );
+        self.particles
+            .set_particle_colors(self.particle_slow_rgb, self.particle_fast_rgb);
+        self.particles
+            .set_water_optical_density(self.water_optical_density);
         self.particles.set_edge_inner(self.particle_edge);
         self.particles.set_shading(self.particle_shading);
         log(&format!(
@@ -485,29 +493,19 @@ impl GpuContext {
 
     pub fn set_particle_slow_color(&mut self, rgb: [f32; 3]) {
         self.particle_slow_rgb = rgb;
-        self.particles.set_particle_look(
-            self.particle_slow_rgb,
-            self.particle_fast_rgb,
-            self.particle_alpha,
-        );
+        self.particles
+            .set_particle_colors(self.particle_slow_rgb, self.particle_fast_rgb);
     }
 
     pub fn set_particle_fast_color(&mut self, rgb: [f32; 3]) {
         self.particle_fast_rgb = rgb;
-        self.particles.set_particle_look(
-            self.particle_slow_rgb,
-            self.particle_fast_rgb,
-            self.particle_alpha,
-        );
+        self.particles
+            .set_particle_colors(self.particle_slow_rgb, self.particle_fast_rgb);
     }
 
-    pub fn set_particle_alpha(&mut self, a: f32) {
-        self.particle_alpha = a;
-        self.particles.set_particle_look(
-            self.particle_slow_rgb,
-            self.particle_fast_rgb,
-            self.particle_alpha,
-        );
+    pub fn set_water_optical_density(&mut self, density: f32) {
+        self.water_optical_density = density;
+        self.particles.set_water_optical_density(density);
     }
 
     pub fn set_particle_edge(&mut self, v: f32) {

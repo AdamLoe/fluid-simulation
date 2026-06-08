@@ -73,7 +73,14 @@ fluid and exposes the requested, estimated, actual, and limiting values through
 `stats_json`; `scale_status` distinguishes dispatch-capacity rejection from
 storage-binding rejection.
 
-**Memory accounting covers the active simulation buffers.** `GpuContext::buffer_memory_bytes()` forwards `GpuFluid::buffer_memory_bytes()`. Rendering owns only small renderer uniforms/geometry plus the shared depth texture; there is no extracted-surface vertex allocation or offscreen water-target allocation included in the runtime.
+The measured v1.8 scale matrix confirmed that this preflight/model split matters:
+2,000,000 requested particles ran as `30,586 x 1 x 1`, 4,000,000 as `61,396 x 1 x 1`,
+and 8,000,000 as `65,535 x 2 x 1` with `scale_status=ok`. The 8M row is evidence for
+the legal tiled-dispatch ceiling only; it proves the app no longer fails on the old
+common one-dimensional `65,535 x 64` workgroup limit, not that 8M is a practical
+frame-time target.
+
+**Memory accounting covers the active simulation buffers.** `GpuContext::buffer_memory_bytes()` forwards `GpuFluid::buffer_memory_bytes()`. Rendering owns only small renderer uniforms/geometry plus the shared depth texture; there is no extracted-surface vertex allocation or offscreen water-target allocation included in the runtime. The v1.10 water-look change stayed inside the existing particle pass, so it did not add accumulation textures, composite targets, or persistent render buffers to this budget.
 
 **No per-frame readbacks.** The only allowed readback is the smoke test (one-shot at boot, in `smoke::run_atomic_smoke_test`) and the throttled timing + liveness readback driven by `GpuTimers::record_resolve_and_maybe_copy`. Normal sim steps submit compute encoders and return; no `map_async` on hot paths.
 

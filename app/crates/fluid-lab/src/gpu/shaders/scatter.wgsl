@@ -41,7 +41,7 @@ fn main(
     let nx = i32(params.gdim.x);
     let ny = i32(params.gdim.y);
     let nz = i32(params.gdim.z);
-    let h = params.geom.x;
+    let inv_h = params.geom.y;
     let scale = params.geom.w;
 
     // Per-axis staggering: the AXIS component sits on integer faces (offset 0),
@@ -54,7 +54,7 @@ fn main(
     else if (AXIS == 1u) { off.y = 0.0; dim.y = ny + 1; vcomp = pv.y; }
     else { off.z = 0.0; dim.z = nz + 1; vcomp = pv.z; }
 
-    let g = (particles[p].pos.xyz - params.origin.xyz) / h + off;
+    let g = (particles[p].pos.xyz - params.origin.xyz) * inv_h + off;
     let base = vec3<i32>(floor(g));
     let t = g - vec3<f32>(base);
 

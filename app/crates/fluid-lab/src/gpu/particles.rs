@@ -9,7 +9,7 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     right: [f32; 4],      // xyz = camera right, w = particle radius
     up: [f32; 4],         // xyz = camera up,    w = speed_scale
-    slow_color: [f32; 4], // xyz = RGB, w = alpha
+    slow_color: [f32; 4], // xyz = RGB, w = optical density
     fast_color: [f32; 4], // xyz = RGB, w = unused
     extra: [f32; 4],      // x = edge_inner_radius, y = shading_strength, zw = 0
 }
@@ -23,7 +23,7 @@ pub struct ParticleRenderer {
     speed_scale: f32,
     slow_color: [f32; 3],
     fast_color: [f32; 3],
-    particle_alpha: f32,
+    water_optical_density: f32,
     edge_inner: f32,
     shading: f32,
 }
@@ -121,7 +121,7 @@ impl ParticleRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: depth_format,
-                depth_write_enabled: Some(true),
+                depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -140,9 +140,9 @@ impl ParticleRenderer {
             speed_scale: 4.0,
             slow_color: [0.10, 0.30, 0.80],
             fast_color: [0.70, 0.92, 1.00],
-            particle_alpha: 1.0,
+            water_optical_density: 1.25,
             edge_inner: 0.6,
-            shading: 0.5,
+            shading: 0.25,
         }
     }
 
@@ -154,10 +154,13 @@ impl ParticleRenderer {
         self.speed_scale = s;
     }
 
-    pub fn set_particle_look(&mut self, slow: [f32; 3], fast: [f32; 3], alpha: f32) {
+    pub fn set_particle_colors(&mut self, slow: [f32; 3], fast: [f32; 3]) {
         self.slow_color = slow;
         self.fast_color = fast;
-        self.particle_alpha = alpha;
+    }
+
+    pub fn set_water_optical_density(&mut self, density: f32) {
+        self.water_optical_density = density;
     }
 
     pub fn set_edge_inner(&mut self, v: f32) {
@@ -182,7 +185,7 @@ impl ParticleRenderer {
                 self.slow_color[0],
                 self.slow_color[1],
                 self.slow_color[2],
-                self.particle_alpha,
+                self.water_optical_density,
             ],
             fast_color: [
                 self.fast_color[0],

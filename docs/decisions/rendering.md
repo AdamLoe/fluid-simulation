@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-07
+last_updated:  2026-06-08
 ---
 
 # Decisions - Rendering
@@ -75,6 +75,30 @@ hides solver behavior behind cinematic polish.
 
 **Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
 `architecture/profiler.md`.
+
+## Water look stays in the existing particle pass until measurements demand more
+
+**Decision** - The water-look upgrade uses the existing particle billboard pass with
+optical-density alpha, depth testing preserved, and particle depth writes disabled.
+`render.water_optical_density` is the public control; `render.particle_alpha` is
+legacy compatibility only and not part of the public settings surface.
+
+**Why** - The shipped v1.10 captures improved dense-water readability without adding
+offscreen targets, composite passes, or persistent GPU resources. The setting name has
+to match the shader semantics; calling an optical-density term "opacity" would make
+the UI lie about what the renderer does.
+
+**Tradeoffs** - Same-pass transparent billboards still have ordinary unsorted
+transparency limits. A future weighted-blend or surface path remains possible, but it
+must justify extra pass/resource cost with measured evidence.
+
+**Code anchors** - `app/crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer`;
+`app/crates/fluid-lab/src/gpu/shaders/particles.wgsl`;
+`app/crates/fluid-lab/src/settings/mod.rs -> Registry`;
+`app/crates/fluid-lab/src/lib.rs -> FluidApp::set_setting`.
+
+**Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
+`architecture/gpu-resources.md`.
 
 ## See also
 

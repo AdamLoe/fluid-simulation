@@ -570,15 +570,15 @@ impl Default for Registry {
                 apply: ApplyClass::Live,
             },
             Setting {
-                id: "render.particle_alpha",
-                label: "Particle opacity",
+                id: "render.water_optical_density",
+                label: "Water optical density",
                 category: Category::Render,
                 panel_group: PanelGroup::Default,
-                default: Value::F32(1.0),
-                value: Value::F32(1.0),
-                validation: Validation::F32Range { min: 0.05, max: 1.0 },
-                tooltip: None,
-                technical_tooltip: None,
+                default: Value::F32(1.25),
+                value: Value::F32(1.25),
+                validation: Validation::F32Range { min: 0.0, max: 8.0 },
+                tooltip: Some("Controls how strongly particle thickness absorbs light; higher makes overlapping water read denser."),
+                technical_tooltip: Some("Live render-only Beer-Lambert density used with per-fragment sphere thickness. This is not direct alpha/opacity."),
                 apply: ApplyClass::Live,
             },
             Setting {
@@ -598,8 +598,8 @@ impl Default for Registry {
                 label: "Sphere shading",
                 category: Category::Render,
                 panel_group: PanelGroup::Default,
-                default: Value::F32(0.5),
-                value: Value::F32(0.5),
+                default: Value::F32(0.25),
+                value: Value::F32(0.25),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
                 tooltip: Some("Adds diffuse sphere-style shading to particles."),
                 technical_tooltip: None,
@@ -793,15 +793,15 @@ impl Registry {
                 .unwrap_or(0xB2EBFF),
         )
     }
-    pub fn particle_alpha(&self) -> f32 {
-        self.get("render.particle_alpha")
+    pub fn water_optical_density(&self) -> f32 {
+        self.get("render.water_optical_density")
             .map(|s| s.as_f32())
-            .unwrap_or(1.0)
+            .unwrap_or(1.25)
     }
     pub fn particle_shading(&self) -> f32 {
         self.get("render.particle_shading")
             .map(|s| s.as_f32())
-            .unwrap_or(0.5)
+            .unwrap_or(0.25)
     }
     pub fn particle_edge(&self) -> f32 {
         self.get("render.particle_edge")
@@ -1069,5 +1069,28 @@ mod tests {
         assert!(!registry.wave_enabled());
         assert!((registry.auto_roll_strength() - 0.45).abs() < f32::EPSILON);
         assert!((registry.wave_strength() - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn water_optical_density_replaces_particle_opacity_control() {
+        let registry = Registry::default();
+        let setting = registry
+            .get("render.water_optical_density")
+            .expect("missing water optical density setting");
+
+        assert_eq!(setting.category, Category::Render);
+        assert_eq!(setting.panel_group, PanelGroup::Default);
+        assert_eq!(setting.apply, ApplyClass::Live);
+        assert!(matches!(
+            setting.validation,
+            Validation::F32Range { min: 0.0, max: 8.0 }
+        ));
+        assert!((registry.water_optical_density() - 1.25).abs() < f32::EPSILON);
+        assert!((registry.particle_shading() - 0.25).abs() < f32::EPSILON);
+
+        let json = registry.config_json();
+        assert!(json.contains(r#""id":"render.water_optical_density""#));
+        assert!(!json.contains(r#""id":"render.particle_alpha""#));
+        assert!(!json.contains("Particle opacity"));
     }
 }

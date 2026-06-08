@@ -87,6 +87,13 @@ The contract is shared with `gpu/fluid.rs → particle_dispatch_shape`: same
 `if (p >= params.dims.y) { return; }` guard before touching the particle buffer. This
 raises the legal particle ceiling without changing P2G/G2P physics.
 
+The transfer kernels also use the precomputed inverse cell size already stored in
+`params.geom.y`. `scatter.wgsl` converts particle world coordinates to grid space with
+`* inv_h`, and `g2p.wgsl` uses the same `inv_h` term in all three MAC-face samplers,
+rather than dividing by `h` per particle. The v1.9 transfer-path optimization changed
+that arithmetic only; it did not change fixed-point scatter atomics, wall-aware G2P
+sampling, CFL clamp, RK1 advection, or dispatch shape.
+
 **`gdim` is appended last in `Params`.** It sits at the END of the struct so shaders that don't decompose cell indices can keep their existing (shorter prefix) `Params` mirror without re-layout. `Params` is now 8 `vec4` = 128 B. A shader that needs per-axis dims must include all eight `vec4` fields up to and including `gdim`.
 
 **The pressure operator stays ISOTROPIC.** Because `h` is a single uniform scalar, there is NO per-axis `hx/hy/hz`. The CG SpMV (`app/crates/fluid-lab/src/gpu/shaders/cg_spmv.wgsl`) is the symmetric graph-Laplacian `(A d)_c = n_c·d_c − Σ_{liquid nb} d_nb` (the `1/h²` factor folds out uniformly); divergence/gradient use the single `params.geom` `inv_h`. Introducing a non-uniform cell size would make the operator anisotropic and is a contract change.

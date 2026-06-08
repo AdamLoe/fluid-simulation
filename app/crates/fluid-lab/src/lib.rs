@@ -583,6 +583,12 @@ impl FluidApp {
     /// (caller should show a "needs reset / needs reload" hint).
     #[wasm_bindgen]
     pub fn set_setting(&mut self, id: &str, value: f64) -> bool {
+        if id == "render.particle_alpha" {
+            log(
+                "[fluid-lab] ignored legacy render.particle_alpha; use render.water_optical_density",
+            );
+            return true;
+        }
         if !self.settings.set_value_f64(id, value) {
             return false; // unknown id
         }
@@ -643,8 +649,9 @@ impl FluidApp {
                     "render.particle_fast_color" => {
                         self.gpu.set_particle_fast_color(unpack_rgb(value as u32));
                     }
-                    "render.particle_alpha" => {
-                        self.gpu.set_particle_alpha(value as f32);
+                    "render.water_optical_density" => {
+                        self.gpu.set_water_optical_density(value as f32);
+                        log(&format!("[fluid-lab] live water_optical_density = {value}"));
                     }
                     "render.particle_edge" => {
                         self.gpu.set_particle_edge(value as f32);

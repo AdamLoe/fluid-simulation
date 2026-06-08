@@ -136,6 +136,22 @@ from the persisted `localStorage` payload. `web/main.js` owns product-mode selec
 mode-specific strength/cadence/frequency settings, rendered under the workspace's
 Modes tab.
 
+## Particle Render Controls
+
+The public transparency control is `render.water_optical_density`, a Live render
+setting exposed in `config_json` as "Water optical density". It replaces the old
+`render.particle_alpha` product-facing opacity control because the particle shader now
+interprets the value as optical density inside a Beer-Lambert-style thickness
+equation, not as a flat alpha multiplier.
+
+`render.particle_alpha` is not serialized into `config_json` and is not a visible or
+persisted user setting anymore. `FluidApp::set_setting("render.particle_alpha", ...)`
+is accepted only as a legacy compatibility no-op that logs a redirect to
+`render.water_optical_density`. The remaining particle look controls —
+`render.particle_size`, `render.particle_edge`, `render.particle_shading`,
+`render.particle_slow_color`, `render.particle_fast_color`, and
+`render.speed_scale` — stay Live and keep their existing UI roles.
+
 ## Gotchas
 
 - The registry is append-safe: lookups and mutations are by id, not row index.
@@ -161,6 +177,7 @@ Modes tab.
 - The JSON bridge shape changes, including optional help or panel-rendering metadata.
 - Interaction control semantics, defaults, grouping, or Live scheduling behavior change.
 - The shell's hidden-setting/persistence rules change for internal interaction toggles.
+- Particle render control semantics or legacy compatibility behavior change.
 - Compactness, particle seeding, liquid-cell inclusion, or pressure-quality semantics
   change.
 

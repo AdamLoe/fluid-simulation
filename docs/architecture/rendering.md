@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-07
+last_updated:  2026-06-08
 okay_to_delete: false
 long_lived:    true
 ---
@@ -52,13 +52,22 @@ other renderers when Reset-class settings change the tank bounds.
 **Particles.** `ParticleRenderer` binds the simulation particle buffer directly as
 read-only storage and draws one instanced camera-facing quad per particle. The camera
 uniform carries the tank-local billboard basis, particle radius, speed scale, slow
-and fast colors, opacity, edge softness, and sphere-shading strength. Live render
-settings update renderer state; `update_camera` uploads the complete uniform before
-each draw.
+and fast colors, water optical density, edge softness, and sphere-shading strength.
+`particles.wgsl` derives fragment alpha from sphere-like billboard thickness with
+`1 - exp(-water_optical_density * thickness)` instead of treating the control as a
+flat opacity slider. Live render settings update renderer state; `update_camera`
+uploads the complete uniform before each draw.
 
 The billboard basis starts in world space and is rotated into tank-local space by
 `FluidApp::frame`. This cancels the tank rotation baked into `view_proj`, keeping the
 quads camera-facing while the tank moves or rotates.
+
+Particles still render in the same shared swapchain pass as the tank and optional
+slice overlay. The particle pipeline keeps depth testing against the shared depth
+attachment, but `depth_write_enabled` is off for particles so transparent overlap can
+accumulate instead of the nearest billboard sealing the layer. v1.10 kept this
+same-pass path; it did not add an offscreen accumulation target, composite pass, or
+persistent render buffers.
 
 **Grid slice.** `SliceRenderer` binds cell type, pressure, and staggered velocity
 buffers directly. `set_slice_mode` selects cell-type, pressure, or speed inspection.

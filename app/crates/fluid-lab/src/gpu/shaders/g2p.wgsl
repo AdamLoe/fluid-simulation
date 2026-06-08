@@ -55,7 +55,7 @@ fn w_face_touches_static_solid(ii: i32, jj: i32, kk: i32) -> bool {
 
 fn sample_u(P: vec3<f32>) -> vec2<f32> {
     let dim = vec3<i32>(i32(params.gdim.x) + 1, i32(params.gdim.y), i32(params.gdim.z));
-    let g = (P - params.origin.xyz) / params.geom.x + vec3<f32>(0.0, -0.5, -0.5);
+    let g = (P - params.origin.xyz) * params.geom.y + vec3<f32>(0.0, -0.5, -0.5);
     let base = vec3<i32>(floor(g));
     let t = g - vec3<f32>(base);
     var fin = 0.0; var sav = 0.0; var wsum = 0.0;
@@ -80,7 +80,7 @@ fn sample_u(P: vec3<f32>) -> vec2<f32> {
 
 fn sample_v(P: vec3<f32>) -> vec2<f32> {
     let dim = vec3<i32>(i32(params.gdim.x), i32(params.gdim.y) + 1, i32(params.gdim.z));
-    let g = (P - params.origin.xyz) / params.geom.x + vec3<f32>(-0.5, 0.0, -0.5);
+    let g = (P - params.origin.xyz) * params.geom.y + vec3<f32>(-0.5, 0.0, -0.5);
     let base = vec3<i32>(floor(g));
     let t = g - vec3<f32>(base);
     var fin = 0.0; var sav = 0.0; var wsum = 0.0;
@@ -105,7 +105,7 @@ fn sample_v(P: vec3<f32>) -> vec2<f32> {
 
 fn sample_w(P: vec3<f32>) -> vec2<f32> {
     let dim = vec3<i32>(i32(params.gdim.x), i32(params.gdim.y), i32(params.gdim.z) + 1);
-    let g = (P - params.origin.xyz) / params.geom.x + vec3<f32>(-0.5, -0.5, 0.0);
+    let g = (P - params.origin.xyz) * params.geom.y + vec3<f32>(-0.5, -0.5, 0.0);
     let base = vec3<i32>(floor(g));
     let t = g - vec3<f32>(base);
     var fin = 0.0; var sav = 0.0; var wsum = 0.0;

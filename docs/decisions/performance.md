@@ -117,9 +117,10 @@ one coordinated indexing model across every particle-linear path; loosening pref
 before those paths agree would trade a truthful rejection for invalid GPU work.
 
 **Tradeoffs** — This raises the legal submission ceiling, not the measured frame-rate
-ceiling. Real-GPU scale evidence for 2M/4M/8M remains a separate requirement; until
-those captures exist, no performance result or ship claim follows from the tiling
-change alone.
+ceiling. The measured v1.8 scale matrix now records 2M as `30,586 x 1 x 1`, 4M as
+`61,396 x 1 x 1`, and 8M as `65,535 x 2 x 1`; that 8M row proves the old common
+one-dimensional dispatch ceiling is no longer the blocker, but it does not make 8M a
+practical frame-time target by itself.
 
 **Code anchors** — `crates/fluid-lab/src/gpu/fluid.rs → particle_dispatch_shape`;
 `crates/fluid-lab/src/gpu/mod.rs → validate_particle_scale`;
@@ -132,6 +133,48 @@ change alone.
 next bottleneck is dispatch legality no longer, transfer/G2P/render cost, or storage.
 
 **Applies to** — `architecture/gpu-resources.md`, `architecture/simulation.md`, `architecture/profiler.md`.
+
+## Prefer narrow arithmetic wins in particle-linear transfer paths before broader rewrites
+
+**Decision** — The first v1.9 follow-up optimization is the narrow `inv_h`
+transfer-path change: use the precomputed inverse cell size in scatter and G2P
+particle-to-grid/grid-to-particle coordinate conversion instead of dividing by `h`
+per particle.
+
+**Why** — It removed redundant per-particle divide work without changing dispatch
+shape, fixed-point scatter semantics, wall-aware G2P invariants, or advection logic.
+The measured before/after captures justified the change: at 4M, scatter sum fell
+`13.694 -> 7.211 ms` and frame p95 fell `41.7 -> 29.2 ms`; at 8M, scatter sum fell
+`22.604 -> 17.014 ms` and frame p95 fell `66.7 -> 45.8 ms`.
+
+**Tradeoffs** — This does not eliminate transfer cost, and it does not solve the
+remaining high-scale render cost. Render remains a separate decision surface rather
+than something to bundle into a transfer-kernel patch.
+
+**Code anchors** — `app/crates/fluid-lab/src/gpu/shaders/scatter.wgsl`;
+`app/crates/fluid-lab/src/gpu/shaders/g2p.wgsl`;
+`app/crates/fluid-lab/src/gpu/fluid.rs -> Params`.
+
+**Applies to** — `architecture/simulation.md`, `architecture/profiler.md`.
+
+## Accept the same-pass optical-depth renderer while default-frame cost stays honest
+
+**Decision** — Keep the v1.10 water-look upgrade in the existing particle pass as
+long as the measured render cost remains small enough to explain honestly and does not
+force new render resources.
+
+**Why** — The shipped captures support that trade: at the default case,
+`gpu.render_ms` rose `0.180 -> 0.920 ms` while frame p95 stayed effectively flat
+(`20.8 -> 20.9 ms`); the 32k case stayed unchanged (`0.025 -> 0.025 ms`), and the
+2M capture did not regress render cost in the after sample (`2.884 -> 1.416 ms`).
+
+**Tradeoffs** — Same-pass unsorted transparency remains a known visual limitation, and
+the default-case render cost still rose by about `0.74 ms`. If future captures show
+that artifact or cost dominating, the next step is a measured rendering plan, not an
+untracked pass addition.
+
+**Applies to** — `architecture/rendering.md`, `architecture/gpu-resources.md`,
+`architecture/profiler.md`.
 
 ## Do not carry an unused extracted-surface cost
 
