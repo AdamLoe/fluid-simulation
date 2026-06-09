@@ -304,6 +304,20 @@ pub struct HeroParams {
     /// At 1.0 the depth is fully coplanar with the glass for near-wall pixels, eliminating
     /// bumpy sphere silhouettes at the glass. Live. Default 0.8.
     pub flat_water_depth_strength: f32,
+    // --- Gap-filled flat water sheet (v1.21) ---
+    /// Master toggle for the gap-filled flat wall-sheet fill pass. When on, the wall
+    /// occupancy buffer is computed each frame and a flat sheet is injected into the
+    /// thickness/nearest_z MRT targets before bilateral smoothing. Live. Default true.
+    pub flat_water_fill_enabled: bool,
+    /// Overall opacity/weight of the injected flat water sheet (0–1). Scales fill_slab
+    /// and the waterline edge feathering. Live. Default 1.0.
+    pub flat_water_fill_strength: f32,
+    /// Thickness slab (box-local/world units) added by the fill pass into the thickness
+    /// target. Gives the flat sheet enough body to be visible in the composite. Live. Default 0.03.
+    pub flat_water_fill_slab: f32,
+    /// Smoothstep half-width (fraction of tank height) for feathering the fill edge at
+    /// the waterline. Larger values give a softer meniscus-like top edge. Live. Default 0.04.
+    pub flat_water_waterline_softness: f32,
 }
 
 /// A flat snapshot of the diffuse-water (foam/spray/bubble) settings (v1.13). Like
@@ -1680,6 +1694,55 @@ impl Default for Registry {
                 technical_tooltip: Some("Live. In composite.wgsl, intersects the box-local eye ray with the nearest in-epsilon tank plane and mixes front_z toward the hit by depth_strength*ramp before the refraction depth guard. Routed via composite CamUniform flat.z."),
                 apply: ApplyClass::Live,
             },
+            // --- Gap-filled flat water sheet (v1.21). All Live: pass toggle + params. ---
+            Setting {
+                id: "render.hero.flat_water.fill_enabled",
+                label: "Wall fill enabled",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::U32(1),
+                value: Value::U32(1),
+                validation: Validation::U32Range { min: 0, max: 1 },
+                tooltip: Some("Toggle the gap-filled flat water sheet against glass walls. When on, a continuous flat sheet is injected into the thickness/nearest_z targets wherever liquid is currently against the wall, filling gaps between splats."),
+                technical_tooltip: Some("Live enum. Gates the wallfill occupancy compute pass and the wallfill injection render pass (both run before bilateral smoothing). Off = only the round-3/4 normal+depth snap is active."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.flat_water.fill_strength",
+                label: "Wall fill strength",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(1.0),
+                value: Value::F32(1.0),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Overall weight/opacity of the injected flat wall sheet (0=off, 1=full). Scales the fill slab and waterline edge fade."),
+                technical_tooltip: Some("Live. Multiplies fill_slab and the waterline smoothstep weight so the sheet can be dialled down without disabling the pass. Routes into FillUniform.fill.y."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.flat_water.fill_slab",
+                label: "Wall fill slab thickness",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(0.03),
+                value: Value::F32(0.03),
+                validation: Validation::F32Range { min: 0.0, max: 0.3 },
+                tooltip: Some("Thickness slab (box-local units) contributed by the fill pass to the water thickness target. Gives the sheet enough body to be visible in the composite without double-counting particle thickness."),
+                technical_tooltip: Some("Live. Written into target 0 (thickness) of the MRT with Add blend, so it supplements particle thickness. Routes into FillUniform.fill.z."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.flat_water.waterline_softness",
+                label: "Waterline softness",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(0.04),
+                value: Value::F32(0.04),
+                validation: Validation::F32Range { min: 0.0, max: 0.2 },
+                tooltip: Some("Smoothstep band width (fraction of tank height) for feathering the fill top edge at the waterline. Larger values give a softer meniscus-like top rather than a sharp line."),
+                technical_tooltip: Some("Live. Controls smoothstep(0, waterline_softness, y_frac - wl_frac) in wallfill.wgsl fs_fill. Routes into FillUniform.fill.w."),
+                apply: ApplyClass::Live,
+            },
             // --- Temporal stabilization (v1.18). All Live: sliders rebuild the
             // HeroParams uniform via the existing render.hero.* batch route. ---
             Setting {
@@ -2414,6 +2477,11 @@ impl Registry {
             flat_water_strength: self.f32_or("render.hero.flat_water.strength", 0.8),
             flat_water_epsilon: self.f32_or("render.hero.flat_water.epsilon", 0.04),
             flat_water_depth_strength: self.f32_or("render.hero.flat_water.depth_strength", 0.8),
+            // --- Gap-filled flat water sheet (v1.21) ---
+            flat_water_fill_enabled: self.u32_or("render.hero.flat_water.fill_enabled", 1) != 0,
+            flat_water_fill_strength: self.f32_or("render.hero.flat_water.fill_strength", 1.0),
+            flat_water_fill_slab: self.f32_or("render.hero.flat_water.fill_slab", 0.03),
+            flat_water_waterline_softness: self.f32_or("render.hero.flat_water.waterline_softness", 0.04),
         }
     }
 
@@ -2550,6 +2618,7 @@ fn enum_options(id: &str) -> Option<&'static [&'static str]> {
         "render.hero.invalid_refraction_fallback" => Some(&["Unrefracted", "Base tint"]),
         "render.hero.skybox_enabled" => Some(&["Disabled", "Enabled"]),
         "render.hero.micro_normal_enabled" => Some(&["Disabled", "Enabled"]),
+        "render.hero.flat_water.fill_enabled" => Some(&["Disabled", "Enabled"]),
         "render.hero.environment_mode" => Some(&["Sky", "Room", "Studio"]),
         "render.diffuse.enabled" => Some(&["Disabled", "Enabled"]),
         "render.diffuse.debug_view" => Some(&["Natural", "Color by type"]),
@@ -2850,6 +2919,11 @@ mod tests {
             "render.hero.flat_water.strength",
             "render.hero.flat_water.epsilon",
             "render.hero.flat_water.depth_strength",
+            // --- v1.21 gap-filled flat water sheet ---
+            "render.hero.flat_water.fill_enabled",
+            "render.hero.flat_water.fill_strength",
+            "render.hero.flat_water.fill_slab",
+            "render.hero.flat_water.waterline_softness",
             // --- v1.18 temporal ---
             "render.hero.temporal.enabled",
             "render.hero.temporal.thickness_history",
@@ -2912,6 +2986,11 @@ mod tests {
         assert!((hero.flat_water_strength - 0.8).abs() < 1e-5, "flat_water_strength default 0.8");
         assert!((hero.flat_water_epsilon - 0.04).abs() < 1e-5, "flat_water_epsilon default 0.04");
         assert!((hero.flat_water_depth_strength - 1.0).abs() < 1e-5, "flat_water_depth_strength default 1.0");
+        // v1.21 gap-filled flat water sheet defaults
+        assert!(hero.flat_water_fill_enabled, "flat_water_fill_enabled defaults ON");
+        assert!((hero.flat_water_fill_strength - 1.0).abs() < 1e-5, "flat_water_fill_strength default 1.0");
+        assert!((hero.flat_water_fill_slab - 0.03).abs() < 1e-5, "flat_water_fill_slab default 0.03");
+        assert!((hero.flat_water_waterline_softness - 0.04).abs() < 1e-5, "flat_water_waterline_softness default 0.04");
     }
 
     #[test]

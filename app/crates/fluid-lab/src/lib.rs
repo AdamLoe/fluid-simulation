@@ -401,6 +401,9 @@ impl FluidApp {
             // decays and writes to the persistent wetness buffer. Must run after
             // update_diffuse (so it sees the latest classification) and before render.
             self.gpu.update_wetwall(dt);
+            // Update wall occupancy for gap-filled flat water sheet (v1.21).
+            // Reads current cell_type (no decay, always current frame).
+            self.gpu.update_wallocc();
         }
 
         // --- render ---

@@ -14,6 +14,7 @@ mod smoke;
 mod smoothing;
 mod temporal;
 mod timing;
+mod wallfill;
 mod wetwall;
 
 pub use timing::Readout as GpuReadout;
@@ -101,6 +102,9 @@ pub struct GpuContext {
     caustics: caustics::CausticsSystem,
     /// v1.17 wet-wall + meniscus — persistent wetness field on tank walls.
     wetwall: wetwall::WetWallSystem,
+    /// v1.21 gap-filled flat water sheet — per-wall occupancy compute + MRT fill pass.
+    wallocc: wallfill::WallOccupancySystem,
+    wallfill: wallfill::WallFillRenderer,
     /// v1.18 temporal stabilization — ping-pong history blend for depth/thickness/whitewater.
     temporal: temporal::TemporalSystem,
     /// Previous frame's eye_to_world matrix for camera-motion delta computation.
@@ -260,6 +264,21 @@ impl GpuContext {
             tank_lo,
             tank_hi,
             hero_init.wet_wall_supersample,
+        );
+        let wallocc = wallfill::WallOccupancySystem::new(
+            &device,
+            fluid.cell_type_buffer(),
+            grid_nx_init,
+            grid_ny_init,
+            grid_nz_init,
+            tank_lo,
+            tank_hi,
+            &hero_init,
+        );
+        let wallfill_renderer = wallfill::WallFillRenderer::new(
+            &device,
+            &wallocc,
+            &hero_init,
         );
         let wireframe = renderer::WireframeRenderer::new(
             &device,
@@ -425,6 +444,8 @@ impl GpuContext {
             diffuse,
             caustics: caustics_sys,
             wetwall,
+            wallocc,
+            wallfill: wallfill_renderer,
             temporal: temporal_sys,
             prev_eye_to_world: Mat4::IDENTITY,
             diffuse_frame: 0,
@@ -554,11 +575,24 @@ impl GpuContext {
             &fluid,
             settings.diffuse_params(),
         );
+        // Rebuild WallOccupancySystem and rebind the fill renderer.
+        let wallocc = wallfill::WallOccupancySystem::new(
+            &self.device,
+            fluid.cell_type_buffer(),
+            grid_nx,
+            grid_ny,
+            grid_nz,
+            tank_lo,
+            tank_hi,
+            &self.hero,
+        );
+        self.wallfill.rebind_occ(&self.device, &wallocc);
         self.fluid = fluid;
         self.particles = particles;
         self.slice = slice;
         self.diffuse = diffuse;
         self.wetwall = wetwall;
+        self.wallocc = wallocc;
         // Drop temporal history on Reset so the first post-reset frame is clean.
         self.temporal.invalidate_history();
         self.caustics.invalidate_history();
@@ -844,6 +878,17 @@ impl GpuContext {
             nx, ny, nz,
             tank_lo,
             tank_hi,
+        );
+    }
+
+    /// Update the wall occupancy buffer (v1.21 gap-fill). Reads current `cell_type`
+    /// and writes per-column occupancy + waterline. Runs after `update_wetwall`,
+    /// before the render prepass. No-op when fill is disabled.
+    pub fn update_wallocc(&mut self) {
+        self.wallocc.record_step(
+            &self.device,
+            &self.queue,
+            &self.hero,
         );
     }
 
@@ -1240,6 +1285,16 @@ impl GpuContext {
             tank_hi_arr,
             &self.hero,
         );
+        // Push wallfill camera uniform (v1.21).
+        self.wallfill.set_camera(
+            &self.queue,
+            eye_to_world,
+            eye_world_local,
+            box_rot,
+            self.config.width,
+            self.config.height,
+            &self.hero,
+        );
         self.skybox
             .set_camera(&self.queue, eye_to_world, self.aspect());
         self.caustics.cache_eye_to_world(eye_to_world);
@@ -1387,6 +1442,50 @@ impl GpuContext {
                     });
                     self.particles
                         .draw_thickness(&mut pass, self.fluid.particle_count());
+                }
+                // v1.21 Wall-fill injection pass: runs AFTER particle thickness, BEFORE
+                // bilateral smoothing. Injects a flat glass-plane surface into the same
+                // three MRT targets (thickness Add, nearest_z Min, whitewater Add) wherever
+                // the occupancy buffer reports liquid against the wall. LoadOp::Load so the
+                // particle splatting is preserved; only gap-fill pixels are written.
+                if self.hero.flat_water_fill_enabled {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("wallfill injection pass"),
+                        color_attachments: &[
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.thickness_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.nearest_z_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.whitewater_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                        ],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    self.wallfill.draw(&mut pass);
                 }
                 // Iterated bilateral depth smoothing. Iteration 0 reads nearest_z;
                 // iterations 1+ compound the result in smooth_z via a second X bind group.

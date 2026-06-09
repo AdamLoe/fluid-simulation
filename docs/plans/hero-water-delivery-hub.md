@@ -325,3 +325,35 @@ fields are required — `flat.z`/`flat.w` are already reserved zero slots.
 - [`roadmap.md`](roadmap.md) — series order + the de-risk gate outcome goes here when known.
 - The four versioned plan docs.
 - [`../agent-context/build-run.md`](../agent-context/build-run.md) — gate commands.
+
+## Round-5 design: gap-filled flat water sheet on the glass (supersedes the "gap-fill NOT needed" deferral)
+
+Lead verdict after round-3/4 tuning: "better, but still not flat." Root cause confirmed: the
+round-3/4 snap only nudges already-detected bumpy splats; BETWEEN splats and at the ragged
+waterline there is no water coverage, so it never becomes a solid flat sheet. The earlier
+deferral was wrong on the smoothing/temporal "already gap-fills" claim — the bilateral closes
+pinholes, not the splat-spacing gaps against the glass.
+
+*Decision: dedicated CURRENT-liquid wall-occupancy buffer + an injection pass into the existing
+thickness MRT.* A new non-decaying occupancy signal (NOT overloading wetwall's decaying wetness,
+and wetwall only covers 3 of the 5 viewer-facing planes — back/left/floor — whereas the snap and
+fill need all five: left, right, back, front, floor). Computed in a tiny compute pass that reuses
+the `wetwall_update.wgsl` cell_type read + wall-texel mapping (cell_type Liquid==1 one cell inward
+from each Solid boundary, per `fluid.cell_type_buffer()`), writing `occ[texel] = 1.0` for current
+Liquid and ALSO a per-column waterline (the highest j with Liquid against that wall) so the fill
+knows where to stop. The occupancy buffer is indexed identically to the wetwall layout but extended
+to 5 faces.
+
+*Injection mechanism.* A new wall-fill render pass draws, for each of the 5 planes, a tessellated
+plane-coincident quad grid (one cell per wall texel, or a coarse instanced grid) into the SAME
+three MRT targets as the particle thickness pass (`thickness_view`, `nearest_z_view`,
+`whitewater_view`), recorded immediately AFTER `particles.draw_thickness` with `LoadOp::Load` (no
+re-clear). Per-texel it samples occupancy; discards where not occupied or above the local
+waterline. It writes `nearest_z = glass-plane eye distance` (so the Min blend on target 1 makes the
+glass plane WIN for against-glass pixels — exactly the round-4 snap result but with zero gaps),
+`thickness += slab` (Add blend, target 0 — a thin constant slab so the sheet has body), and
+`whitewater = 0` (Add blend, target 2 — leaves foam untouched). Because it writes into the
+pre-smoothing nearest_z, the EXISTING bilateral smoothing + temporal + composite then render it
+flat with NO composite restructuring. The round-3/4 snap is KEPT (still cleans the boundary normal
+and any residual non-injected bumps) — the fill provides coverage+flatness, the snap refines.
+
