@@ -53,11 +53,28 @@ pipeline and is committed before the next starts.
 - **Build + serve for capture:** `cd /home/adamg/fluid-simulation/app && ./run.sh` (run in
   background; it rebuilds the dev WASM, frees port 5184, serves `web/index.html` at the
   bare `http://localhost:5184/`).
-- **Real-GPU capture** (Windows Chrome via Windows node — WSL node cannot launch it):
-  `cd /home/adamg/fluid-simulation/app/tools && cmd.exe /c 'pushd \\wsl.localhost\Ubuntu-24.04\home\adamg\fluid-simulation\app\tools && node capture.mjs http://localhost:5184/ <out>.png 3500 & popd'`
-  Healthy boot console: `navigator.gpu present: true`, smoke PASS, `fluid init: n=64`.
-  `hasGpu: false` = unsupported overlay (capture failed). Captures land in gitignored
-  `captures/`. Scene/particle env hooks: `PARTICLES=N`, `DRAG=1`, `EVAL=...`, `DETAILED=1`.
+- **Real-GPU capture** (Windows Chrome via Windows node — WSL node cannot launch it).
+  Plain boot capture (no scene/setting control): `cd app/tools && cmd.exe /c 'pushd
+  \\wsl.localhost\Ubuntu-24.04\home\adamg\fluid-simulation\app\tools && node capture.mjs
+  http://localhost:5184/ <out>.png 3500 & popd'`. Healthy boot console: `navigator.gpu
+  present: true`, smoke PASS, `fluid init: n=64`. `hasGpu: false` = unsupported overlay
+  (capture failed). Captures land in gitignored `captures/`.
+- **⚠️ PROVEN capture-with-EVAL invocation (REUSE for every gate — do NOT re-derive).**
+  `EVAL=`/scene/setting control does NOT cross `bash → cmd.exe → Windows node`, and
+  **`WSLENV` did not work** for arbitrary strings. The working path is **PowerShell with
+  `$env:` and double-quotes escaped as `\"`**:
+  ```
+  powershell.exe -Command "$env:EVAL = 'window.__fluid.set_setting(\"scene.preset\",1); window.__fluid.set_setting(\"render.hero.debug_surface_source\",1); window.__fluid.reset(); \"label\"'; $env:EVAL_WAIT = '5000'; pushd '\\wsl.localhost\Ubuntu-24.04\home\adamg\fluid-simulation\app\tools'; node capture.mjs http://localhost:5184/ <out>.png 5000; popd"
+  ```
+  **Validity proof required:** every gate capture must show `[harness] EVAL -> "label"` in
+  its `.console.txt` (else the toggle/scene did not actually apply — see the v1.14 attempt-1
+  failure). `render_mode` in `stats_json` always reads `particles+pressure` (the physics
+  mode); confirm the hero/composite *visual* path via `render.particle_view = 0` in the
+  console + the higher `gpu.render_ms` signature, not via `render_mode`.
+- Scene presets (Reset-class `scene.preset`, needs `reset()` after set): `0`=FallingBlob,
+  `1`=DamBreak, `2`=DoubleSplash. **No thin-sheet preset exists** — use DoubleSplash or a
+  mid-flight DamBreak tongue (short post-reset wait) as the thin stressor.
+- Other env hooks: `PARTICLES=N`, `DRAG=1`, `DETAILED=1`, `FRAMES`/`FRAME_INTERVAL`.
 - **Per-stream gate is narrow** (compile + the new test). The full `run.sh`+capture is the
   per-plan acceptance gate. Never fabricate GPU timings; performance claims need profiler
   output.
@@ -77,12 +94,21 @@ pipeline and is committed before the next starts.
 6. **Orchestrator** — record observed outcome here, migrate durable facts to owning docs,
    commit on the branch, decide next plan.
 
+## Observed baseline facts (capture `239239b`, 2026-06-09)
+
+- **247,500 particles, 64³ grid, CG press_iters=30, ~42 FPS (~24 ms/frame), 309
+  dispatches/frame, `gpu-timestamp` profiling active.** Frame is already over a 16 ms
+  budget — perf headroom for v1.14 MC is thin; the screen-space fallback is load-bearing.
+- Foam (v1.13) live: `diffuse.alive≈9878 (foam 9638 / spray 235 / bubble 5)`.
+- Environment reflection (v1.15) merged. Both confirmed in the boot capture.
+
 ## Streams table (observed state — update from agent reports + disk, not optimism)
 
 | Stream | Area | Status | Last observed fact | Next action | Blockers |
 |---|---|---|---|---|---|
-| Baseline | commit v1.13+v1.15, prove capture loop | dispatched | agent running: verify build/test, validate capture, commit to main | await report | — |
-| v1.14 | marching-cubes surface (de-risk gate) | pending | — | start after baseline + branch | baseline |
+| Baseline | commit v1.13+v1.15, prove capture loop | **DONE** | compile+27 tests green; capture loop WORKS (gpu present, smoke PASS, n=64, foam live); committed `239239b` on main | — | — |
+| v1.14 | marching-cubes surface (de-risk gate) | **ABANDONED at gate** | valid A/B (toggle verified, EVAL echo present): occupancy quads clearly LOSE to screen-space on all 3 scenes, worst on thin tongue (noise). Orchestrator confirmed via own eyes. MC not built; screen-space kept; removed-surface decision re-affirmed. Throwaway code reverted; plan→abandoned; roadmap decision resolved. | — | — |
+| ↳ infra | capture EVAL plumbing (cross-cutting) | **RESOLVED** | PowerShell `$env:EVAL` w/ `\"`-escaped quotes works; WSLENV + bash→cmd.exe do NOT. Invocation recorded in Constraints above. | reuse for all gates | — |
 | v1.16 | approximate caustics | pending | — | after v1.14 | v1.14 |
 | v1.17 | wet walls & meniscus | pending | — | after v1.16 | v1.16 |
 | v1.18 | temporal stabilization | pending | — | after v1.17 (scope depends on what 14/16 shipped) | v1.14–v1.17 |

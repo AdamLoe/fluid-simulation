@@ -58,8 +58,14 @@ them. Workflow per plan: detailed rewrite, then implementation.
 | v1.17.0 | [`v1.17.0-hero-water-wet-walls.md`](v1.17.0-hero-water-wet-walls.md) | v1.12 (v1.13 helps) | Wet walls + meniscus; needs rendered walls + waterline. |
 | v1.18.0 | [`v1.18.0-hero-water-temporal.md`](v1.18.0-hero-water-temporal.md) | v1.12–v1.17 | History-blend + camera-reset (NOT reprojection — no motion-vector infra). Lands last. |
 
-Open decision recorded here when resolved: **does v1.14 marching cubes beat the v1.12
-screen-space composite?** (the de-risk gate outcome).
+**RESOLVED (2026-06-09) — does v1.14 marching cubes beat the v1.12 screen-space
+composite?** No. The v1.14 de-risk gate (occupancy-boundary quads vs the v1.12 composite on
+DamBreak / DoubleSplash / thin tongue) showed the extracted-surface proxy clearly *losing*
+to screen-space at the 64³ grid resolution — worst on thin sheets, which shattered into
+noise. Marching cubes was **not** built; screen-space stays the hero surface and the
+"removed surface path" decision is re-affirmed. v1.14 plan → `abandoned`. See
+[`hero-water-delivery-hub.md`](hero-water-delivery-hub.md) for the captures + the reusable
+capture-EVAL invocation discovered during the gate.
 
 ## Locked user decisions
 
