@@ -248,6 +248,9 @@ impl GpuContext {
         let [grid_nx_init, grid_ny_init, grid_nz_init] = fluid.grid_dims();
         // WetWallSystem is constructed here and after recreate_fluid (for Reset).
         // Its wetness buffer + uniform are shared with EnvironmentRenderer (group 1).
+        // Derive hero params early so we can pass wet_wall_supersample here
+        // (the named `hero` binding is later below with the skybox/composite).
+        let hero_init = settings.hero_params();
         let wetwall = wetwall::WetWallSystem::new(
             &device,
             fluid.cell_type_buffer(),
@@ -256,6 +259,7 @@ impl GpuContext {
             grid_nz_init,
             tank_lo,
             tank_hi,
+            hero_init.wet_wall_supersample,
         );
         let wireframe = renderer::WireframeRenderer::new(
             &device,
@@ -496,6 +500,7 @@ impl GpuContext {
             grid_nz,
             tank_lo,
             tank_hi,
+            self.hero.wet_wall_supersample,
         );
         self.wireframe = renderer::WireframeRenderer::new(
             &self.device,
@@ -1116,6 +1121,9 @@ impl GpuContext {
         cam_right: Vec3,
         cam_up: Vec3,
         eye_to_world: &Mat4,
+        eye_world: Vec3,
+        box_pos: Vec3,
+        box_orient: glam::Quat,
     ) -> Result<(), String> {
         use wgpu::CurrentSurfaceTexture as Cur;
         let frame = match self.surface.get_current_texture() {
@@ -1211,6 +1219,14 @@ impl GpuContext {
 
         self.wireframe.update_camera(&self.queue, view_proj);
         self.environment.update_camera(&self.queue, view_proj);
+        // Push box-local camera eye position + box rotation to the environment
+        // shader.  The environment mesh vertices are in box-local space, so we
+        // need the eye in the same frame for a geometrically correct view_dir.
+        // The box rotation mat is passed so the box-local reflection direction
+        // can be rotated into world space before env_sample (which expects world).
+        let eye_world_local = box_orient.inverse() * (eye_world - box_pos);
+        let box_rot = glam::Mat3::from_quat(box_orient);
+        self.environment.set_eye_world(&self.queue, eye_world_local, box_rot);
         // Camera-only eye->world rotation for the world-fixed environment: the
         // reflected env + skybox follow the camera but NOT the tank's rotation.
         self.composite.set_camera(&self.queue, eye_to_world);

@@ -8,15 +8,25 @@
 // Group 1: WetWallUniform + wetness buffer (v1.17).
 //
 // Wetness buffer layout (one f32 per texel, concatenated):
-//   [0 .. nx*ny)               back wall  (z = lo.z): i in [0,nx), j in [0,ny)
-//   [nx*ny .. nx*ny + nz*ny)   left wall  (x = lo.x): k in [0,nz), j in [0,ny)
-//   [nx*ny+nz*ny .. total)     floor       (y = lo.y): i in [0,nx), k in [0,nz)
+//   [0 .. nx_ss*ny_ss)                           back wall  (z = lo.z)
+//   [nx_ss*ny_ss .. nx_ss*ny_ss + nz_ss*ny_ss)   left wall  (x = lo.x)
+//   [nx_ss*ny_ss+nz_ss*ny_ss .. total)            floor       (y = lo.y)
+// where nx_ss = nx * supersample (stored in ww.dims.x etc.).
 
 // ─── Group 0: camera/material ────────────────────────────────────────────────
 
 struct Env {
     view_proj: mat4x4<f32>,
-    params: vec4<f32>, // x=floor_scale, y=floor_strength, z=backdrop_strength, w=wall_visibility
+    params:     vec4<f32>, // x=floor_scale, y=floor_strength, z=backdrop_strength, w=wall_visibility
+    eye_world:  vec4<f32>, // xyz=camera eye in BOX-LOCAL space, w=unused
+    env_ctrl:   vec4<f32>, // x=env_rotation, y=env_mode, z=env_brightness, w=unused
+    sun:        vec4<f32>, // xyz=world sun direction, w=sun_intensity
+    wet_refl:   vec4<f32>, // x=wet_reflectivity, y=wet_specular, zw=unused
+    // Box-local→world rotation columns (mat3 padded to 3 vec4s).
+    // Rotates a box-local direction into world space for env_sample.
+    box_rot_col0: vec4<f32>,
+    box_rot_col1: vec4<f32>,
+    box_rot_col2: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> env: Env;
@@ -24,8 +34,8 @@ struct Env {
 // ─── Group 1: wetwall ─────────────────────────────────────────────────────────
 
 struct WetWallUniform {
-    dims:        vec4<u32>, // x=nx, y=ny, z=nz, w=total_texels
-    face_counts: vec4<u32>, // x=back_count (nx*ny), y=0, z=left_count (nz*ny), w=0
+    dims:        vec4<u32>, // x=nx_ss, y=ny_ss, z=nz_ss, w=total_texels (supersampled)
+    face_counts: vec4<u32>, // x=back_count_ss, y=supersample, z=left_count_ss, w=nx_orig
     params:      vec4<f32>, // x=decay, y=dt, z=contact_gain, w=enabled
     tank_lo:     vec4<f32>, // xyz=tank lower corner, w=unused
     tank_hi:     vec4<f32>, // xyz=tank upper corner, w=unused
@@ -282,7 +292,7 @@ fn fs(in: VsOut) -> FsOut {
         }
 
     } else if in.kind < 1.5 {
-        // ── WALL: matte + wetness darkening/gloss/streak + meniscus ─────────
+        // ── WALL: matte + reflective wet shading + meniscus ──────────────────
         let wall_base = vec3<f32>(0.10, 0.12, 0.16);
         color = wall_base * (0.4 + wall_visibility);
 
@@ -310,16 +320,50 @@ fn fs(in: VsOut) -> FsOut {
                 streak_mod = 1.0 + streak_str * (streak - 0.5) * wet;
             }
 
-            // Darkening: wet walls absorb more light.
+            // Darkening: wet walls absorb more light (keeps meniscus context).
             let darkening = 1.0 - wet * dark_str * streak_mod;
             color = color * darkening;
 
-            // Gloss: simple Blinn-Phong-ish brightening (no real view vector
-            // available here, use a fixed approximation from uv-based fresnel).
-            if gloss_str > 0.001 {
-                let gloss_uv = clamp(1.0 - in.uv.y, 0.0, 1.0);
-                let gloss = pow(gloss_uv, 6.0) * wet * gloss_str * 0.4;
-                color = color + vec3<f32>(gloss * 0.9, gloss, gloss * 1.05);
+            // ── Wet reflectivity: mirror the environment/skybox on wet areas ──
+            // This is the PRIMARY wet-wall visible signal on a near-black wall —
+            // wet patches should look like wet glass reflecting the world.
+            let wet_reflectivity = env.wet_refl.x;
+            let wet_spec_str     = env.wet_refl.y;
+            if wet > 0.001 && (wet_reflectivity > 0.001 || wet_spec_str > 0.001) {
+                // Per-face constant outward normal in BOX-LOCAL space.
+                let face_normal_local = select(vec3<f32>(1.0, 0.0, 0.0),
+                                               vec3<f32>(0.0, 0.0, 1.0), is_back);
+                // View direction: eye and surface point are BOTH in box-local space,
+                // so this subtraction is geometrically correct regardless of box
+                // rotation/translation (env.eye_world is pre-transformed to box-local
+                // on the Rust side: box_orient.inverse() * (cam_eye - box_pos)).
+                let view_dir = normalize(p - env.eye_world.xyz);
+                // Reflection vector in box-local space.
+                let refl_dir_local = reflect(view_dir, face_normal_local);
+                // Rotate box-local reflection into world space for env_sample.
+                // The box_rot columns form a mat3 that maps box-local→world.
+                let box_rot = mat3x3<f32>(
+                    env.box_rot_col0.xyz,
+                    env.box_rot_col1.xyz,
+                    env.box_rot_col2.xyz,
+                );
+                let refl_dir = box_rot * refl_dir_local;
+                // Environment sample along the world-space reflection direction.
+                let reflected_col = env_sample(refl_dir, env.env_ctrl, env.sun);
+                // Fresnel term: raised floor (0.15) so wet areas read as shiny
+                // even when viewed head-on (not just at grazing angles).
+                let ndotv = clamp(-dot(face_normal_local, view_dir), 0.0, 1.0);
+                let fresnel = 0.15 + 0.85 * pow(1.0 - ndotv, 5.0);
+                let refl_amt = clamp(wet * wet_reflectivity * fresnel, 0.0, 1.0);
+                color = mix(color, reflected_col, refl_amt);
+
+                // Sun specular sheen: sharp highlight from the sun direction.
+                if wet_spec_str > 0.001 {
+                    let sun_dir = normalize(env.sun.xyz);
+                    let sun_dot = max(dot(refl_dir, sun_dir), 0.0);
+                    let shine = pow(sun_dot, 48.0) * wet * wet_spec_str * env.sun.w;
+                    color = color + vec3<f32>(1.0, 0.95, 0.88) * shine;
+                }
             }
 
             // Meniscus: highlight band at the wet/dry waterline.

@@ -32,6 +32,8 @@ struct HeroUniform {
     sun: [f32; 4],   // xyz = world sun direction, w = sun intensity
     micro: [f32; 4], // x = enabled, y = strength, z = scale, w = velocity scale
     spec: [f32; 4],  // x = specular strength, yzw = unused
+    // --- Surface normal quality (v1.19 round-2) ---
+    norm: [f32; 4],  // x = normal_stencil (as f32), y = normal_smooth_strength, zw = unused
 }
 
 /// Per-frame camera rotation (eye-space -> world-space, camera only). std140: a
@@ -113,6 +115,12 @@ fn hero_uniform(hero: &HeroParams) -> HeroUniform {
             hero.micro_normal_velocity_scale.max(0.0),
         ],
         spec: [hero.specular_strength.max(0.0), 0.0, 0.0, 0.0],
+        norm: [
+            hero.normal_stencil.clamp(1, 3) as f32,
+            hero.normal_smooth_strength.clamp(0.0, 1.0),
+            0.0,
+            0.0,
+        ],
     }
 }
 

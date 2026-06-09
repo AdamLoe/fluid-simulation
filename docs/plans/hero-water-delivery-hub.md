@@ -185,6 +185,43 @@ N times), optionally widen the thickness splat radius; add a bilinear (and small
 read and/or supersample the wetness field per wall. Capture UP CLOSE via Live `camera.distance`
 (min 2.0) — NOT a wide tank shot.
 
+### Round-2 polish diagnosis (2026-06-09, read-only)
+
+Round-1 shipped the iterated bilateral (`smooth_iterations` 1-4, `smooth_radius` 3-8) and
+`smooth_thickness_splat_scale` (0.5-3.0, default 1.3), plus wetness bilinear/bicubic-smooth
+interpolation. Lead's round-2 verdict: water still not smooth, walls still pixely + wet effect
+invisible. Highest-leverage untried levers identified:
+
+- **WATER — the normal, not (only) the depth.** `composite.wgsl::water_normal` is still a
+  *1-pixel* central difference (`pixel±(1,0)`/`±(0,1)`) off `smoothed_z_tex`; even on a
+  well-smoothed depth the 1px stencil re-amplifies residual per-splat ripples into spiky
+  normals → spherical lighting. Fixes (all Live): (1) widen the stencil to a tunable
+  `normal_stencil` px (2-3) central difference; (2) add an optional explicit normal-smoothing
+  blur — either a small box/Gaussian over the reconstructed normal, or one more wide bilateral
+  iteration; (3) raise the splat default/range so depth is continuous *before* smoothing
+  (`fs_thickness` writes `nearest_z` with `radius_world * splat_scale * nz`). Honest ceiling:
+  at ~247k splats screen-space normals will never be glass-flat; aim is "calm pool reads as a
+  surface, not beads," not CG-perfect. Do NOT over-blob thin sheets — keep the depth-range
+  Gaussian tight and gate stencil width so tongues survive.
+
+- **WET WALLS — two bugs.** (1) *Pixely*: the wetness buffer is **one f32 per sim wall cell**
+  (`wetwall.rs`, grid default 64); interpolation alone can't invent detail. Supersample: make
+  the buffer `S×` per wall axis (Live `wet_resolution` factor 1-4), update `wetwall_update.wgsl`
+  to write S texels per sim cell (interpolating contact from the 4 surrounding inner cells so
+  adjacent hi-res texels differ), and update all three read mappings in `environment.wgsl`
+  consistently (the `dims`/`face_counts` in `WetWallUniform` must reflect the supersampled
+  counts). (2) *Invisible on black*: wall base is `vec3(0.10,0.12,0.16)` matte — darken+gloss do
+  nothing. Redesign WALL branch so wet = **reflective**: reflect `env.wgsl::env_sample` (already
+  the skybox/water reflection source) off the wall's world normal (constant per face: back =
+  `+z`, left = `+x`), view dir = `normalize(world_pos - eye_world)`, blended by `wet *
+  wet_reflectivity` + a sun specular sheen scaled by wetness. Requires plumbing `env_sample`
+  (concat into the environment module), the camera world eye position (`camera.eye()`, NOT in
+  `eye_to_world` which is rotation-only), and sun/env-ctrl into the env group-0 uniform.
+
+**Settled-surface capture:** FallingBlob (`scene.preset` 0) with a long `EVAL_WAIT` (~9000 ms)
+so the blob pools into a calm sheet, `camera.distance` ~2.0-2.5 — judging smoothness needs a
+SETTLED low-spray surface, not a mid-splash frame.
+
 ## See also
 
 - [`roadmap.md`](roadmap.md) — series order + the de-risk gate outcome goes here when known.

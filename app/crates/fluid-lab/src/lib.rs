@@ -429,7 +429,8 @@ impl FluidApp {
         );
         let inv = self.box_orient.inverse();
         let (right, up) = (inv * right, inv * up);
-        if let Err(e) = self.gpu.render(&view_proj, right, up, &eye_to_world) {
+        let eye_world = self.camera.eye();
+        if let Err(e) = self.gpu.render(&view_proj, right, up, &eye_to_world, eye_world, self.box_pos, self.box_orient) {
             // Recoverable surface errors (resize/lost); log and continue.
             warn(&format!("[fluid-lab] render error: {e}"));
         }

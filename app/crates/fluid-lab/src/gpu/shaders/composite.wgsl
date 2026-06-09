@@ -16,6 +16,8 @@ struct Hero {
     sun: vec4<f32>,    // xyz = world sun direction, w = sun intensity
     micro: vec4<f32>,  // x = enabled, y = strength, z = scale, w = velocity scale
     spec: vec4<f32>,   // x = specular strength, yzw = unused
+    // --- Surface normal quality (v1.19 round-2) ---
+    norm: vec4<f32>,   // x = normal_stencil (px), y = normal_smooth_strength, zw = unused
 };
 
 // Per-frame camera rotation: eye-space -> world-space (camera only, box-independent),
@@ -58,16 +60,20 @@ fn load_z(p: vec2<i32>, dims: vec2<i32>) -> f32 {
     return textureLoad(smoothed_z_tex, q, 0).r;
 }
 
-fn water_normal(pixel: vec2<i32>, dims: vec2<i32>) -> vec3<f32> {
+// Reconstruct the eye-space surface normal from the smoothed depth buffer.
+// Uses a tunable central-difference half-width (normal_stencil, 1-3 px) to
+// low-pass the derivative and suppress per-splat lobes that survive bilateral
+// smoothing. Optionally blends the result toward a cross-averaged normal
+// (normal_smooth_strength) for further smoothing.
+fn compute_normal_at(pixel: vec2<i32>, s: i32, dims: vec2<i32>) -> vec3<f32> {
     let c = load_z(pixel, dims);
     if c >= 60000.0 {
         return vec3<f32>(0.0, 0.0, 1.0);
     }
-
-    let l_raw = load_z(pixel + vec2<i32>(-1, 0), dims);
-    let r_raw = load_z(pixel + vec2<i32>(1, 0), dims);
-    let d_raw = load_z(pixel + vec2<i32>(0, -1), dims);
-    let u_raw = load_z(pixel + vec2<i32>(0, 1), dims);
+    let l_raw = load_z(pixel + vec2<i32>(-s, 0), dims);
+    let r_raw = load_z(pixel + vec2<i32>( s, 0), dims);
+    let d_raw = load_z(pixel + vec2<i32>(0, -s), dims);
+    let u_raw = load_z(pixel + vec2<i32>(0,  s), dims);
     let l = select(l_raw, c, l_raw >= 60000.0);
     let r = select(r_raw, c, r_raw >= 60000.0);
     let d = select(d_raw, c, d_raw >= 60000.0);
@@ -77,12 +83,37 @@ fn water_normal(pixel: vec2<i32>, dims: vec2<i32>) -> vec3<f32> {
     let height = max(params.params.w, 1.0);
     let tan_half_fovy = params.params.y;
     let aspect = width / height;
+    // World units per pixel at depth c, scaled by stencil half-width.
+    let fs = f32(s);
     let world_per_px_y = max(1.0e-4, 2.0 * c * tan_half_fovy / height);
     let world_per_px_x = max(1.0e-4, 2.0 * c * tan_half_fovy * aspect / width);
-    let dzdx = (r - l) * 0.5 / world_per_px_x;
-    let dzdy = (u - d) * 0.5 / world_per_px_y;
-
+    let dzdx = (r - l) * 0.5 / (fs * world_per_px_x);
+    let dzdy = (u - d) * 0.5 / (fs * world_per_px_y);
     return normalize(vec3<f32>(-dzdx, -dzdy, 1.0));
+}
+
+fn water_normal(pixel: vec2<i32>, dims: vec2<i32>) -> vec3<f32> {
+    let c = load_z(pixel, dims);
+    if c >= 60000.0 {
+        return vec3<f32>(0.0, 0.0, 1.0);
+    }
+    // normal_stencil knob (1-3); clamp to safe integer.
+    let stencil = i32(clamp(hero.norm.x, 1.0, 3.0));
+    let n = compute_normal_at(pixel, stencil, dims);
+
+    // Optional normal smoothing: average with normals sampled at diagonal
+    // offsets of stencil+1 px to further suppress residual lobes.
+    let smooth_str = clamp(hero.norm.y, 0.0, 1.0);
+    if smooth_str < 0.001 {
+        return n;
+    }
+    let os = stencil + 1;
+    let n_ul = compute_normal_at(pixel + vec2<i32>(-os, -os), stencil, dims);
+    let n_ur = compute_normal_at(pixel + vec2<i32>( os, -os), stencil, dims);
+    let n_ll = compute_normal_at(pixel + vec2<i32>(-os,  os), stencil, dims);
+    let n_lr = compute_normal_at(pixel + vec2<i32>( os,  os), stencil, dims);
+    let n_avg = normalize(n_ul + n_ur + n_ll + n_lr);
+    return normalize(mix(n, n_avg, smooth_str));
 }
 
 @fragment

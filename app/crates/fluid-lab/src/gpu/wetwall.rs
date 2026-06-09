@@ -26,9 +26,11 @@ const WG: u32 = 64;
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WetWallUniform {
-    /// [nx, ny, nz, total_texels]
+    /// [nx_ss, ny_ss, nz_ss, total_texels_ss]
+    /// nx_ss = nx * supersample (supersampled texel dimensions).
     pub dims:        [u32; 4],
-    /// [back_count (nx*ny), 0, left_count (nz*ny), 0]
+    /// [back_count_ss (nx_ss*ny_ss), supersample, left_count_ss (nz_ss*ny_ss), nx (original cell grid)]
+    /// supersample at .y, original nx at .w — both previously unused zero fields.
     pub face_counts: [u32; 4],
     /// [wetness_decay, dt, contact_gain, enabled (0/1 as f32)]
     pub params:      [f32; 4],
@@ -61,13 +63,19 @@ impl WetWallSystem {
         nx: u32, ny: u32, nz: u32,
         tank_lo: [f32; 3],
         tank_hi: [f32; 3],
+        supersample: u32,
     ) -> Self {
-        let back_count = nx * ny;
-        let left_count = nz * ny;
-        let floor_count = nx * nz;
+        let ss = supersample.max(1).min(4);
+        let nx_ss = nx * ss;
+        let ny_ss = ny * ss;
+        let nz_ss = nz * ss;
+        let back_count  = nx_ss * ny_ss;
+        let left_count  = nz_ss * ny_ss;
+        let floor_count = nx_ss * nz_ss;
         let total_texels = back_count + left_count + floor_count;
 
         // Zeroed wetness storage (fresh buffer = clean slate on Reset).
+        // Size scales with ss^2 per face (both axes supersampled).
         let wetness_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wetwall wetness"),
             size: (total_texels as u64) * 4,
@@ -77,9 +85,10 @@ impl WetWallSystem {
 
         // Seed the uniform with stable dims/tank data immediately so environment.wgsl
         // can read it before the first `record_step`.
+        // dims stores the supersampled counts; face_counts.y = ss, .w = original nx.
         let init_uniform = WetWallUniform {
-            dims:        [nx, ny, nz, total_texels],
-            face_counts: [back_count, 0, left_count, 0],
+            dims:        [nx_ss, ny_ss, nz_ss, total_texels],
+            face_counts: [back_count, ss, left_count, nx],
             params:      [0.97, 1.0 / 60.0, 1.0, 1.0], // decay, dt, contact_gain, enabled
             tank_lo:     [tank_lo[0], tank_lo[1], tank_lo[2], 0.0],
             tank_hi:     [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
@@ -188,13 +197,17 @@ impl WetWallSystem {
         tank_lo: [f32; 3],
         tank_hi: [f32; 3],
     ) {
-        let back_count  = nx * ny;
-        let left_count  = nz * ny;
+        let ss = (hero.wet_wall_supersample as u32).max(1).min(4);
+        let nx_ss = nx * ss;
+        let ny_ss = ny * ss;
+        let nz_ss = nz * ss;
+        let back_count  = nx_ss * ny_ss;
+        let left_count  = nz_ss * ny_ss;
         let total       = self.total_texels;
 
         let uniform = WetWallUniform {
-            dims:        [nx, ny, nz, total],
-            face_counts: [back_count, 0, left_count, 0],
+            dims:        [nx_ss, ny_ss, nz_ss, total],
+            face_counts: [back_count, ss, left_count, nx],
             params: [
                 hero.wet_wall_wetness_decay.clamp(0.0, 1.0),
                 dt,

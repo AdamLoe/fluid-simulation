@@ -29,10 +29,27 @@ struct EnvVertex {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct EnvUniform {
-    view_proj: [[f32; 4]; 4],
+    view_proj:  [[f32; 4]; 4],
     // x = floor_pattern_scale, y = floor_pattern_strength,
     // z = backdrop_strength, w = wall_visibility
-    params: [f32; 4],
+    params:     [f32; 4],
+    // xyz = camera world eye position in BOX-LOCAL space, w = unused.
+    // Stored box-local so that `view_dir = normalize(p - eye_world)` is
+    // geometrically correct when p is a box-local wall position.
+    eye_world:  [f32; 4],
+    // x = env_rotation (rad), y = env_mode (0=Sky,1=Room,2=Studio),
+    // z = env_brightness, w = unused
+    env_ctrl:   [f32; 4],
+    // xyz = world sun direction (unnormalized from settings), w = sun_intensity
+    sun:        [f32; 4],
+    // x = wet_reflectivity, y = wet_specular, zw = unused
+    wet_refl:   [f32; 4],
+    // Box-local → world rotation: the three columns of the 3x3 rotation matrix
+    // (from_quat(box_orient)).  w of each is padding.  Used to rotate the
+    // box-local reflection direction into world space before env_sample.
+    box_rot_col0: [f32; 4],
+    box_rot_col1: [f32; 4],
+    box_rot_col2: [f32; 4],
 }
 
 pub struct EnvironmentRenderer {
@@ -56,9 +73,18 @@ impl EnvironmentRenderer {
         wetwall_uniform_buf: &wgpu::Buffer,
         wetwall_wetness_buf: &wgpu::Buffer,
     ) -> Self {
+        // env.wgsl (shared procedural environment) is concatenated ahead of the
+        // environment shader so the wet-wall reflectivity uses the same sky/room
+        // function as the composite and skybox.
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("environment shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/environment.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("shaders/env.wgsl"),
+                    include_str!("shaders/environment.wgsl"),
+                )
+                .into(),
+            ),
         });
 
         let verts = environment_mesh(lo, hi);
@@ -68,6 +94,8 @@ impl EnvironmentRenderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
+        // Buffer is sized to the full EnvUniform struct (view_proj + params +
+        // eye_world + env_ctrl + sun + wet_refl + box_rot = 64+16+16+16+16+16+48 = 192 bytes).
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("environment uniform"),
             size: std::mem::size_of::<EnvUniform>() as u64,
@@ -224,6 +252,59 @@ impl EnvironmentRenderer {
         ];
         // params live right after the 64-byte mat4x4.
         queue.write_buffer(&self.uniform_buf, 64, bytemuck::cast_slice(&params));
+        // EnvUniform layout after view_proj(64) + params(16) = 80:
+        //   eye_world  at  80 (16 bytes)
+        //   env_ctrl   at  96 (16 bytes)
+        //   sun        at 112 (16 bytes)
+        //   wet_refl   at 128 (16 bytes)
+        // env_ctrl: rotation, mode, brightness.
+        let env_ctrl: [f32; 4] = [
+            hero.environment_rotation,
+            hero.environment_mode as f32,
+            hero.environment_brightness.max(0.0),
+            0.0,
+        ];
+        queue.write_buffer(&self.uniform_buf, 96, bytemuck::cast_slice(&env_ctrl));
+        // sun: direction + intensity.
+        let sun: [f32; 4] = [
+            hero.sun_direction[0],
+            hero.sun_direction[1],
+            hero.sun_direction[2],
+            hero.sun_intensity.max(0.0),
+        ];
+        queue.write_buffer(&self.uniform_buf, 112, bytemuck::cast_slice(&sun));
+        // wet_refl: reflectivity + specular.
+        let wet_refl: [f32; 4] = [
+            hero.wet_wall_reflectivity.clamp(0.0, 1.0),
+            hero.wet_wall_specular.max(0.0),
+            0.0,
+            0.0,
+        ];
+        queue.write_buffer(&self.uniform_buf, 128, bytemuck::cast_slice(&wet_refl));
+    }
+
+    /// Push the box-local camera eye position and the box-local→world rotation.
+    /// Called each frame from render() after the camera matrices are computed.
+    ///
+    /// `eye_world_local` is the camera eye in box-local space:
+    ///   `box_orient.inverse() * (camera_eye_world - box_pos)`
+    /// This ensures `view_dir = normalize(wall_pos - eye_world_local)` is
+    /// computed in a consistent frame (both sides are box-local).
+    ///
+    /// `box_rot` is the box-local→world 3×3 rotation matrix (from_quat(box_orient)).
+    /// Used in the FS to rotate the box-local reflection direction into world space
+    /// before sampling the environment.
+    pub fn set_eye_world(&self, queue: &wgpu::Queue, eye_world_local: glam::Vec3, box_rot: glam::Mat3) {
+        // eye_world at byte 80: view_proj(64) + params(16) = 80.
+        let data: [f32; 4] = [eye_world_local.x, eye_world_local.y, eye_world_local.z, 0.0];
+        queue.write_buffer(&self.uniform_buf, 80, bytemuck::cast_slice(&data));
+        // box_rot columns at bytes 144, 160, 176 (after wet_refl at 128+16=144).
+        let c0: [f32; 4] = [box_rot.x_axis.x, box_rot.x_axis.y, box_rot.x_axis.z, 0.0];
+        let c1: [f32; 4] = [box_rot.y_axis.x, box_rot.y_axis.y, box_rot.y_axis.z, 0.0];
+        let c2: [f32; 4] = [box_rot.z_axis.x, box_rot.z_axis.y, box_rot.z_axis.z, 0.0];
+        queue.write_buffer(&self.uniform_buf, 144, bytemuck::cast_slice(&c0));
+        queue.write_buffer(&self.uniform_buf, 160, bytemuck::cast_slice(&c1));
+        queue.write_buffer(&self.uniform_buf, 176, bytemuck::cast_slice(&c2));
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {

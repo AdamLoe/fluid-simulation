@@ -273,6 +273,22 @@ pub struct HeroParams {
     /// Scale applied to particle world radius when writing nearest_z splat.
     /// Larger values fatten overlapping splats so they fuse more before smoothing.
     pub smooth_thickness_splat_scale: f32,
+    /// Central-difference half-width in pixels for the surface normal reconstruction.
+    /// 1 = original 1px stencil; 2-3px low-passes per-splat ripple into smoother normals.
+    pub normal_stencil: u32,
+    /// Optional normal blur strength (0–1). Blends the raw reconstructed normal toward
+    /// an averaged normal sampled over a small offset cross, further smoothing.
+    pub normal_smooth_strength: f32,
+    // --- Wet wall round-2: reflectivity + specular + supersample (v1.19 polish) ---
+    /// Environment reflection blend scaled by wetness (0–1). Makes wet areas mirror
+    /// the skybox/env instead of (only) darkening — visible on the near-black wall.
+    pub wet_wall_reflectivity: f32,
+    /// Sun specular sheen scaled by wetness (0–1). Adds a sun glint on wet areas.
+    pub wet_wall_specular: f32,
+    /// Wetness buffer supersample factor (1–4). Multiplies the per-axis texel count
+    /// so the wetness field has more detail than one texel per sim cell.
+    /// Reset-class: buffer size changes. Default 2.
+    pub wet_wall_supersample: u32,
 }
 
 /// A flat snapshot of the diffuse-water (foam/spray/bubble) settings (v1.13). Like
@@ -1564,6 +1580,42 @@ impl Default for Registry {
                 technical_tooltip: Some("Live enum. 1 shows the raw wetness scalar (white=fully wet); 2 shows the meniscus band mask."),
                 apply: ApplyClass::Live,
             },
+            Setting {
+                id: "render.hero.wet_wall.reflectivity",
+                label: "Wall wet reflectivity",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(0.55),
+                value: Value::F32(0.55),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("How strongly wet wall areas reflect the environment/skybox. Makes wet patches visibly shiny and mirror-like rather than just darker."),
+                technical_tooltip: Some("Live. Blends env_sample(reflect(view,face_normal)) into the wall color scaled by wetness*reflectivity*fresnel. Visible even on the near-black wall because it adds light rather than subtracting it."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.wet_wall.specular",
+                label: "Wall wet specular",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(0.6),
+                value: Value::F32(0.6),
+                validation: Validation::F32Range { min: 0.0, max: 2.0 },
+                tooltip: Some("Sun specular sheen on wet wall areas. Adds a bright glint where the sun hits a wet surface."),
+                technical_tooltip: Some("Live. Adds pow(max(dot(R,sun_dir),0), shininess) * wet * specular on top of the wall color. R = reflect(view, face_normal) in world space."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.wet_wall.supersample",
+                label: "Wall wetness resolution",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::U32(2),
+                value: Value::U32(2),
+                validation: Validation::U32Range { min: 1, max: 4 },
+                tooltip: Some("Supersample factor for the wetness buffer (texels per sim cell per axis). Higher values reduce the blocky pixel grid visible on wet walls."),
+                technical_tooltip: Some("Reset-class. Multiplies the per-axis texel count so the buffer has ss^2 texels per sim cell face. 1 = original resolution; 2 = 4x texels per face; 4 = 16x. Buffer is rebuilt on Reset."),
+                apply: ApplyClass::Reset,
+            },
             // --- Temporal stabilization (v1.18). All Live: sliders rebuild the
             // HeroParams uniform via the existing render.hero.* batch route. ---
             Setting {
@@ -1720,11 +1772,35 @@ impl Default for Registry {
                 label: "Splat scale",
                 category: Category::Water,
                 panel_group: PanelGroup::Advanced,
-                default: Value::F32(1.3),
-                value: Value::F32(1.3),
-                validation: Validation::F32Range { min: 0.5, max: 3.0 },
-                tooltip: Some("Enlarges the depth-capture footprint of each particle splat so neighbours overlap more before smoothing. A small increase (1.2-1.5x) noticeably helps fusing."),
+                default: Value::F32(1.8),
+                value: Value::F32(1.8),
+                validation: Validation::F32Range { min: 0.5, max: 4.0 },
+                tooltip: Some("Enlarges the depth-capture footprint of each particle splat so neighbours overlap more before smoothing. Larger values (1.5-2.5x) help fuse adjacent splats into a continuous surface."),
                 technical_tooltip: Some("Live. Multiplies cam.right.w (particle world radius) in the nearest_z write inside fs_thickness. Does NOT change the visible particle size or thickness accumulation."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.normal_stencil",
+                label: "Normal stencil width",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::U32(2),
+                value: Value::U32(2),
+                validation: Validation::U32Range { min: 1, max: 3 },
+                tooltip: Some("Central-difference half-width (pixels) for surface normal reconstruction. 1=original, 2-3 low-passes per-splat ripple and reduces the sphere look."),
+                technical_tooltip: Some("Live. The normal central difference samples depth at pixel ± stencil in each axis, dividing by 2*stencil*world_per_px. Wider stencils average over more pixels, suppressing residual per-particle lobes."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.normal_smooth_strength",
+                label: "Normal smooth blend",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(0.5),
+                value: Value::F32(0.5),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Blends the reconstructed normal toward an averaged neighbourhood normal. Reduces residual spiky lobes without blurring silhouettes."),
+                technical_tooltip: Some("Live. Inline normal blur: weight to mix(pixel_normal, avg_cross_normal, strength). The avg samples the normal at 4 diagonal offsets of size stencil+1 pixels."),
                 apply: ApplyClass::Live,
             },
             // --- Diffuse water: persistent foam / spray / bubbles (v1.13). All
@@ -2262,7 +2338,13 @@ impl Registry {
             // --- Screen-space surface quality (v1.19 polish) ---
             smooth_iterations: self.u32_or("render.hero.smooth_iterations", 2),
             smooth_radius: self.u32_or("render.hero.smooth_radius", 5),
-            smooth_thickness_splat_scale: self.f32_or("render.hero.smooth_thickness_splat_scale", 1.3),
+            smooth_thickness_splat_scale: self.f32_or("render.hero.smooth_thickness_splat_scale", 1.8),
+            normal_stencil: self.u32_or("render.hero.normal_stencil", 2),
+            normal_smooth_strength: self.f32_or("render.hero.normal_smooth_strength", 0.5),
+            // --- Wet wall round-2 reflectivity + supersample (v1.19 polish) ---
+            wet_wall_reflectivity: self.f32_or("render.hero.wet_wall.reflectivity", 0.55),
+            wet_wall_specular: self.f32_or("render.hero.wet_wall.specular", 0.6),
+            wet_wall_supersample: self.u32_or("render.hero.wet_wall.supersample", 2),
         }
     }
 
@@ -2689,6 +2771,11 @@ mod tests {
             "render.hero.smooth_iterations",
             "render.hero.smooth_radius",
             "render.hero.smooth_thickness_splat_scale",
+            "render.hero.normal_stencil",
+            "render.hero.normal_smooth_strength",
+            // --- v1.19 round-2 wet wall reflectivity ---
+            "render.hero.wet_wall.reflectivity",
+            "render.hero.wet_wall.specular",
             // --- v1.18 temporal ---
             "render.hero.temporal.enabled",
             "render.hero.temporal.thickness_history",
@@ -2739,7 +2826,13 @@ mod tests {
         // v1.19 surface quality defaults
         assert_eq!(hero.smooth_iterations, 2, "smooth_iterations default 2");
         assert_eq!(hero.smooth_radius, 5, "smooth_radius default 5");
-        assert!((hero.smooth_thickness_splat_scale - 1.3).abs() < 1e-5, "splat_scale default 1.3");
+        assert!((hero.smooth_thickness_splat_scale - 1.8).abs() < 1e-5, "splat_scale default 1.8");
+        assert_eq!(hero.normal_stencil, 2, "normal_stencil default 2");
+        assert!((hero.normal_smooth_strength - 0.5).abs() < 1e-5, "normal_smooth_strength default 0.5");
+        // v1.19 round-2 wet wall reflectivity + supersample defaults
+        assert!((hero.wet_wall_reflectivity - 0.55).abs() < 1e-5, "wet_wall_reflectivity default 0.55");
+        assert!((hero.wet_wall_specular - 0.6).abs() < 1e-5, "wet_wall_specular default 0.6");
+        assert_eq!(hero.wet_wall_supersample, 2, "wet_wall_supersample default 2");
     }
 
     #[test]

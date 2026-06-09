@@ -14,9 +14,9 @@
 // where decay_per_frame = pow(wetness_decay, dt * 60.0).
 
 struct WetWallUniform {
-    // x=nx, y=ny, z=nz, w=total_wetness_texels
+    // x=nx_ss, y=ny_ss, z=nz_ss, w=total_wetness_texels (supersampled counts)
     dims: vec4<u32>,
-    // xy = back_wall count (nx*ny), zw = left_wall count (nz*ny)  (floor fills the rest)
+    // x=back_count_ss, y=supersample, z=left_count_ss, w=nx (original sim-grid cell count)
     face_counts: vec4<u32>,
     // x=wetness_decay, y=dt, z=contact_gain, w=enabled(0/1)
     params: vec4<f32>,
@@ -47,33 +47,42 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    let nx = wu.dims.x;
-    let ny = wu.dims.y;
-    let nz = wu.dims.z;
-    let back_count = wu.face_counts.x; // nx * ny
-    let left_count = wu.face_counts.z; // nz * ny
+    let nx_ss = wu.dims.x;      // supersampled x count
+    let ny_ss = wu.dims.y;      // supersampled y count
+    let nz_ss = wu.dims.z;      // supersampled z count
+    let ss         = wu.face_counts.y; // supersample factor (1-4)
+    let back_count = wu.face_counts.x; // nx_ss * ny_ss
+    let left_count = wu.face_counts.z; // nz_ss * ny_ss
 
     // Determine if this texel contacts a Liquid cell.
+    // We divide the supersampled texel index by ss to get the sim-cell index
+    // for the cell_type lookup (multiple SS texels map to the same sim cell).
     var new_contact: f32 = 0.0;
 
     if tid < back_count {
         // Back wall (z = lo.z = 0). Solid row is k=0; inward cell is k=1.
-        let i = tid % nx;
-        let j = tid / nx;
+        let i_ss = tid % nx_ss;
+        let j_ss = tid / nx_ss;
+        let i = i_ss / ss;
+        let j = j_ss / ss;
         let ct = cell_type[cell_idx(i, j, 1u)];
         if ct == 1u { new_contact = 1.0; }
     } else if tid < back_count + left_count {
         // Left wall (x = lo.x = 0). Solid column is i=0; inward cell is i=1.
         let local = tid - back_count;
-        let k = local % nz;
-        let j = local / nz;
+        let k_ss = local % nz_ss;
+        let j_ss = local / nz_ss;
+        let k = k_ss / ss;
+        let j = j_ss / ss;
         let ct = cell_type[cell_idx(1u, j, k)];
         if ct == 1u { new_contact = 1.0; }
     } else {
         // Floor (y = lo.y = 0). Solid row is j=0; inward cell is j=1.
         let local = tid - back_count - left_count;
-        let i = local % nx;
-        let k = local / nx;
+        let i_ss = local % nx_ss;
+        let k_ss = local / nx_ss;
+        let i = i_ss / ss;
+        let k = k_ss / ss;
         let ct = cell_type[cell_idx(i, 1u, k)];
         if ct == 1u { new_contact = 1.0; }
     }
