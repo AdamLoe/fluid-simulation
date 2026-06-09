@@ -393,6 +393,34 @@ impl CompositeRenderer {
         );
     }
 
+    /// Rebind only the temporal-sourced texture views (thickness, whitewater,
+    /// smooth_z), leaving scene_color / scene_depth unchanged.  Call this each
+    /// frame after the temporal system's draw() flips ping-pong parity so the
+    /// composite pass reads the freshly-stabilized textures.
+    pub fn rebind_temporal_views(
+        &mut self,
+        device: &wgpu::Device,
+        thickness_view: &wgpu::TextureView,
+        whitewater_view: &wgpu::TextureView,
+        smoothed_z_view: &wgpu::TextureView,
+        scene_color_view: &wgpu::TextureView,
+        scene_depth_view: &wgpu::TextureView,
+    ) {
+        self.bind_group = create_bind_group(
+            device,
+            &self.bind_group_layout,
+            &self.sampler,
+            thickness_view,
+            whitewater_view,
+            smoothed_z_view,
+            &self.uniform_buf,
+            &self.hero_buf,
+            scene_color_view,
+            scene_depth_view,
+            &self.cam_buf,
+        );
+    }
+
     /// Mirror the latest Water-tab settings into the hero uniform. Called whenever
     /// a `render.hero.*` slider changes (Live, no pipeline rebuild).
     pub fn set_hero_params(&self, queue: &wgpu::Queue, hero: &HeroParams) {

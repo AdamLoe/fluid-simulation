@@ -372,12 +372,20 @@ impl CausticsSystem {
         }
     }
 
+    /// Drop history on camera-motion reset or scene reset. The next frame's
+    /// generation pass will output raw current (no blend) and then re-arm.
+    pub fn invalidate_history(&mut self) {
+        self.history_valid = false;
+    }
+
     /// Draw generation pass (A) into the render pass. The caller must have
     /// created the render pass with `gen_target_view()` as its color attachment.
     /// `queue` is used to disable temporal blending on the first frame after
     /// construction or resize (when history buffers are uninitialized), then
     /// restore the correct value on the second frame.
-    pub fn draw_generate(&mut self, queue: &wgpu::Queue, pass: &mut wgpu::RenderPass<'_>) {
+    /// `cam_reset` additionally suppresses temporal for one frame when the
+    /// camera moved beyond the motion threshold.
+    pub fn draw_generate(&mut self, queue: &wgpu::Queue, pass: &mut wgpu::RenderPass<'_>, cam_reset: bool) {
         // GenerateUniform layout (each field is a vec4<f32> = 16 bytes):
         //   params[4]    offset 0
         //   caustics[4]  offset 16
@@ -386,8 +394,9 @@ impl CausticsSystem {
         //   eye_to_world offset 64
         const TEMPORAL_ENABLED_OFFSET: u64 = 32 + 2 * 4; // caustics2.z = byte 40
 
-        if !self.history_valid {
-            // Suppress temporal blend so the uninitialized history buffer doesn't ghost.
+        if !self.history_valid || cam_reset {
+            // Suppress temporal blend so the uninitialized history buffer doesn't ghost,
+            // or when the camera has moved beyond the motion reset threshold.
             let zero: f32 = 0.0;
             queue.write_buffer(&self.gen_uniform_buf, TEMPORAL_ENABLED_OFFSET,
                 bytemuck::bytes_of(&zero));
@@ -406,7 +415,16 @@ impl CausticsSystem {
 
         if !self.history_valid {
             self.history_valid = true;
-            // Restore the actual temporal_enabled value for the next frame.
+            // Restore the actual temporal_enabled value for the next frame
+            // (only when transitioning from invalid → valid; cam_reset restores
+            // automatically on the next frame because history_valid is already true).
+            if !cam_reset {
+                let val: f32 = if self.temporal_enabled_cached { 1.0 } else { 0.0 };
+                queue.write_buffer(&self.gen_uniform_buf, TEMPORAL_ENABLED_OFFSET,
+                    bytemuck::bytes_of(&val));
+            }
+        } else if cam_reset {
+            // Camera reset on a valid frame: restore temporal for next frame.
             let val: f32 = if self.temporal_enabled_cached { 1.0 } else { 0.0 };
             queue.write_buffer(&self.gen_uniform_buf, TEMPORAL_ENABLED_OFFSET,
                 bytemuck::bytes_of(&val));
@@ -434,7 +452,10 @@ impl CausticsSystem {
 
     /// Mirror hero params into both uniforms (called from `set_hero_params`).
     pub fn set_hero_params(&mut self, queue: &wgpu::Queue, hero: &HeroParams) {
-        self.temporal_enabled_cached = hero.caustics_temporal_enabled;
+        // Unified v1.18: caustics temporal is enabled when the master temporal
+        // toggle is on and caustic_history is enabled, OR the legacy toggle is on.
+        self.temporal_enabled_cached = (hero.temporal_enabled && hero.temporal_caustic_history)
+            || hero.caustics_temporal_enabled;
         queue.write_buffer(
             &self.gen_uniform_buf, 0,
             bytemuck::bytes_of(&make_gen_uniform(
@@ -468,6 +489,29 @@ impl CausticsSystem {
     /// uniform with the correct frame when called between camera updates.
     pub fn cache_eye_to_world(&mut self, eye_to_world: &glam::Mat4) {
         self.eye_to_world = *eye_to_world;
+    }
+
+    /// Rebind only the smooth_z and thickness input views in the generation bind
+    /// groups, without touching the caustic ping/pong targets or their parity.
+    /// Call this each frame after the temporal system's draw() flips parity so
+    /// the generation pass reads the freshly-stabilized smooth_z and thickness.
+    pub fn rebind_input_views(
+        &mut self,
+        device:        &wgpu::Device,
+        smooth_z_view: &wgpu::TextureView,
+        thickness_view: &wgpu::TextureView,
+    ) {
+        // gen_ping_bind reads pong as history; update only smooth_z + thickness.
+        self.gen_ping_bind = create_gen_bind_group(
+            device, &self.gen_bgl, &self.gen_sampler,
+            smooth_z_view, thickness_view, &self.caustic_pong_view,
+            &self.gen_uniform_buf,
+        );
+        self.gen_pong_bind = create_gen_bind_group(
+            device, &self.gen_bgl, &self.gen_sampler,
+            smooth_z_view, thickness_view, &self.caustic_ping_view,
+            &self.gen_uniform_buf,
+        );
     }
 
     // ─── Resize ──────────────────────────────────────────────────────────
@@ -549,9 +593,23 @@ fn make_gen_uniform(
         caustics2: [
             hero.caustics_max_intensity.max(0.0),
             hero.caustics_motion_scale.max(0.0),
-            if hero.caustics_temporal_enabled { 1.0 } else { 0.0 },
+            // v1.18: caustics temporal blend is unified under hero.temporal.*.
+            // When temporal_enabled + caustic_history, use the unified alpha.
+            // Fallback to the legacy caustics_temporal_enabled/alpha if the
+            // unified system is disabled (backward-compat with old saves).
+            if hero.temporal_enabled && hero.temporal_caustic_history {
+                1.0
+            } else if hero.caustics_temporal_enabled {
+                1.0
+            } else {
+                0.0
+            },
             // history_alpha: 0 = all-current, 1 = all-history (v1.18 polarity).
-            hero.caustics_temporal_alpha.clamp(0.0, 1.0),
+            if hero.temporal_enabled && hero.temporal_caustic_history {
+                hero.temporal_history_alpha.clamp(0.0, 1.0)
+            } else {
+                hero.caustics_temporal_alpha.clamp(0.0, 1.0)
+            },
         ],
         sun: [
             hero.sun_direction[0],

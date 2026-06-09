@@ -12,6 +12,7 @@ mod skybox;
 mod slice;
 mod smoke;
 mod smoothing;
+mod temporal;
 mod timing;
 mod wetwall;
 
@@ -100,6 +101,10 @@ pub struct GpuContext {
     caustics: caustics::CausticsSystem,
     /// v1.17 wet-wall + meniscus — persistent wetness field on tank walls.
     wetwall: wetwall::WetWallSystem,
+    /// v1.18 temporal stabilization — ping-pong history blend for depth/thickness/whitewater.
+    temporal: temporal::TemporalSystem,
+    /// Previous frame's eye_to_world matrix for camera-motion delta computation.
+    prev_eye_to_world: Mat4,
     /// Monotonic frame counter feeding the diffuse spawn hash (no wall-clock RNG).
     diffuse_frame: u32,
     pressure_enabled: bool,
@@ -298,23 +303,6 @@ impl GpuContext {
             DEPTH_FORMAT,
             &hero,
         );
-        let composite = composite::CompositeRenderer::new(
-            &device,
-            format,
-            &thickness_view,
-            &whitewater_view,
-            &smooth_z_view,
-            &scene_color_view,
-            &scene_depth_view,
-            &hero,
-            settings.particle_slow_color(),
-            settings.water_optical_density(),
-            settings.particle_shading(),
-            settings.whitewater_strength(),
-            settings.whitewater_threshold(),
-            settings.whitewater_softness(),
-            [width, height],
-        );
         environment.set_params(&queue, &hero);
         let smoothing =
             smoothing::WaterSmoothRenderer::new(&device, &nearest_z_view, &smooth_z_ping_view);
@@ -345,15 +333,45 @@ impl GpuContext {
             settings.diffuse_params(),
         );
 
-        // CausticsSystem is always constructed regardless of the caustics_enabled default
-        // (it is OFF by default). The two half-res R16Float ping/pong targets (~width*height
-        // bytes each at half-res) are allocated unconditionally; draw passes are skipped
-        // while caustics_enabled=false so there is no per-frame cost when disabled.
+        // v1.18 TemporalSystem — always allocated. When disabled, alpha=0 → stable views
+        // pass through raw current each frame. Caustics + composite always read stable views.
+        let temporal_sys = temporal::TemporalSystem::new(
+            &device,
+            &thickness_view,
+            &smooth_z_view,
+            &whitewater_view,
+            &hero,
+            width,
+            height,
+        );
+
+        // Composite reads stabilized views (temporal stable = raw current on first frame
+        // since history_valid=false → reset_flag=1.0 → pass-through).
+        let composite = composite::CompositeRenderer::new(
+            &device,
+            format,
+            temporal_sys.stable_thickness(),
+            temporal_sys.stable_whitewater(),
+            temporal_sys.stable_smooth_z(),
+            &scene_color_view,
+            &scene_depth_view,
+            &hero,
+            settings.particle_slow_color(),
+            settings.water_optical_density(),
+            settings.particle_shading(),
+            settings.whitewater_strength(),
+            settings.whitewater_threshold(),
+            settings.whitewater_softness(),
+            [width, height],
+        );
+
+        // CausticsSystem — always allocated (OFF by default). Reads stabilized
+        // depth/thickness from the temporal system (pass-through on first frame).
         let caustics_sys = caustics::CausticsSystem::new(
             &device,
             SCENE_COLOR_FORMAT,
-            &smooth_z_view,
-            &thickness_view,
+            temporal_sys.stable_smooth_z(),
+            temporal_sys.stable_thickness(),
             &scene_depth_view,
             &hero,
             tank_lo,
@@ -398,6 +416,8 @@ impl GpuContext {
             diffuse,
             caustics: caustics_sys,
             wetwall,
+            temporal: temporal_sys,
+            prev_eye_to_world: Mat4::IDENTITY,
             diffuse_frame: 0,
             pressure_enabled: true,
             slice_enabled: false,
@@ -529,6 +549,10 @@ impl GpuContext {
         self.slice = slice;
         self.diffuse = diffuse;
         self.wetwall = wetwall;
+        // Drop temporal history on Reset so the first post-reset frame is clean.
+        self.temporal.invalidate_history();
+        self.caustics.invalidate_history();
+        self.prev_eye_to_world = Mat4::IDENTITY;
         self.diffuse_frame = 0;
         // Timers carry Reset-class layout (max_substeps / detailed / pressure_iters);
         // rebuild them here so a Reset resizes the query set. Only when the adapter
@@ -642,11 +666,27 @@ impl GpuContext {
         self.smooth_z_view = create_r16_target(&self.device, width, height, "water smooth z");
         self.scene_color_view = create_scene_color_target(&self.device, width, height);
         self.scene_depth_view = create_r16_target(&self.device, width, height, "hero scene depth");
-        self.composite.set_views(
+        // Rebuild temporal system first so stable views are available for caustics/composite.
+        self.temporal.set_views(
             &self.device,
             &self.thickness_view,
-            &self.whitewater_view,
             &self.smooth_z_view,
+            &self.whitewater_view,
+            &self.hero,
+            width,
+            height,
+        );
+        // Always bind the stable views regardless of temporal_enabled.
+        // When temporal is disabled, alpha=0 makes stable==raw each frame (pass-through).
+        // Gating here on temporal_enabled causes inconsistency: construction and the
+        // Outdated branch always use stable views, but after a resize with temporal off
+        // composite would be reading raw views and enabling temporal Live would have no
+        // effect until the next resize. Remove the gate to keep all code-paths consistent.
+        self.composite.set_views(
+            &self.device,
+            self.temporal.stable_thickness(),
+            self.temporal.stable_whitewater(),
+            self.temporal.stable_smooth_z(),
             &self.scene_color_view,
             &self.scene_depth_view,
         );
@@ -655,17 +695,22 @@ impl GpuContext {
             .set_views(&self.device, &self.nearest_z_view, &self.smooth_z_ping_view);
         self.caustics.set_views(
             &self.device,
-            &self.smooth_z_view,
-            &self.thickness_view,
+            self.temporal.stable_smooth_z(),
+            self.temporal.stable_thickness(),
             &self.scene_depth_view,
             width,
             height,
         );
         self.caustics.set_hero_params(&self.queue, &self.hero);
+        self.prev_eye_to_world = Mat4::IDENTITY;
     }
 
     pub fn reset(&mut self) {
         self.fluid.reset(&self.queue);
+        // Drop temporal history on Reset so the first post-reset frame is clean.
+        self.temporal.invalidate_history();
+        self.caustics.invalidate_history();
+        self.prev_eye_to_world = Mat4::IDENTITY;
     }
 
     pub fn set_pressure_enabled(&mut self, enabled: bool) {
@@ -1105,11 +1150,21 @@ impl GpuContext {
                     self.config.height,
                     "hero scene depth",
                 );
-                self.composite.set_views(
+                // Rebuild temporal first; stable views feed composite + caustics.
+                self.temporal.set_views(
                     &self.device,
                     &self.thickness_view,
-                    &self.whitewater_view,
                     &self.smooth_z_view,
+                    &self.whitewater_view,
+                    &self.hero,
+                    self.config.width,
+                    self.config.height,
+                );
+                self.composite.set_views(
+                    &self.device,
+                    self.temporal.stable_thickness(),
+                    self.temporal.stable_whitewater(),
+                    self.temporal.stable_smooth_z(),
                     &self.scene_color_view,
                     &self.scene_depth_view,
                 );
@@ -1122,13 +1177,14 @@ impl GpuContext {
                 );
                 self.caustics.set_views(
                     &self.device,
-                    &self.smooth_z_view,
-                    &self.thickness_view,
+                    self.temporal.stable_smooth_z(),
+                    self.temporal.stable_thickness(),
                     &self.scene_depth_view,
                     self.config.width,
                     self.config.height,
                 );
                 self.caustics.set_hero_params(&self.queue, &self.hero);
+                self.prev_eye_to_world = Mat4::IDENTITY;
                 return Ok(());
             }
             Cur::Timeout | Cur::Occluded => return Ok(()),
@@ -1152,6 +1208,24 @@ impl GpuContext {
         self.diffuse
             .update_camera(&self.queue, view_proj, cam_right, cam_up);
         self.slice.update_camera(&self.queue, view_proj);
+
+        // v1.18 Camera motion detection (CPU-side, no GPU readback).
+        // eye_to_world is model-free (camera only), so we can compute a clean delta.
+        let cam_reset = compute_camera_reset(
+            &self.prev_eye_to_world,
+            eye_to_world,
+            self.hero.temporal_camera_motion_reset_threshold,
+        );
+        self.prev_eye_to_world = *eye_to_world;
+
+        // Update temporal uniforms before issuing passes.
+        self.temporal.update_params(
+            &self.queue,
+            &self.hero,
+            cam_reset,
+            self.config.width,
+            self.config.height,
+        );
 
         const CLEAR: wgpu::Color = wgpu::Color {
             r: 0.04,
@@ -1321,6 +1395,28 @@ impl GpuContext {
                     });
                     self.smoothing.draw_y(&mut pass);
                 }
+                // v1.18 Temporal stabilization passes: blend thickness, smooth_z, whitewater
+                // with their histories. Runs AFTER smooth-y writes smooth_z_view and AFTER
+                // the thickness pass writes thickness/whitewater. Stable views feed caustics
+                // and composite downstream.
+                self.temporal.draw(&mut encoder);
+
+                // Per-frame rebind of composite + caustics to the freshly-written stable
+                // textures. draw() flips ping-pong parity so stable_view() now returns the
+                // texture that was WRITTEN this frame; downstream bind groups built at
+                // construction/resize are permanently wired to whichever side was "stable"
+                // at that moment and become stale every other frame without this rebind.
+                {
+                    let (st, sz, sw) = self.temporal.stable_views();
+                    self.composite.rebind_temporal_views(
+                        &self.device,
+                        st, sw, sz,
+                        &self.scene_color_view,
+                        &self.scene_depth_view,
+                    );
+                    self.caustics.rebind_input_views(&self.device, sz, st);
+                }
+
                 // Caustics pass (A): half-res generation into caustic ping/pong target.
                 // Caustics pass (B): additive composite into scene_color so the water
                 // composite (pass 5 below) picks up the caustic lighting via refract_uv.
@@ -1351,7 +1447,7 @@ impl GpuContext {
                             occlusion_query_set: None,
                             multiview_mask: None,
                         });
-                        self.caustics.draw_generate(&self.queue, &mut pass);
+                        self.caustics.draw_generate(&self.queue, &mut pass, cam_reset);
                     }
                     {
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1666,6 +1762,45 @@ fn validate_particle_scale(
         ));
     }
     Ok(())
+}
+
+/// Compute whether the camera has moved enough to require a temporal history reset.
+///
+/// Uses the model-free `eye_to_world` (camera rotation + position, no box orientation)
+/// so box tilting does not spuriously trigger resets. The metric combines:
+///   rot_angle  = acos(clamp((trace(R_prev^T * R_cur) - 1) / 2, -1, 1))
+///   pos_delta  = |cur.w_axis.xyz - prev.w_axis.xyz|
+/// and returns `true` if either `rot_angle > threshold` OR `pos_delta > threshold`.
+/// A scale factor of 0.5 is applied to pos_delta relative to threshold so that a
+/// small dolly does not trigger a spurious reset while large pans/zooms still do.
+fn compute_camera_reset(prev: &Mat4, cur: &Mat4, threshold: f32) -> bool {
+    if threshold <= 0.0 {
+        return false;
+    }
+    // Extract 3×3 rotation columns from the mat4 (eye→world columns 0,1,2).
+    let pr = glam::Mat3::from_cols(
+        prev.x_axis.truncate(),
+        prev.y_axis.truncate(),
+        prev.z_axis.truncate(),
+    );
+    let cr = glam::Mat3::from_cols(
+        cur.x_axis.truncate(),
+        cur.y_axis.truncate(),
+        cur.z_axis.truncate(),
+    );
+    // R_prev^T * R_cur
+    let rel = pr.transpose() * cr;
+    // trace
+    let tr = rel.x_axis.x + rel.y_axis.y + rel.z_axis.z;
+    let cos_angle = ((tr - 1.0) / 2.0).clamp(-1.0, 1.0);
+    let rot_angle = cos_angle.acos();
+
+    // Eye-position delta (dolly / pan / zoom translate).
+    // Scale matches rotation: threshold in radians ≈ threshold in world units
+    // (a 1-radian orbit and a 1-unit dolly are treated as equally significant).
+    let pos_delta = (cur.w_axis.truncate() - prev.w_axis.truncate()).length();
+
+    rot_angle > threshold || pos_delta > threshold
 }
 
 fn log_boot_diagnostics(

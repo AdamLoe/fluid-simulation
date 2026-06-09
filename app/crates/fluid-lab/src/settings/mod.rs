@@ -244,6 +244,27 @@ pub struct HeroParams {
     pub wet_wall_contact_shadow_radius: f32,
     /// Debug view: 0 = off, 1 = wet-wall wetness overlay, 2 = meniscus mask.
     pub wet_wall_debug_view: u32,
+    // --- Temporal stabilization (v1.18) ---
+    /// Master toggle for all temporal history blends (thickness, smooth_z, whitewater, caustics).
+    pub temporal_enabled: bool,
+    /// Gate: blend thickness_view with its history.
+    pub temporal_thickness_history: bool,
+    /// Gate: blend smooth_z_view (and thus derived normals) with its history.
+    pub temporal_normal_history: bool,
+    /// Gate: pass caustics in-shader blend through the unified temporal control.
+    pub temporal_caustic_history: bool,
+    /// Gate: blend whitewater_view with its history.
+    pub temporal_foam_history: bool,
+    /// mix(current, history, alpha): 0 = all-current, 1 = frozen. Default 0.15.
+    pub temporal_history_alpha: f32,
+    /// Camera rotation/translation delta above which history is dropped for one frame.
+    pub temporal_camera_motion_reset_threshold: f32,
+    /// Eye-space depth delta above which smooth_z blend is suppressed.
+    pub temporal_depth_reject_threshold: f32,
+    /// 1 - N·N' above which smooth_z blend is suppressed.
+    pub temporal_normal_reject_threshold: f32,
+    /// Reserved: TAA jitter. Always OFF in v1.18; not wired.
+    pub temporal_jitter_enabled: bool,
 }
 
 /// A flat snapshot of the diffuse-water (foam/spray/bubble) settings (v1.13). Like
@@ -1535,6 +1556,128 @@ impl Default for Registry {
                 technical_tooltip: Some("Live enum. 1 shows the raw wetness scalar (white=fully wet); 2 shows the meniscus band mask."),
                 apply: ApplyClass::Live,
             },
+            // --- Temporal stabilization (v1.18). All Live: sliders rebuild the
+            // HeroParams uniform via the existing render.hero.* batch route. ---
+            Setting {
+                id: "render.hero.temporal.enabled",
+                label: "Temporal stabilization",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::U32(0),
+                value: Value::U32(0),
+                validation: Validation::U32Range { min: 0, max: 1 },
+                tooltip: Some("Master toggle for temporal history blending on depth, thickness, and caustics targets. Reduces flicker and shimmer but may ghost on fast camera moves."),
+                technical_tooltip: Some("Live enum. When on, enables per-target ping-pong history blend: out=mix(current,history,history_alpha). Camera motion beyond the threshold drops history for one frame to prevent ghosting."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.temporal.thickness_history",
+                label: "Thickness history",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::U32(1),
+                value: Value::U32(1),
+                validation: Validation::U32Range { min: 0, max: 1 },
+                tooltip: Some("Blend the water thickness target with its history (sub-feature of Temporal stabilization)."),
+                technical_tooltip: Some("Live enum. Gates the per-frame ping-pong blend of thickness_view. Requires temporal.enabled."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.temporal.normal_history",
+                label: "Depth/normal history",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::U32(1),
+                value: Value::U32(1),
+                validation: Validation::U32Range { min: 0, max: 1 },
+                tooltip: Some("Blend the smoothed front-depth target with its history, which also stabilizes the derived surface normals (sub-feature of Temporal stabilization)."),
+                technical_tooltip: Some("Live enum. Gates the per-frame ping-pong blend of smooth_z_view. Normal stabilization is a side-effect since normals are finite-differenced from smooth_z. Depth-reject + normal-reject thresholds suppress ghosting at depth discontinuities."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.temporal.caustic_history",
+                label: "Caustics history",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::U32(1),
+                value: Value::U32(1),
+                validation: Validation::U32Range { min: 0, max: 1 },
+                tooltip: Some("Pass caustic history blending through the unified temporal control (sub-feature of Temporal stabilization). Replaces the separate caustics temporal toggle."),
+                technical_tooltip: Some("Live enum. When on, caustics in-shader blend uses hero.temporal.history_alpha instead of the now-unified caustics.temporal_alpha. Requires temporal.enabled."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.temporal.foam_history",
+                label: "Foam/whitewater history",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::U32(0),
+                value: Value::U32(0),
+                validation: Validation::U32Range { min: 0, max: 1 },
+                tooltip: Some("Blend the screen-space whitewater signal with its history (off by default; can make whitewater feel sticky)."),
+                technical_tooltip: Some("Live enum. Gates the per-frame ping-pong blend of whitewater_view. Off by default because whitewater is fast-moving and history blur makes it look gummy."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.temporal.history_alpha",
+                label: "History alpha",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(0.15),
+                value: Value::F32(0.15),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("History blend weight: 0 = no smoothing (all current frame), 1 = frozen (all history). Low values like 0.1-0.2 reduce flicker with minimal ghosting."),
+                technical_tooltip: Some("Live. mix(current,history,history_alpha). v1.18 polarity: 0=all-current, 1=frozen. Also drives caustics history alpha when temporal.caustic_history is on."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.temporal.camera_motion_reset_threshold",
+                label: "Camera reset threshold",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(0.02),
+                value: Value::F32(0.02),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Drops history when the camera moves faster than this; prevents ghosting on pan/zoom. Lower = more resets (crisper but more flicker)."),
+                technical_tooltip: Some("Live. CPU-side metric: acos((trace(R_prev^T * R_cur) - 1) / 2) in radians, plus scaled eye position delta. When above threshold, history_alpha is forced to 0 for one frame."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.temporal.depth_reject_threshold",
+                label: "Depth reject threshold",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(0.1),
+                value: Value::F32(0.1),
+                validation: Validation::F32Range { min: 0.0, max: 2.0 },
+                tooltip: Some("Eye-space depth difference above which smooth_z history is rejected to avoid depth-discontinuity ghosting. 0 = disabled."),
+                technical_tooltip: Some("Live. Smooth_z pass only. When |cur_z - hist_z| > threshold, history_alpha is forced to 0 for that pixel."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.temporal.normal_reject_threshold",
+                label: "Normal reject threshold",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(0.3),
+                value: Value::F32(0.3),
+                validation: Validation::F32Range { min: 0.0, max: 2.0 },
+                tooltip: Some("1 - N dot N' above which smooth_z history is rejected (measures angular normal difference). 0 = disabled."),
+                technical_tooltip: Some("Live. Smooth_z pass only. Normal is finite-differenced from smooth_z. When (1 - dot(cur_n, hist_n)) > threshold, history_alpha forced to 0."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.temporal.jitter_enabled",
+                label: "TAA jitter (reserved)",
+                category: Category::Water,
+                panel_group: PanelGroup::Dev,
+                default: Value::U32(0),
+                value: Value::U32(0),
+                validation: Validation::U32Range { min: 0, max: 1 },
+                tooltip: Some("Sub-pixel jitter for TAA (reserved; not wired in v1.18)."),
+                technical_tooltip: Some("Reserved. Always off in v1.18 — the app bakes the model matrix into view_proj and TAA jitter is deferred to a future version."),
+                apply: ApplyClass::Live,
+            },
             // --- Diffuse water: persistent foam / spray / bubbles (v1.13). All
             // Live: sliders rebuild the DiffuseParams uniform; no realloc, no reset.
             // `max_particles` is an active cap within a fixed GPU buffer capacity. ---
@@ -2056,6 +2199,17 @@ impl Registry {
             wet_wall_contact_shadow_strength: self.f32_or("render.hero.wet_wall.contact_shadow_strength", 0.15),
             wet_wall_contact_shadow_radius: self.f32_or("render.hero.wet_wall.contact_shadow_radius", 0.08),
             wet_wall_debug_view: self.u32_or("render.hero.wet_wall.debug_view", 0),
+            // --- Temporal stabilization (v1.18) ---
+            temporal_enabled: self.u32_or("render.hero.temporal.enabled", 0) != 0,
+            temporal_thickness_history: self.u32_or("render.hero.temporal.thickness_history", 1) != 0,
+            temporal_normal_history: self.u32_or("render.hero.temporal.normal_history", 1) != 0,
+            temporal_caustic_history: self.u32_or("render.hero.temporal.caustic_history", 1) != 0,
+            temporal_foam_history: self.u32_or("render.hero.temporal.foam_history", 0) != 0,
+            temporal_history_alpha: self.f32_or("render.hero.temporal.history_alpha", 0.15),
+            temporal_camera_motion_reset_threshold: self.f32_or("render.hero.temporal.camera_motion_reset_threshold", 0.02),
+            temporal_depth_reject_threshold: self.f32_or("render.hero.temporal.depth_reject_threshold", 0.1),
+            temporal_normal_reject_threshold: self.f32_or("render.hero.temporal.normal_reject_threshold", 0.3),
+            temporal_jitter_enabled: self.u32_or("render.hero.temporal.jitter_enabled", 0) != 0,
         }
     }
 
@@ -2478,6 +2632,16 @@ mod tests {
             "render.hero.wet_wall.contact_shadow_strength",
             "render.hero.wet_wall.contact_shadow_radius",
             "render.hero.wet_wall.debug_view",
+            // --- v1.18 temporal ---
+            "render.hero.temporal.enabled",
+            "render.hero.temporal.thickness_history",
+            "render.hero.temporal.normal_history",
+            "render.hero.temporal.caustic_history",
+            "render.hero.temporal.foam_history",
+            "render.hero.temporal.history_alpha",
+            "render.hero.temporal.camera_motion_reset_threshold",
+            "render.hero.temporal.depth_reject_threshold",
+            "render.hero.temporal.normal_reject_threshold",
         ];
         for id in ids {
             let s = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
@@ -2506,5 +2670,40 @@ mod tests {
         assert!(hero.wet_wall_meniscus_enabled, "meniscus defaults ON");
         assert!(hero.wet_wall_contact_shadow_enabled, "contact_shadow defaults ON");
         assert_eq!(hero.wet_wall_debug_view, 0, "debug_view defaults off");
+        // v1.18 temporal defaults
+        assert!(!hero.temporal_enabled, "temporal defaults OFF");
+        assert!(hero.temporal_thickness_history, "thickness_history defaults ON");
+        assert!(hero.temporal_normal_history, "normal_history defaults ON");
+        assert!(hero.temporal_caustic_history, "caustic_history defaults ON");
+        assert!(!hero.temporal_foam_history, "foam_history defaults OFF");
+        assert!((hero.temporal_history_alpha - 0.15).abs() < 1e-5, "history_alpha default 0.15");
+        assert!((hero.temporal_camera_motion_reset_threshold - 0.02).abs() < 1e-5);
+        assert!(!hero.temporal_jitter_enabled, "jitter_enabled defaults OFF");
+    }
+
+    #[test]
+    fn temporal_settings_are_live_water_tab_controls() {
+        let registry = Registry::default();
+        let ids = [
+            "render.hero.temporal.enabled",
+            "render.hero.temporal.thickness_history",
+            "render.hero.temporal.normal_history",
+            "render.hero.temporal.caustic_history",
+            "render.hero.temporal.foam_history",
+            "render.hero.temporal.history_alpha",
+            "render.hero.temporal.camera_motion_reset_threshold",
+            "render.hero.temporal.depth_reject_threshold",
+            "render.hero.temporal.normal_reject_threshold",
+        ];
+        let json = registry.config_json();
+        for id in ids {
+            let s = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
+            assert_eq!(s.category, Category::Water, "{id} must be Water");
+            assert_eq!(s.apply, ApplyClass::Live, "{id} must be Live");
+            assert!(json.contains(&format!(r#""id":"{id}""#)));
+        }
+        let hero = registry.hero_params();
+        assert!(!hero.temporal_enabled);
+        assert_eq!(hero.temporal_jitter_enabled, false);
     }
 }
