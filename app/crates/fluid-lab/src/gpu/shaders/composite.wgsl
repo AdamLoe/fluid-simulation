@@ -247,12 +247,17 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
             // Reflection: the Fresnel-weighted reflected environment.
             return vec4<f32>(reflected * refl_amt, 1.0);
         }
-        // Env only: the procedural skybox along the per-pixel view ray.
-        let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - 2.0 * in.uv.y);
-        let aspect2 = width / height;
-        let thf = params.params.y;
-        let fdir_eye = normalize(vec3<f32>(ndc.x * thf * aspect2, ndc.y * thf, -1.0));
-        return vec4<f32>(env_sample(m3 * fdir_eye, env_ctrl, hero.sun), 1.0);
+        if dbg < 9.5 {
+            // Env only: the procedural skybox along the per-pixel view ray.
+            let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - 2.0 * in.uv.y);
+            let aspect2 = width / height;
+            let thf = params.params.y;
+            let fdir_eye = normalize(vec3<f32>(ndc.x * thf * aspect2, ndc.y * thf, -1.0));
+            return vec4<f32>(env_sample(m3 * fdir_eye, env_ctrl, hero.sun), 1.0);
+        }
+        // Caustics (debug_view=10): show scene_color after the caustics composite pass
+        // has additively painted into it (pass B runs before this composite pass).
+        return vec4<f32>(textureSample(scene_color_tex, thickness_sampler, in.uv).rgb, 1.0);
     }
 
     if !has_water {

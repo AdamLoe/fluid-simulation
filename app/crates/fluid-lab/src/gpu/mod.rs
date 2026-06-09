@@ -1,6 +1,7 @@
 //! WebGPU context: adapter/device init, surface configuration, boot diagnostics,
 //! the compute/integer-atomic smoke test, the GPU fluid sim, and rendering.
 
+mod caustics;
 mod composite;
 mod diffuse;
 mod environment;
@@ -94,6 +95,8 @@ pub struct GpuContext {
     slice: slice::SliceRenderer,
     /// Persistent diffuse-water particles (foam/spray/bubbles) — render-only.
     diffuse: diffuse::DiffuseSystem,
+    /// v1.16 approximate screen-space caustics — two-pass generation + composite.
+    caustics: caustics::CausticsSystem,
     /// Monotonic frame counter feeding the diffuse spawn hash (no wall-clock RNG).
     diffuse_frame: u32,
     pressure_enabled: bool,
@@ -326,6 +329,23 @@ impl GpuContext {
             settings.diffuse_params(),
         );
 
+        // CausticsSystem is always constructed regardless of the caustics_enabled default
+        // (it is OFF by default). The two half-res R16Float ping/pong targets (~width*height
+        // bytes each at half-res) are allocated unconditionally; draw passes are skipped
+        // while caustics_enabled=false so there is no per-frame cost when disabled.
+        let caustics_sys = caustics::CausticsSystem::new(
+            &device,
+            SCENE_COLOR_FORMAT,
+            &smooth_z_view,
+            &thickness_view,
+            &scene_depth_view,
+            &hero,
+            tank_lo,
+            tank_hi,
+            width,
+            height,
+        );
+
         let timers = if timestamp_query {
             Some(timing::GpuTimers::new(
                 &device,
@@ -360,6 +380,7 @@ impl GpuContext {
             smoothing,
             slice,
             diffuse,
+            caustics: caustics_sys,
             diffuse_frame: 0,
             pressure_enabled: true,
             slice_enabled: false,
@@ -601,6 +622,15 @@ impl GpuContext {
         self.composite.set_size(&self.queue, width, height);
         self.smoothing
             .set_views(&self.device, &self.nearest_z_view, &self.smooth_z_ping_view);
+        self.caustics.set_views(
+            &self.device,
+            &self.smooth_z_view,
+            &self.thickness_view,
+            &self.scene_depth_view,
+            width,
+            height,
+        );
+        self.caustics.set_hero_params(&self.queue, &self.hero);
     }
 
     pub fn reset(&mut self) {
@@ -685,6 +715,7 @@ impl GpuContext {
         self.composite.set_hero_params(&self.queue, &hero);
         self.environment.set_params(&self.queue, &hero);
         self.skybox.set_params(&self.queue, &hero);
+        self.caustics.set_hero_params(&self.queue, &hero);
     }
 
     /// Mirror the Water-tab diffuse (foam/spray/bubble) settings into the diffuse
@@ -1039,6 +1070,15 @@ impl GpuContext {
                     &self.nearest_z_view,
                     &self.smooth_z_ping_view,
                 );
+                self.caustics.set_views(
+                    &self.device,
+                    &self.smooth_z_view,
+                    &self.thickness_view,
+                    &self.scene_depth_view,
+                    self.config.width,
+                    self.config.height,
+                );
+                self.caustics.set_hero_params(&self.queue, &self.hero);
                 return Ok(());
             }
             Cur::Timeout | Cur::Occluded => return Ok(()),
@@ -1055,6 +1095,8 @@ impl GpuContext {
         self.composite.set_camera(&self.queue, eye_to_world);
         self.skybox
             .set_camera(&self.queue, eye_to_world, self.aspect());
+        self.caustics.cache_eye_to_world(eye_to_world);
+        self.caustics.set_camera(&self.queue, eye_to_world);
         self.particles
             .update_camera(&self.queue, view_proj, cam_right, cam_up);
         self.diffuse
@@ -1228,6 +1270,58 @@ impl GpuContext {
                         multiview_mask: None,
                     });
                     self.smoothing.draw_y(&mut pass);
+                }
+                // Caustics pass (A): half-res generation into caustic ping/pong target.
+                // Caustics pass (B): additive composite into scene_color so the water
+                // composite (pass 5 below) picks up the caustic lighting via refract_uv.
+                if self.hero.caustics_enabled {
+                    // Determine the generation target BEFORE draw_generate flips parity,
+                    // then record the pass (draw_generate borrows &mut self.caustics and
+                    // flips parity internally).
+                    let gen_target_is_ping = !self.caustics.frame_parity();
+                    {
+                        let gen_view = if gen_target_is_ping {
+                            self.caustics.ping_view()
+                        } else {
+                            self.caustics.pong_view()
+                        };
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("caustics generate pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: gen_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        self.caustics.draw_generate(&self.queue, &mut pass);
+                    }
+                    {
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("caustics composite pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &self.scene_color_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        self.caustics.draw_composite(&mut pass);
+                    }
                 }
                 let diffuse_active = self.diffuse.enabled();
                 {

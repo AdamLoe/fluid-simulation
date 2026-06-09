@@ -40,6 +40,10 @@ pipeline and is committed before the next starts.
   files (`composite.rs`, `gpu/mod.rs`, `settings/mod.rs`, `composite.wgsl`) and the same
   arch docs; the project bans worktrees and parallel code agents; one GPU. v1.18 stabilizes
   12–17 so it is strictly last.
+- **Doc migration deferred:** each shipped plan is committed on the branch with its plan
+  doc updated, but architecture/decisions migration (rendering.md, gpu-resources.md,
+  settings.md, decisions/rendering.md) is batched into ONE consolidated doc-migrate pass at
+  the end, not per-plan — cheaper and avoids churning the same docs four times.
 - **Branching:** baseline commits to `main` (matches repo practice — version commits land
   on main; the lead asked to commit it). The four new/speculative plans land on branch
   `hero-water-14-18` so `main` stays at the known-good baseline and the autonomous stack is
@@ -109,8 +113,8 @@ pipeline and is committed before the next starts.
 | Baseline | commit v1.13+v1.15, prove capture loop | **DONE** | compile+27 tests green; capture loop WORKS (gpu present, smoke PASS, n=64, foam live); committed `239239b` on main | — | — |
 | v1.14 | marching-cubes surface (de-risk gate) | **ABANDONED at gate** | valid A/B (toggle verified, EVAL echo present): occupancy quads clearly LOSE to screen-space on all 3 scenes, worst on thin tongue (noise). Orchestrator confirmed via own eyes. MC not built; screen-space kept; removed-surface decision re-affirmed. Throwaway code reverted; plan→abandoned; roadmap decision resolved. | — | — |
 | ↳ infra | capture EVAL plumbing (cross-cutting) | **RESOLVED** | PowerShell `$env:EVAL` w/ `\"`-escaped quotes works; WSLENV + bash→cmd.exe do NOT. Invocation recorded in Constraints above. | reuse for all gates | — |
-| v1.16 | approximate caustics | pending | — | after v1.14 | v1.14 |
-| v1.17 | wet walls & meniscus | pending | — | after v1.16 | v1.16 |
+| v1.16 | approximate caustics | **SHIPPED (branch)** low-med conf | normal-gradient half-res caustics, additive receiver composite before water pass; reuses v1.15 sun_dir; Live `render.hero.caustics.*`, default off. Opus review caught 2 must-fix GPU bugs (scene_color read-write hazard; eye/world normal mismatch) — fixed. Valid on/off A/B, +0.82 ms render. Orchestrator eyeballed: on-floor focused brightening, subtle but coherent. | doc-migrate at final pass | — |
+| v1.17 | wet walls & meniscus | in progress | dispatch full pipeline | opus plan → sonnet impl → opus review → fix+capture (slosh, scene preset 0/1 + wall impacts) | — |
 | v1.18 | temporal stabilization | pending | — | after v1.17 (scope depends on what 14/16 shipped) | v1.14–v1.17 |
 
 ## Open questions / risks
