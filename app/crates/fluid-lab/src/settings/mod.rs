@@ -300,6 +300,10 @@ pub struct HeroParams {
     /// Distance (box-local units) within which the flat-water normal snap engages.
     /// Roughly one cell ≈ 0.03 units in a [-1,1]^3 tank at 64-cell resolution. Live. Default 0.04.
     pub flat_water_epsilon: f32,
+    /// Blend strength for snapping the water FRONT-SURFACE DEPTH (silhouette) to the wall plane.
+    /// At 1.0 the depth is fully coplanar with the glass for near-wall pixels, eliminating
+    /// bumpy sphere silhouettes at the glass. Live. Default 0.8.
+    pub flat_water_depth_strength: f32,
 }
 
 /// A flat snapshot of the diffuse-water (foam/spray/bubble) settings (v1.13). Like
@@ -1664,6 +1668,18 @@ impl Default for Registry {
                 technical_tooltip: Some("Live. Controls the smoothstep ramp width for the normal blend toward the nearest tank plane normal. Box-local units; the tank occupies [-1,1]^3 so walls are at +-1 on x and z, floor at y=-1."),
                 apply: ApplyClass::Live,
             },
+            Setting {
+                id: "render.hero.flat_water.depth_strength",
+                label: "Flat water depth strength",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(1.0),
+                value: Value::F32(1.0),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Snaps the water front-surface DEPTH (silhouette), not just the normal, to the wall plane for near-wall pixels so wall-pressed water reads as a flat sheet rather than bumpy spheres."),
+                technical_tooltip: Some("Live. In composite.wgsl, intersects the box-local eye ray with the nearest in-epsilon tank plane and mixes front_z toward the hit by depth_strength*ramp before the refraction depth guard. Routed via composite CamUniform flat.z."),
+                apply: ApplyClass::Live,
+            },
             // --- Temporal stabilization (v1.18). All Live: sliders rebuild the
             // HeroParams uniform via the existing render.hero.* batch route. ---
             Setting {
@@ -2397,6 +2413,7 @@ impl Registry {
             wet_wall_blur: self.f32_or("render.hero.wet_wall.blur", 1.0),
             flat_water_strength: self.f32_or("render.hero.flat_water.strength", 0.8),
             flat_water_epsilon: self.f32_or("render.hero.flat_water.epsilon", 0.04),
+            flat_water_depth_strength: self.f32_or("render.hero.flat_water.depth_strength", 0.8),
         }
     }
 
@@ -2832,6 +2849,7 @@ mod tests {
             "render.hero.wet_wall.blur",
             "render.hero.flat_water.strength",
             "render.hero.flat_water.epsilon",
+            "render.hero.flat_water.depth_strength",
             // --- v1.18 temporal ---
             "render.hero.temporal.enabled",
             "render.hero.temporal.thickness_history",
@@ -2893,6 +2911,7 @@ mod tests {
         assert!((hero.wet_wall_blur - 1.0).abs() < 1e-5, "wet_wall_blur default 1.0");
         assert!((hero.flat_water_strength - 0.8).abs() < 1e-5, "flat_water_strength default 0.8");
         assert!((hero.flat_water_epsilon - 0.04).abs() < 1e-5, "flat_water_epsilon default 0.04");
+        assert!((hero.flat_water_depth_strength - 1.0).abs() < 1e-5, "flat_water_depth_strength default 1.0");
     }
 
     #[test]

@@ -25,7 +25,7 @@ struct Hero {
 // box_eye_local: camera eye in box-local space (xyz, w=unused).
 // box_rot_col0/1/2: box-local→world rotation columns.
 // tank_lo/hi: tank bounds in box-local space (xyz, w=unused).
-// flat: x=flat_water_strength, y=flat_water_epsilon, zw=unused.
+// flat: x=flat_water_strength, y=flat_water_epsilon, z=depth_strength, w=unused.
 struct Cam {
     eye_to_world:  mat4x4<f32>,
     box_eye_local: vec4<f32>,
@@ -34,7 +34,7 @@ struct Cam {
     box_rot_col2:  vec4<f32>,
     tank_lo:       vec4<f32>,
     tank_hi:       vec4<f32>,
-    flat:          vec4<f32>, // x=strength, y=epsilon, zw=unused
+    flat:          vec4<f32>, // x=strength, y=epsilon, z=depth_strength, w=unused
 };
 
 @group(0) @binding(0) var thickness_sampler: sampler;
@@ -136,15 +136,18 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let pixel = clamp(vec2<i32>(floor(in.clip.xy)), vec2<i32>(0, 0), dims - vec2<i32>(1, 1));
 
     let thickness = max(0.0, textureSample(thickness_tex, thickness_sampler, in.uv).r);
-    let front_z = load_z(pixel, dims);
+    var front_z = load_z(pixel, dims);
     let has_water = thickness > 1.0e-4 && front_z < 60000.0;
     var n = water_normal(pixel, dims);
 
-    // --- Flat-water-against-walls: snap the surface normal toward the nearest
+    // --- Flat-water-against-walls: snap the surface DEPTH and NORMAL toward the nearest
     // tank wall/floor plane when the front surface is within epsilon of it.
     // This makes water pressed against the glass read as a flat sheet, not bumpy spheres.
+    // The depth snap (silhouette flatten) removes sphere bumps at the glass edge;
+    // the normal snap ensures shading, refraction, and lighting are consistent.
     let flat_strength = cam.flat.x;
     let flat_epsilon  = cam.flat.y;
+    let flat_depth    = cam.flat.z;
     if has_water && flat_strength > 0.001 && flat_epsilon > 0.0 {
         // Reconstruct eye-space surface position from NDC + front_z.
         let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - 2.0 * in.uv.y);
@@ -202,47 +205,118 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
         // (eye3 is rotation, so transpose = inverse)
         let eye3_t = transpose(eye3);
 
-        // Helper: blend n toward a plane normal (box-local) if dist < epsilon.
-        // dist >= 0 means on the interior side (not past the wall).
-        // Returns the blended normal (still needs renormalization).
-        var n_blend = n;
         // Allow a small negative tolerance so water reconstructed right at (or
         // slightly past) the glass plane still snaps: smooth_z noise can push
         // pos_bl just outside the wall boundary (d < 0) for genuinely on-glass
         // water fragments, disabling the snap exactly where it is most wanted.
         let neg_tol = -flat_epsilon * 0.5;
 
+        // Track the nearest in-range plane for depth snap (single dominant plane).
+        // We pick the plane with smallest d (tightest against the wall) to avoid
+        // snapping to two walls simultaneously in a corner.
+        var best_d     = flat_epsilon; // threshold — only update if d < this
+        var best_t     = 0.0;
+        var best_plane = 0; // 1=left,2=right,3=back,4=front,5=floor
+
+        var n_blend = n;
+
         if d_left < flat_epsilon && d_left >= neg_tol {
             let t = 1.0 - smoothstep(0.0, flat_epsilon, clamp(d_left, 0.0, flat_epsilon));
-            let plane_n_bl = vec3<f32>(1.0, 0.0, 0.0);
-            let plane_n_eye = normalize(eye3_t * (box_rot * plane_n_bl));
+            let plane_n_eye = normalize(eye3_t * (box_rot * vec3<f32>(1.0, 0.0, 0.0)));
             n_blend = normalize(mix(n_blend, plane_n_eye, flat_strength * t));
+            if d_left < best_d { best_d = d_left; best_t = t; best_plane = 1; }
         }
         if d_right < flat_epsilon && d_right >= neg_tol {
             let t = 1.0 - smoothstep(0.0, flat_epsilon, clamp(d_right, 0.0, flat_epsilon));
-            let plane_n_bl = vec3<f32>(-1.0, 0.0, 0.0);
-            let plane_n_eye = normalize(eye3_t * (box_rot * plane_n_bl));
+            let plane_n_eye = normalize(eye3_t * (box_rot * vec3<f32>(-1.0, 0.0, 0.0)));
             n_blend = normalize(mix(n_blend, plane_n_eye, flat_strength * t));
+            if d_right < best_d { best_d = d_right; best_t = t; best_plane = 2; }
         }
         if d_back < flat_epsilon && d_back >= neg_tol {
             let t = 1.0 - smoothstep(0.0, flat_epsilon, clamp(d_back, 0.0, flat_epsilon));
-            let plane_n_bl = vec3<f32>(0.0, 0.0, 1.0);
-            let plane_n_eye = normalize(eye3_t * (box_rot * plane_n_bl));
+            let plane_n_eye = normalize(eye3_t * (box_rot * vec3<f32>(0.0, 0.0, 1.0)));
             n_blend = normalize(mix(n_blend, plane_n_eye, flat_strength * t));
+            if d_back < best_d { best_d = d_back; best_t = t; best_plane = 3; }
         }
         if d_front < flat_epsilon && d_front >= neg_tol {
             let t = 1.0 - smoothstep(0.0, flat_epsilon, clamp(d_front, 0.0, flat_epsilon));
-            let plane_n_bl = vec3<f32>(0.0, 0.0, -1.0);
-            let plane_n_eye = normalize(eye3_t * (box_rot * plane_n_bl));
+            let plane_n_eye = normalize(eye3_t * (box_rot * vec3<f32>(0.0, 0.0, -1.0)));
             n_blend = normalize(mix(n_blend, plane_n_eye, flat_strength * t));
+            if d_front < best_d { best_d = d_front; best_t = t; best_plane = 4; }
         }
         if d_floor < flat_epsilon && d_floor >= neg_tol {
             let t = 1.0 - smoothstep(0.0, flat_epsilon, clamp(d_floor, 0.0, flat_epsilon));
-            let plane_n_bl = vec3<f32>(0.0, 1.0, 0.0);
-            let plane_n_eye = normalize(eye3_t * (box_rot * plane_n_bl));
+            let plane_n_eye = normalize(eye3_t * (box_rot * vec3<f32>(0.0, 1.0, 0.0)));
             n_blend = normalize(mix(n_blend, plane_n_eye, flat_strength * t));
+            if d_floor < best_d { best_d = d_floor; best_t = t; best_plane = 5; }
         }
         n = n_blend;
+
+        // --- Depth / silhouette snap ---
+        // If a nearest plane was found and depth_strength > threshold, intersect
+        // the box-local eye ray with that plane and snap front_z to the hit depth.
+        // This makes the silhouette of the water coplanar with the glass, removing
+        // the bumpy per-sphere depth variation at the wall.
+        if best_plane > 0 && flat_depth > 0.001 && best_t > 0.0 {
+            // Ray origin = camera in box-local space; direction = (pos_bl - origin).
+            // pos_bl already lies on this exact pixel's eye ray (reconstructed above),
+            // so dir_bl is the exact unscaled ray direction.
+            let o = cam.box_eye_local.xyz;
+            let dir_bl = normalize(pos_bl - o);
+
+            // Axis-aligned plane intersection: t = (plane_coord - origin_coord) / dir_coord
+            var ray_t = -1.0; // negative = degenerate/invalid
+            if best_plane == 1 { // left  x=lo.x
+                let denom = dir_bl.x;
+                if abs(denom) > 1.0e-5 { ray_t = (lo_bl.x - o.x) / denom; }
+            } else if best_plane == 2 { // right x=hi.x
+                let denom = dir_bl.x;
+                if abs(denom) > 1.0e-5 { ray_t = (hi_bl.x - o.x) / denom; }
+            } else if best_plane == 3 { // back  z=lo.z
+                let denom = dir_bl.z;
+                if abs(denom) > 1.0e-5 { ray_t = (lo_bl.z - o.z) / denom; }
+            } else if best_plane == 4 { // front z=hi.z
+                let denom = dir_bl.z;
+                if abs(denom) > 1.0e-5 { ray_t = (hi_bl.z - o.z) / denom; }
+            } else { // floor  y=lo.y
+                let denom = dir_bl.y;
+                if abs(denom) > 1.0e-5 { ray_t = (lo_bl.y - o.y) / denom; }
+            }
+
+            if ray_t > 0.0 {
+                // hit_bl: box-local hit point on the wall plane.
+                let hit_bl = o + ray_t * dir_bl;
+                // Convert hit_bl back to eye-space depth (front_z = -z_eye).
+                // Reverse of the forward transform:
+                //   delta_world = box_rot * (hit_bl - cam.box_eye_local.xyz)
+                //   pos_eye_flat = eye3_t * delta_world   (world->eye rotation)
+                //   front_z_flat = -pos_eye_flat.z
+                let hw = box_rot * (hit_bl - o);
+                let pos_eye_flat = eye3_t * hw;
+                var front_z_flat = -pos_eye_flat.z;
+
+                // Clamp against the local scene/glass depth so the snap never pushes
+                // the surface behind solid geometry. Without this, grazing-angle pixels
+                // can land front_z_flat > scene_z, which makes the downstream refraction
+                // depth guard (scene_z_refr < front_z - 0.02) fire and produce a hard
+                // seam at the glass edge. We add a small tolerance (0.05 world units)
+                // to allow the snapped surface to sit at the glass face itself.
+                let scene_z_at_pixel = textureLoad(scene_depth_tex, pixel, 0).r;
+                if scene_z_at_pixel > 0.0 && scene_z_at_pixel < 60000.0 {
+                    front_z_flat = min(front_z_flat, scene_z_at_pixel + 0.05);
+                }
+
+                if front_z_flat > 0.0 {
+                    // Decouple depth snap from best_t for a harder glass-coplanar result:
+                    // pixels within the inner half of epsilon (d < 0.5*epsilon) get the
+                    // full flat_depth weight so wall-pressed water is truly coplanar;
+                    // the outer half still ramps through best_t to feather the band edge.
+                    let inner = step(best_d, flat_epsilon * 0.5); // 1.0 if in inner half
+                    let snap_w = flat_depth * mix(best_t, 1.0, inner);
+                    front_z = mix(front_z, front_z_flat, snap_w);
+                }
+            }
+        }
     }
 
     // --- Whitewater / foam (also a velocity + roughness proxy) ---

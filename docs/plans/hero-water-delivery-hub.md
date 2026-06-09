@@ -266,6 +266,60 @@ normal must be carried into eye space via the inverse of `eye_to_world`·box_rot
 = the normal-snap; a fuller per-wall water-fill pass is a larger lift and only needed if the snap
 reads too abrupt at the waterline.
 
+**C-round4. Flat-water DEPTH/silhouette flatten (composite) — difficulty M.** Round-3 (cba2b15)
+shipped the normal-only snap above; the lead confirms it flattens SHADING but not the SILHOUETTE
+— the bumpy front-surface DEPTH (the per-particle sphere traced into `smoothed_z_tex`) still
+shows at the glass. Round-4 snaps the front DEPTH too, for the SAME near-wall pixels, so the
+surface becomes coplanar with the glass.
+
+*Reuse the round-3 reconstruction verbatim.* The block already computes `pos_bl` (front-surface
+position in box-local) and the five signed plane distances `d_left/d_right/d_back/d_front/d_floor`.
+Round-4 adds a depth snap before the normal blend, keyed on the SAME nearest plane:
+
+1. Pick the nearest in-range plane (smallest `d_*` that is `< epsilon && >= neg_tol`). Reuse the
+   exact selection the normal loop uses; the depth snap and the normal snap must agree on which
+   plane (so refraction UV, thickness consumption, Fresnel, and lighting all see one consistent
+   surface).
+2. Intersect the EYE RAY with that wall plane in box-local. The eye ray in box-local is:
+   origin `o = cam.box_eye_local.xyz`, direction `dir_bl = normalize(pos_bl - o)` (pos_bl already
+   lies on the ray, so this is exact and avoids re-deriving the ray). The plane is axis-aligned in
+   box-local: e.g. left wall `x = lo.x` → `t = (lo.x - o.x) / dir_bl.x`; floor `y = lo.y` →
+   `t = (lo.y - o.y) / dir_bl.y`; etc. Guard the denominator (`abs(dir_bl.axis) > 1e-5`) and
+   require `t > 0`; if the intersection is degenerate, skip the depth snap (keep round-3 normal
+   behaviour). `hit_bl = o + t * dir_bl`.
+3. Convert `hit_bl` back to the eye-distance the composite calls `front_z`. Mirror the round-3
+   forward transform in reverse: `delta_world = box_rot * (hit_bl - cam.box_eye_local.xyz)`;
+   `pos_eye = eye3_t * delta_world` (eye3_t = transpose(eye3) = world→eye since eye3 is a
+   rotation); snapped `front_z_flat = -pos_eye.z` (front_z is `-z_eye`, the eye distance).
+4. Blend by the SAME `strength * t_ramp` weight as the normal snap (so strength=0 is a no-op and
+   the waterline ramp matches): `front_z = mix(front_z, front_z_flat, depth_strength * t_ramp)`.
+   Apply BEFORE the refraction depth guard and the offset/thickness reads so they all consume the
+   flattened surface. Keep a separate Live `depth_strength` knob from the normal `strength` so the
+   two effects can be tuned independently (normal flatten is cheaper/safer; depth flatten is the
+   silhouette fix).
+
+*Refraction safety.* The snap only moves `front_z` toward the camera-ray/plane hit for pixels
+ALREADY classified near-wall water (`has_water` + a `d_* < epsilon`), so it cannot create water
+where there is none, cannot touch the no-water sentinel (`front_z >= 60000` short-circuits the
+whole block — `has_water` is false), and leaves the refraction UV math (driven by `n.xy`+thickness,
+not front_z) qualitatively unchanged while the depth guard (`scene_z_refr < front_z - 0.02`) now
+compares against the coplanar surface (correct — geometry behind the glass still passes). All of it
+is Live-guarded: `depth_strength <= 0.001` skips the snap entirely (no-op, matches round-3).
+
+*Gap-fill decision: NOT needed now.* The wetwall occupancy signal (cell_type Liquid-adjacent-to-
+Solid, `wetwall_update.wgsl`) projects to WALL-texel space, not screen space, and would require a
+new screen-space reprojection pass to fill inter-splat holes. The thickness/smooth_z front surface
+is already gap-filled upstream by the smoothing + temporal passes (the splats overlap and the
+bilateral fill closes pinholes), so snapping the already-detected near-wall water yields a
+continuous sheet without it. Defer the per-wall liquid-occupancy fill to a later round only if the
+snapped sheet still reads as discontinuous at the waterline in capture.
+
+*New knobs.* `render.hero.flat_water.depth_strength` (F32 0..1, default 0.8, Live) routed into a
+new `flat.z` slot of the composite `CamUniform` (currently `flat = [strength, epsilon, 0, 0]` →
+`[strength, epsilon, depth_strength, 0]`) + `HeroParams.flat_water_depth_strength`. The existing
+`render.hero.flat_water.epsilon` is reused unchanged for the depth band. No new uniform STRUCT
+fields are required — `flat.z`/`flat.w` are already reserved zero slots.
+
 ## See also
 
 - [`roadmap.md`](roadmap.md) — series order + the de-risk gate outcome goes here when known.

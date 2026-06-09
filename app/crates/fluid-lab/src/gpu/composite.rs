@@ -41,7 +41,7 @@ struct HeroUniform {
 /// - box_eye_local: camera eye in box-local space (xyz, w=unused).
 /// - box_rot_col0/1/2: box-local→world rotation columns (mat3 padded to vec4s).
 /// - tank_lo/hi: tank bounds in box-local space (xyz, w=unused).
-/// - flat: flat_water params (x=strength, y=epsilon, zw=unused).
+/// - flat: flat_water params (x=strength, y=epsilon, z=depth_strength, w=unused).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct CamUniform {
@@ -52,7 +52,7 @@ struct CamUniform {
     box_rot_col2:  [f32; 4],
     tank_lo:       [f32; 4],
     tank_hi:       [f32; 4],
-    flat:          [f32; 4], // x=strength, y=epsilon, zw=unused
+    flat:          [f32; 4], // x=strength, y=epsilon, z=depth_strength, w=unused
 }
 
 fn hero_uniform(hero: &HeroParams) -> HeroUniform {
@@ -458,7 +458,7 @@ impl CompositeRenderer {
     /// - `eye_world_local`: camera eye in box-local space (for flat-water plane tests).
     /// - `box_rot`: box-local→world rotation (for env sample direction from box-local).
     /// - `tank_lo`/`tank_hi`: tank bounds in box-local space.
-    /// - `hero`: hero params carrying flat_water_strength and flat_water_epsilon.
+    /// - `hero`: hero params carrying flat_water_strength, flat_water_epsilon, and flat_water_depth_strength.
     pub fn set_camera(
         &self,
         queue: &wgpu::Queue,
@@ -477,7 +477,7 @@ impl CompositeRenderer {
             box_rot_col2:  [box_rot.z_axis.x, box_rot.z_axis.y, box_rot.z_axis.z, 0.0],
             tank_lo:       [tank_lo[0], tank_lo[1], tank_lo[2], 0.0],
             tank_hi:       [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
-            flat:          [hero.flat_water_strength.clamp(0.0, 1.0), hero.flat_water_epsilon.max(0.0), 0.0, 0.0],
+            flat:          [hero.flat_water_strength.clamp(0.0, 1.0), hero.flat_water_epsilon.max(0.0), hero.flat_water_depth_strength.clamp(0.0, 1.0), 0.0],
         };
         queue.write_buffer(&self.cam_buf, 0, bytemuck::bytes_of(&cam));
     }
