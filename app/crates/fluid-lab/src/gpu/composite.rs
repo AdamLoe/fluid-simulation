@@ -25,6 +25,21 @@ struct HeroUniform {
     absorb: [f32; 4], // rgb = absorption color, w = absorption strength
     tint: [f32; 4],   // rgb = base tint, w = transparency
     misc: [f32; 4],   // x = deep darkening, y = invalid fallback, z = debug view, w = mode enabled
+    // --- Environment reflection (v1.15) ---
+    refl: [f32; 4],  // x = effective reflection strength, y = environment strength, z = environment brightness, w = skybox enabled
+    envc: [f32; 4],  // x = environment rotation, y = environment mode, z = roughness base, w = unused
+    rough: [f32; 4], // x = velocity scale, y = normal-variance scale, z = foam scale, w = unused
+    sun: [f32; 4],   // xyz = world sun direction, w = sun intensity
+    micro: [f32; 4], // x = enabled, y = strength, z = scale, w = velocity scale
+    spec: [f32; 4],  // x = specular strength, yzw = unused
+}
+
+/// Per-frame camera rotation (eye-space -> world-space, camera only). std140: a
+/// single mat4x4 holding the 3x3 rotation in its upper-left block.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CamUniform {
+    eye_to_world: [[f32; 4]; 4],
 }
 
 fn hero_uniform(hero: &HeroParams) -> HeroUniform {
@@ -32,6 +47,13 @@ fn hero_uniform(hero: &HeroParams) -> HeroUniform {
     let f0 = (ratio * ratio).clamp(0.0, 1.0);
     let effective_strength = if hero.mode_enabled {
         hero.refraction_strength.max(0.0)
+    } else {
+        0.0
+    };
+    // Reflection is gated by the master hero toggle too, so "off" is the plain
+    // non-hero comparison (no refraction and no reflection).
+    let effective_reflection = if hero.mode_enabled {
+        hero.reflection_strength.max(0.0)
     } else {
         0.0
     };
@@ -60,6 +82,37 @@ fn hero_uniform(hero: &HeroParams) -> HeroUniform {
             hero.debug_view as f32,
             if hero.mode_enabled { 1.0 } else { 0.0 },
         ],
+        refl: [
+            effective_reflection,
+            hero.environment_strength.max(0.0),
+            hero.environment_brightness.max(0.0),
+            if hero.skybox_enabled { 1.0 } else { 0.0 },
+        ],
+        envc: [
+            hero.environment_rotation,
+            hero.environment_mode as f32,
+            hero.roughness_base.clamp(0.0, 1.0),
+            0.0,
+        ],
+        rough: [
+            hero.roughness_velocity_scale.max(0.0),
+            hero.roughness_normal_variance_scale.max(0.0),
+            hero.roughness_foam_scale.max(0.0),
+            0.0,
+        ],
+        sun: [
+            hero.sun_direction[0],
+            hero.sun_direction[1],
+            hero.sun_direction[2],
+            hero.sun_intensity.max(0.0),
+        ],
+        micro: [
+            if hero.micro_normal_enabled { 1.0 } else { 0.0 },
+            hero.micro_normal_strength.max(0.0),
+            hero.micro_normal_scale.max(1.0),
+            hero.micro_normal_velocity_scale.max(0.0),
+        ],
+        spec: [hero.specular_strength.max(0.0), 0.0, 0.0, 0.0],
     }
 }
 
@@ -69,6 +122,7 @@ pub struct CompositeRenderer {
     sampler: wgpu::Sampler,
     uniform_buf: wgpu::Buffer,
     hero_buf: wgpu::Buffer,
+    cam_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     tint: [f32; 3],
     optical_density: f32,
@@ -100,7 +154,15 @@ impl CompositeRenderer {
     ) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water composite shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/composite.wgsl").into()),
+            // env.wgsl (shared procedural environment) is concatenated ahead of the
+            // composite so the reflection uses the same sky/room as the skybox.
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("shaders/env.wgsl"),
+                    include_str!("shaders/composite.wgsl"),
+                )
+                .into(),
+            ),
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("thickness sampler"),
@@ -135,6 +197,13 @@ impl CompositeRenderer {
         let hero_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("hero water uniform"),
             contents: bytemuck::bytes_of(&hero_uniform(hero)),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let cam_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("composite camera uniform"),
+            contents: bytemuck::bytes_of(&CamUniform {
+                eye_to_world: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -218,6 +287,17 @@ impl CompositeRenderer {
                     },
                     count: None,
                 },
+                // camera eye->world rotation (env reflection).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let bind_group = create_bind_group(
@@ -231,6 +311,7 @@ impl CompositeRenderer {
             &hero_buf,
             scene_color_view,
             scene_depth_view,
+            &cam_buf,
         );
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("water composite layout"),
@@ -275,6 +356,7 @@ impl CompositeRenderer {
             sampler,
             uniform_buf,
             hero_buf,
+            cam_buf,
             bind_group,
             tint,
             optical_density: optical_density.max(0.0),
@@ -307,6 +389,7 @@ impl CompositeRenderer {
             &self.hero_buf,
             scene_color_view,
             scene_depth_view,
+            &self.cam_buf,
         );
     }
 
@@ -314,6 +397,16 @@ impl CompositeRenderer {
     /// a `render.hero.*` slider changes (Live, no pipeline rebuild).
     pub fn set_hero_params(&self, queue: &wgpu::Queue, hero: &HeroParams) {
         queue.write_buffer(&self.hero_buf, 0, bytemuck::bytes_of(&hero_uniform(hero)));
+    }
+
+    /// Push the per-frame camera eye->world rotation used to sample the reflected
+    /// environment in world space (so reflections stay fixed to the world while
+    /// the box rotates). `eye_to_world` holds the rotation in its upper-left 3x3.
+    pub fn set_camera(&self, queue: &wgpu::Queue, eye_to_world: &glam::Mat4) {
+        let cam = CamUniform {
+            eye_to_world: eye_to_world.to_cols_array_2d(),
+        };
+        queue.write_buffer(&self.cam_buf, 0, bytemuck::bytes_of(&cam));
     }
 
     pub fn set_tint(&mut self, queue: &wgpu::Queue, tint: [f32; 3]) {
@@ -394,6 +487,7 @@ fn create_bind_group(
     hero_buf: &wgpu::Buffer,
     scene_color_view: &wgpu::TextureView,
     scene_depth_view: &wgpu::TextureView,
+    cam_buf: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("water composite bind group"),
@@ -430,6 +524,10 @@ fn create_bind_group(
             wgpu::BindGroupEntry {
                 binding: 7,
                 resource: wgpu::BindingResource::TextureView(scene_depth_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: cam_buf.as_entire_binding(),
             },
         ],
     })

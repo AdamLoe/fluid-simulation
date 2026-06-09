@@ -9,7 +9,8 @@ long_lived:    true
 # Rendering & inspection views
 
 The GPU-native render layer draws the wireframe tank, the hero-water screen-space
-composite (scene-color refraction over a textured environment), selectable
+composite (scene-color refraction plus a reflected procedural environment over a
+textured tank floor + walls), a procedural world skybox background, selectable
 optical/simple particle views, and an optional grid-slice inspection overlay.
 These views sample live GPU buffers directly; normal frames do not read simulation
 state back to the CPU. Throttled diagnostics in
@@ -20,12 +21,20 @@ state back to the CPU. Throttled diagnostics in
 `crates/fluid-lab/src/gpu/mod.rs -> GpuContext` owns the surface, shared depth
 texture, water offscreen targets, the hero-water `scene_color`/`scene_depth` prepass
 targets, renderer instances, the typed `RenderMode` enum, the `HeroParams` snapshot,
-and render pass order. `RenderMode { Water, OpticalParticles, SimpleParticles }`
+the world skybox, and render pass order. `RenderMode { Water, OpticalParticles, SimpleParticles }`
 replaces the old bare `u32 particle_view` dispatch; `render.particle_view` still maps
 0/1/2 onto these (`RenderMode::from_u32`). The tank model matrix
 `translate(box_pos) * from_quat(box_orient)` is folded into `view_proj` by
 `crates/fluid-lab/src/lib.rs -> FluidApp::frame`; renderers receive that combined
 matrix and do not recompute the tank transform.
+
+`FluidApp::frame` also passes a **camera-only** eye→world rotation (the world-space
+camera basis, with NO box orientation) into `GpuContext::render`. The composite's
+reflected environment and the skybox sample the procedural environment in world space
+through it, so the world background follows the camera but **does not rotate with the
+box** — box rotation only changes the source of gravity (`app-shell.md`), not the world
+(`../decisions/rendering.md`). The screen-space water normal is already box-independent
+(reconstructed from screen depth), so this rotation is all the reflection needs.
 
 ```
 FluidApp::frame
@@ -33,10 +42,12 @@ FluidApp::frame
   -> GpuContext::render(view_proj, billboard_right, billboard_up)
        Water mode (hero):
          scene prepass -> scene_color (Rgba16Float) + scene_depth (R16Float, eye dist):
-           environment (floor/backdrop/walls) + wireframe
+           procedural skybox (world background) + environment (floor + back/left walls) + wireframe
          thickness + whitewater + nearest-Z MRT -> separable depth smoothing ->
          composite (opaque) samples scene_color at a normal-driven refract UV,
-           absorbs/tints over it, writes the final swapchain pixel
+           absorbs/tints over it, mixes a reflected procedural environment by Fresnel,
+           adds a sun specular, writes the final swapchain pixel ->
+         diffuse particle pass (foam/spray/bubbles) over the composite, when enabled
        OpticalParticles mode:
          opaque pass (wireframe) -> v1.10 optical-depth billboard pass
        SimpleParticles mode:
@@ -53,8 +64,10 @@ frame, not a per-pass breakdown.
 | View | Runtime state | Renderer | Shader |
 |---|---|---|---|
 | Wireframe tank | always on | `crates/fluid-lab/src/gpu/renderer.rs -> WireframeRenderer` (swapchain pipeline + dual-target scene pipeline) | inline WGSL in `renderer.rs` |
+| World skybox | Water mode, `render.hero.skybox_enabled` | `crates/fluid-lab/src/gpu/skybox.rs -> SkyboxRenderer` | `crates/fluid-lab/src/gpu/shaders/{env,skybox}.wgsl` |
 | Hero-water environment | Water mode only | `crates/fluid-lab/src/gpu/environment.rs -> EnvironmentRenderer` | `crates/fluid-lab/src/gpu/shaders/environment.wgsl` |
 | Screen-space water | `RenderMode::Water` (default) | `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer`; `crates/fluid-lab/src/gpu/smoothing.rs -> WaterSmoothRenderer`; `crates/fluid-lab/src/gpu/composite.rs -> CompositeRenderer` | `crates/fluid-lab/src/gpu/shaders/particles.wgsl`; `crates/fluid-lab/src/gpu/shaders/water_smooth.wgsl`; `crates/fluid-lab/src/gpu/shaders/composite.wgsl` |
+| Diffuse water (foam/spray/bubbles) | Water mode, `render.diffuse.enabled` | `crates/fluid-lab/src/gpu/diffuse.rs -> DiffuseSystem` | `crates/fluid-lab/src/gpu/shaders/diffuse_{emit,update,render}.wgsl` |
 | Optical particles | alternate `render.particle_view` | `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer` | `crates/fluid-lab/src/gpu/shaders/particles.wgsl` |
 | Simple particles | alternate `render.particle_view` | `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer` | `crates/fluid-lab/src/gpu/shaders/particles.wgsl` |
 | Grid slice | optional overlay | `crates/fluid-lab/src/gpu/slice.rs -> SliceRenderer` | `crates/fluid-lab/src/gpu/shaders/slice.wgsl` |
@@ -79,32 +92,84 @@ becoming a hidden opacity control.
 
 `WaterSmoothRenderer` runs a narrow separable depth filter over nearest-Z using
 point `textureLoad` reads. `CompositeRenderer` then samples the thickness target and
-smoothed depth, reconstructs a screen-space normal, and — as of v1.12 — **refracts**:
+smoothed depth, reconstructs a screen-space normal, and **refracts**:
 it offsets the sample UV along the surface normal's xy (scaled by thickness, clamped
 to a pixel budget), taps `scene_color` at that refract UV for the bent background,
-applies per-channel Beer-Lambert absorption + the water body tint over it, and adds
-Fresnel/specular. The composite is now **opaque** (`BlendState::REPLACE`): it samples
-`scene_color` itself and writes the final pixel — the unrefracted background where
-there is no water — so there is no separate blit pass. The speed-weighted target is
-still divided by total thickness to mix rough regions toward white/ice-blue.
+applies per-channel Beer-Lambert absorption + the water body tint over it. It then
+**reflects a procedural environment**: the screen-space normal's eye-space reflection
+vector is rotated into world space (the camera-only `Cam` uniform, binding 8) and fed to
+the shared `env_sample` (`shaders/env.wgsl`), mixed in by Fresnel and softened by a
+roughness term (base + a speed/chop/foam blend), with a roughness-widened sun specular
+on top. Optional screen-space micro-normals (`render.hero.micro_normal_*`, off by
+default) perturb the normal for surface "tooth." The composite is **opaque**
+(`BlendState::REPLACE`): it samples `scene_color` itself and writes the final pixel — the
+unrefracted background where there is no water — so there is no separate blit pass. The
+speed-weighted target is still divided by total thickness to drive both whitewater and
+the reflection roughness.
 
-**Hero-water environment & scene prepass.** In Water mode, `EnvironmentRenderer`
-draws a textured tank floor (procedural checker + grid), a gradient backdrop quad,
-and matte side/back walls into the offscreen `scene_color` (linear `Rgba16Float`) and
-`scene_depth` (`R16Float`, positive eye distance = `clip.w`), alongside the wireframe
-via its dual-target scene pipeline. This gives refraction visible detail to bend. A
-depth guard in the composite compares `scene_depth` at the refract UV against the
-water front surface and falls back (unrefracted, or flat tint) when the tap would
+**World skybox & scene prepass.** In Water mode the scene prepass fills the offscreen
+`scene_color` (linear `Rgba16Float`) + `scene_depth` (`R16Float`, positive eye distance
+= `clip.w`) in three steps, all into the same dual targets:
+
+- `SkyboxRenderer` first draws a fullscreen procedural sky/room (a world-background) with
+  depth-write off / `CompareFunction::Always`, sampling `env_sample` by the per-pixel
+  **world-space** view ray (camera-only `eye_to_world`, never the box) and writing the
+  far eye-distance sentinel. It is gated by `render.hero.skybox_enabled`.
+- `EnvironmentRenderer` then draws the textured tank floor (procedural checker + grid) and
+  the matte **back + left** walls. The right (+x) and front (+z) walls are intentionally
+  omitted so those two faces form an open vertical corner you can look straight down into
+  the tank through (`../decisions/rendering.md`). There is no longer a backdrop quad — the
+  skybox is the background.
+- `WireframeRenderer::draw_scene` draws the tank outline (all 12 edges).
+
+The floor/walls/wireframe carry the box rotation (folded into `view_proj`); the skybox
+does not. This gives refraction visible detail to bend and reflections something to
+sample. A depth guard in the composite compares `scene_depth` at the refract UV against
+the water front surface and falls back (unrefracted, or flat tint) when the tap would
 grab foreground geometry.
 
 **Hero-water parameters & debug views.** All Water-tab settings (`render.hero.*`) are
 mirrored into one `HeroParams` snapshot (`settings::Registry::hero_params`), pushed
-into the composite + environment uniforms whenever a slider changes — Live, no
+into the composite + environment + skybox uniforms whenever a slider changes — Live, no
 pipeline rebuild, no per-setting plumbing. `f0` is derived from `ior` (Schlick), never
-stored independently. `render.hero.mode_enabled` is the master toggle (off forces the
-refraction offset to zero — the non-refractive comparison). `render.hero.debug_view`
-routes an intermediate stage (scene color/depth, thickness, refraction UV offset,
-Fresnel, absorption, water-only) to the swapchain.
+stored independently. `render.hero.mode_enabled` is the master toggle (off forces both
+the refraction offset and the reflection strength to zero — the non-hero comparison).
+`render.hero.debug_view` routes an intermediate stage (scene color/depth, thickness,
+refraction UV offset, Fresnel, absorption, water-only, reflection, env-only) to the
+swapchain; the authoritative list is `settings/mod.rs -> enum_options`. The reflected
+environment and the world skybox share one procedural function (`shaders/env.wgsl ->
+env_sample`), so they stay coherent; `environment_mode` selects Sky/Room/Studio.
+
+**Diffuse water (foam / spray / bubbles).** In Water mode, `DiffuseSystem`
+(`crates/fluid-lab/src/gpu/diffuse.rs`) maintains a persistent, **render-only** GPU
+particle set that replaces the old speed-mask whitewater tint with diffuse state
+that is *born* at fast/breaking surfaces and wall impacts, advects/ages over
+seconds, and *decays*. It conserves no mass and never writes the sim buffers (see
+`../decisions/rendering.md`). Three GPU passes, all readback-free:
+
+- **emit** (`diffuse_emit.wgsl`) — one invocation per grid cell; reads cell types +
+  MAC face velocities, picks the strongest of surface-speed / wall-impact / fast-
+  interior signals, and stochastically spawns one particle (foam/spray/bubble) into
+  a ring buffer. Spawning is deterministic per `(cell, frame, seed)` via an integer
+  hash (no wall-clock RNG) and bounded by an integer-atomic per-frame budget (no
+  float atomics, consistent with `scatter.wgsl`).
+- **update** (`diffuse_update.wgsl`) — one invocation per active slot; age/lifetime
+  kill, type-specific motion (foam couples to the flow while on the liquid surface
+  but falls ballistically once stranded in an air cell so it can't hang in midair;
+  spray is ballistic with drag; bubbles rise by buoyancy), surface type transitions,
+  and an integer-atomic alive-per-type recount.
+- **render** (`diffuse_render.wgsl`) — instanced premultiplied-alpha billboards over
+  the composite, depth-tested against the shared scene depth (depth-write off),
+  carrying the frame's `render_end` timestamp so `gpu.render_ms` still spans it.
+
+`GpuContext::update_diffuse` runs emit+update once per frame (own encoder, outside
+the timestamped sim passes) using the summed substep dt; it is a no-op while
+disabled or paused. All `render.diffuse.*` settings mirror into one `DiffuseParams`
+uniform via `GpuContext::set_diffuse_params` (Live, like `HeroParams`).
+`render.diffuse.max_particles` is an **active cap** within a fixed buffer capacity
+(`diffuse::DIFFUSE_CAPACITY`), so it stays Live with no reallocation. Alive-per-type
+counts + emitted/clamped flow through the throttled `timing.rs` readback into
+`stats_json.gpu.diffuse` and the profiler console line.
 
 **Optical particles.** This alternate particle view keeps the v1.10 shaded billboard
 path reachable through `render.particle_view`. It exposes per-particle motion and
@@ -140,11 +205,20 @@ an image-space composite over particle data, not a mesh extraction compatibility
 - **The model matrix is baked into `view_proj`.** Renderers operate in tank-local
   coordinates. Thread a separate model matrix only if a new renderer genuinely needs
   it.
+- **The world background is camera-only, box-independent.** The skybox and the
+  composite's reflected environment sample `env_sample` in world space via the
+  camera-only `eye_to_world` rotation, NOT `view_proj`. Rotating the box (manual or
+  auto-roll) must not move the sky/reflection — that decoupling is the contract; box
+  rotation only re-aims gravity (`app-shell.md`). The skybox carries no fluid/tank-bounds
+  dependency, so `recreate_fluid` does not rebuild it (unlike the renderers below).
 - **Slice bind groups reference live GPU buffers.** `GpuContext::recreate_fluid`
-  rebuilds `WireframeRenderer`, `EnvironmentRenderer`, `ParticleRenderer`, and
-  `SliceRenderer` after recreating `GpuFluid` (the wireframe + environment depend on
-  tank bounds); old renderer bind groups must not survive that reset. The current
-  `HeroParams` are re-applied to the rebuilt environment.
+  rebuilds `WireframeRenderer`, `EnvironmentRenderer`, `ParticleRenderer`,
+  `SliceRenderer`, and `DiffuseSystem` after recreating `GpuFluid` (the wireframe +
+  environment depend on tank bounds; the diffuse compute bind groups reference the
+  sim cell-type/face-velocity buffers); old renderer bind groups must not survive
+  that reset. The current `HeroParams` are re-applied to the rebuilt environment.
+  Rebuilding `DiffuseSystem` also clears all diffuse particles (a fresh, zeroed
+  buffer) on Reset.
 - **Particle look survives fluid recreation.** `GpuContext` stores current particle
   look values and reapplies them to the newly built renderers.
 - **`WireframeRenderer` uses inline WGSL.** It has no separate shader file.

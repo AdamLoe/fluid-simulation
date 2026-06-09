@@ -70,10 +70,10 @@ prepass + refraction cost is negligible against the pressure solve.)
 **Decision** - The hero-water series (v1.12 refraction onward) evolves the existing
 screen-space composite into the hero path rather than adding a parallel `HeroWater`
 render mode. `RenderMode { Water, OpticalParticles, SimpleParticles }` replaces the bare
-`u32 particle_view` dispatch; hero features (refraction now; foam, marching-cubes
-surface, env reflection, caustics, wet walls, temporal later) are Live-toggleable
-settings under the `Water` category with their own `enabled` flags, mirrored into one
-`HeroParams` uniform.
+`u32 particle_view` dispatch; hero features (refraction, foam, and the procedural
+environment reflection + world skybox now; marching-cubes surface, caustics, wet walls,
+temporal later) are Live-toggleable settings under the `Water` category with their own
+`enabled` flags, mirrored into one `HeroParams` uniform.
 
 **Why** - The composite already does most of the material (thickness, smoothed front
 depth, reconstructed normal, Fresnel, Beer-Lambert absorption). A second top-level mode
@@ -90,6 +90,75 @@ split into independent pipelines.
 
 **Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
 `architecture/gpu-resources.md`.
+
+## Whitewater is persistent diffuse particles, not a speed mask
+
+**Decision** - Whitewater is a persistent, render-only GPU particle system (foam,
+spray, bubbles) that is born at fast/breaking surfaces and wall impacts, advects, and
+decays over seconds (`gpu/diffuse.rs -> DiffuseSystem`, v1.13). It is the hero
+whitewater path; the original speed-weighted thickness mask in the composite remains
+only as a cheap fallback. Diffuse particles **do not** conserve mass, affect pressure,
+or feed back into the solver — they are render state, explicitly decoupled from the
+simulation's determinism contract.
+
+**Why** - A fast-water mask alone reads as a white *tint* that flashes only while
+water is moving; it cannot show foam that lingers a second or more after an impact and
+fades. Persistent diffuse state is what makes churn read as foam (see the
+`fluid-system-llm-brief.md` diagnosis). Keeping it render-only avoids touching the
+fixed-point P2G determinism invariant (`../architecture/simulation.md`).
+
+**Tradeoffs** - A fixed-capacity particle buffer (~12.6 MB) and two extra compute
+passes per frame; emission is bounded by an integer-atomic per-frame budget, and
+over-budget frames are reported (`stats_json.gpu.diffuse.clamped`) rather than silently
+dropping foam. Determinism of *which slot* a spawn lands in is not guaranteed (atomic
+ring cursor), which is acceptable because the system is render-only.
+
+**Code anchors** - `crates/fluid-lab/src/gpu/diffuse.rs -> DiffuseSystem`;
+`crates/fluid-lab/src/gpu/shaders/diffuse_emit.wgsl`;
+`crates/fluid-lab/src/settings/mod.rs -> DiffuseParams`.
+
+**Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
+`architecture/gpu-resources.md`.
+
+## The reflected environment is procedural-only and world-fixed
+
+**Decision** - The hero water reflects a *procedural* sky/room (`gpu/shaders/env.wgsl ->
+env_sample`, v1.15), not an image-based cubemap/HDRI and not screen-space reflections of
+the actual tank/particles. The same function also draws the world background as a
+fullscreen skybox. Both are sampled in **world space via a camera-only rotation**, so they
+follow the camera but stay fixed when the box rotates.
+
+**Why** - A procedural environment costs no texture memory or asset pipeline and gives the
+water believable Fresnel edges and a plausible reflected room/sky for near-zero render
+cost. Sampling in world space (not the box-folded `view_proj`) keeps the conceptual model
+honest: rotating the box re-aims gravity (`../architecture/app-shell.md`); it must not spin
+the world. SSR and real IBL are a heavier, separate project and out of this series.
+
+**Tradeoffs** - The reflection is a stylized environment, not a true mirror of the scene;
+it cannot show the tank's own geometry reflected. Roughness softening blends toward an
+averaged sky rather than a true pre-filtered mip. Micro-normals can shimmer, so they
+default off until temporal stabilization lands.
+
+**Code anchors** - `crates/fluid-lab/src/gpu/shaders/env.wgsl -> env_sample`;
+`crates/fluid-lab/src/gpu/skybox.rs -> SkyboxRenderer`;
+`crates/fluid-lab/src/gpu/composite.rs -> hero_uniform`;
+`crates/fluid-lab/src/lib.rs -> FluidApp::frame` (the camera-only `eye_to_world`).
+
+**Applies to** - `architecture/rendering.md`, `architecture/settings.md`.
+
+## The tank has an open viewing corner
+
+**Decision** - The environment prepass omits the right (+x) and front (+z) walls, leaving
+two adjacent clear faces that form an open vertical corner aimed at the default camera; the
+back and left walls stay matte. The wireframe still outlines all 12 edges.
+
+**Why** - Two opposing-pair open faces let the viewer look straight down the corner into
+the liquid without matte glass occluding the hero shot, while the remaining two walls still
+give refraction/reflection a backdrop and the floor checker reads through the water.
+
+**Code anchors** - `crates/fluid-lab/src/gpu/environment.rs -> environment_mesh`.
+
+**Applies to** - `architecture/rendering.md`.
 
 ## Particle and grid representations stay separate
 

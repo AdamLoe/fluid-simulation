@@ -9,6 +9,19 @@ struct Hero {
     absorb: vec4<f32>, // rgb = absorption color, w = absorption strength
     tint: vec4<f32>,   // rgb = base tint, w = transparency
     misc: vec4<f32>,   // x = deep darkening, y = invalid fallback, z = debug view, w = mode enabled
+    // --- Environment reflection (v1.15) ---
+    refl: vec4<f32>,   // x = effective reflection strength, y = environment strength, z = environment brightness, w = skybox enabled
+    envc: vec4<f32>,   // x = environment rotation, y = environment mode, z = roughness base, w = unused
+    rough: vec4<f32>,  // x = velocity scale, y = normal-variance scale, z = foam scale, w = unused
+    sun: vec4<f32>,    // xyz = world sun direction, w = sun intensity
+    micro: vec4<f32>,  // x = enabled, y = strength, z = scale, w = velocity scale
+    spec: vec4<f32>,   // x = specular strength, yzw = unused
+};
+
+// Per-frame camera rotation: eye-space -> world-space (camera only, box-independent),
+// so the reflected environment stays fixed to the world while the box rotates.
+struct Cam {
+    eye_to_world: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var thickness_sampler: sampler;
@@ -19,6 +32,7 @@ struct Hero {
 @group(0) @binding(5) var<uniform> hero: Hero;
 @group(0) @binding(6) var scene_color_tex: texture_2d<f32>;
 @group(0) @binding(7) var scene_depth_tex: texture_2d<f32>;
+@group(0) @binding(8) var<uniform> cam: Cam;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -84,12 +98,51 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let has_water = thickness > 1.0e-4 && front_z < 60000.0;
     let n = water_normal(pixel, dims);
 
+    // --- Whitewater / foam (also a velocity + roughness proxy) ---
+    let whitewater = max(0.0, textureSample(whitewater_tex, thickness_sampler, in.uv).r);
+    let speed_fraction = clamp(whitewater / max(thickness, 1.0e-4), 0.0, 1.0);
+    let ww_threshold = clamp(params.whitewater.y, 0.0, 1.0);
+    let ww_softness = max(params.whitewater.z, 0.01);
+    let fast_mask = smoothstep(ww_threshold, min(1.0, ww_threshold + ww_softness), speed_fraction);
+    let foam_amount = clamp(params.whitewater.x, 0.0, 1.0) * fast_mask;
+    let foam_body = clamp(1.0 - exp(-5.0 * whitewater), 0.0, 1.0);
+    let foam = foam_amount * foam_body;
+
+    // --- Local surface curvature (chop) for the roughness model ---
+    let zc = load_z(pixel, dims);
+    let zl2 = load_z(pixel + vec2<i32>(-1, 0), dims);
+    let zr2 = load_z(pixel + vec2<i32>(1, 0), dims);
+    let zd2 = load_z(pixel + vec2<i32>(0, -1), dims);
+    let zu2 = load_z(pixel + vec2<i32>(0, 1), dims);
+    var curv = 0.0;
+    if zc < 60000.0 && zl2 < 60000.0 && zr2 < 60000.0 && zd2 < 60000.0 && zu2 < 60000.0 {
+        curv = abs((zl2 + zr2 + zu2 + zd2) - 4.0 * zc);
+    }
+    let n_var = clamp(curv * 4.0, 0.0, 1.0);
+
+    // --- Roughness: base + velocity proxy + chop + foam ---
+    let roughness = clamp(
+        hero.envc.z + speed_fraction * hero.rough.x + n_var * hero.rough.y + foam * hero.rough.z,
+        0.0,
+        1.0,
+    );
+
+    // --- Micro-normals: optional screen-space surface "tooth" ---
+    var nr = n;
+    if hero.micro.x > 0.5 {
+        let ms = hero.micro.z;
+        let amp = hero.micro.y * (1.0 + speed_fraction * hero.micro.w);
+        let jx = sin(in.uv.x * ms) * cos(in.uv.y * ms * 1.3 + 1.7);
+        let jy = cos(in.uv.x * ms * 1.1 + 0.6) * sin(in.uv.y * ms);
+        nr = normalize(n + vec3<f32>(jx, jy, 0.0) * amp * 0.15);
+    }
+
     // Fresnel (Schlick), view direction is +z in eye space.
     let f0 = hero.refr.w;
-    let fresnel = f0 + (1.0 - f0) * pow(clamp(1.0 - n.z, 0.0, 1.0), 5.0);
+    let fresnel = f0 + (1.0 - f0) * pow(clamp(1.0 - nr.z, 0.0, 1.0), 5.0);
 
-    // Refraction UV offset: along the surface normal's xy, scaled by thickness,
-    // clamped to a pixel budget so grazing angles don't smear.
+    // Refraction UV offset (un-perturbed normal): along the surface normal's xy,
+    // scaled by thickness, clamped to a pixel budget so grazing angles don't smear.
     let bend = hero.refr.x * thickness * hero.refr.y;
     var offset_px = n.xy * bend * 90.0;
     let len = length(offset_px);
@@ -127,27 +180,37 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     // Water body color, growing with thickness; lit by a fixed key light.
     let key = normalize(vec3<f32>(-0.35, 0.55, 0.75));
     let diffuse = max(0.0, dot(n, key));
-    let refl = reflect(-key, n);
-    let spec = pow(max(0.0, refl.z), 48.0);
     let body_amt = 1.0 - exp(-hero.misc.x * thickness);
     let body_col = hero.tint.rgb * (0.6 + 0.4 * diffuse);
     let opacity = clamp(body_amt * (1.0 - hero.tint.w), 0.0, 1.0);
     var color = mix(bg_through, body_col, opacity);
 
-    // Fresnel reflection of a sky-ish constant (env reflection lands in v1.15).
-    let sky = vec3<f32>(0.55, 0.72, 0.95);
-    color = mix(color, sky, fresnel * 0.5);
-    color += vec3<f32>(1.0, 0.96, 0.86) * (spec * 0.5);
+    // --- Environment reflection (v1.15) ---
+    // eye-space -> world-space rotation (camera only, box-independent), so the
+    // reflected sky/room stays fixed to the world while the box rotates.
+    let m3 = mat3x3<f32>(
+        cam.eye_to_world[0].xyz,
+        cam.eye_to_world[1].xyz,
+        cam.eye_to_world[2].xyz,
+    );
+    let env_ctrl = vec4<f32>(hero.envc.x, hero.envc.y, hero.refl.z, 0.0);
+    let r_eye = reflect(vec3<f32>(0.0, 0.0, -1.0), nr);
+    let r_world = m3 * r_eye;
+    var reflected = env_sample(r_world, env_ctrl, hero.sun);
+    // Roughness softening: blend toward an averaged (upward) sky sample.
+    let env_avg = env_sample(m3 * vec3<f32>(0.0, 0.0, 1.0), env_ctrl, hero.sun);
+    reflected = mix(reflected, env_avg, roughness) * hero.refl.y;
+    let refl_amt = clamp(fresnel * hero.refl.x, 0.0, 1.0);
+    color = mix(color, reflected, refl_amt);
 
-    // Whitewater foam.
-    let whitewater = max(0.0, textureSample(whitewater_tex, thickness_sampler, in.uv).r);
-    let speed_fraction = clamp(whitewater / max(thickness, 1.0e-4), 0.0, 1.0);
-    let threshold = clamp(params.whitewater.y, 0.0, 1.0);
-    let softness = max(params.whitewater.z, 0.01);
-    let fast_mask = smoothstep(threshold, min(1.0, threshold + softness), speed_fraction);
-    let amount = clamp(params.whitewater.x, 0.0, 1.0) * fast_mask;
-    let foam_body = clamp(1.0 - exp(-5.0 * whitewater), 0.0, 1.0);
-    let foam = amount * foam_body;
+    // Sun specular highlight along the reflection vector; width follows roughness.
+    let sun_dir = normalize(hero.sun.xyz);
+    let sun_d = max(dot(r_world, sun_dir), 0.0);
+    let shininess = mix(16.0, 600.0, clamp(1.0 - roughness, 0.0, 1.0));
+    let sun_spec = pow(sun_d, shininess) * hero.spec.x * hero.sun.w;
+    color += vec3<f32>(1.0, 0.96, 0.88) * sun_spec;
+
+    // Whitewater foam over everything.
     color = mix(color, vec3<f32>(0.90, 0.97, 1.0), foam);
 
     // Debug routing (render.hero.debug_view).
@@ -172,12 +235,24 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
         if dbg < 6.5 {
             return vec4<f32>(trans, 1.0);
         }
-        // Final water only (water contribution over black).
-        var wonly = mix(vec3<f32>(0.0), body_col, opacity)
-            + vec3<f32>(1.0, 0.96, 0.86) * (spec * 0.5)
-            + sky * (fresnel * 0.5);
-        wonly = mix(vec3<f32>(0.0), wonly, select(0.0, 1.0, has_water));
-        return vec4<f32>(wonly, 1.0);
+        if dbg < 7.5 {
+            // Final water only (water contribution over black).
+            var wonly = mix(vec3<f32>(0.0), body_col, opacity);
+            wonly = mix(wonly, reflected, refl_amt);
+            wonly += vec3<f32>(1.0, 0.96, 0.88) * sun_spec;
+            wonly = mix(vec3<f32>(0.0), wonly, select(0.0, 1.0, has_water));
+            return vec4<f32>(wonly, 1.0);
+        }
+        if dbg < 8.5 {
+            // Reflection: the Fresnel-weighted reflected environment.
+            return vec4<f32>(reflected * refl_amt, 1.0);
+        }
+        // Env only: the procedural skybox along the per-pixel view ray.
+        let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - 2.0 * in.uv.y);
+        let aspect2 = width / height;
+        let thf = params.params.y;
+        let fdir_eye = normalize(vec3<f32>(ndc.x * thf * aspect2, ndc.y * thf, -1.0));
+        return vec4<f32>(env_sample(m3 * fdir_eye, env_ctrl, hero.sun), 1.0);
     }
 
     if !has_water {

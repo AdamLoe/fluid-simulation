@@ -2,10 +2,12 @@
 //! the compute/integer-atomic smoke test, the GPU fluid sim, and rendering.
 
 mod composite;
+mod diffuse;
 mod environment;
 mod fluid;
 mod particles;
 mod renderer;
+mod skybox;
 mod slice;
 mod smoke;
 mod smoothing;
@@ -85,9 +87,15 @@ pub struct GpuContext {
     wireframe: renderer::WireframeRenderer,
     particles: particles::ParticleRenderer,
     environment: environment::EnvironmentRenderer,
+    /// World-background procedural skybox (camera-driven, box-independent).
+    skybox: skybox::SkyboxRenderer,
     composite: composite::CompositeRenderer,
     smoothing: smoothing::WaterSmoothRenderer,
     slice: slice::SliceRenderer,
+    /// Persistent diffuse-water particles (foam/spray/bubbles) — render-only.
+    diffuse: diffuse::DiffuseSystem,
+    /// Monotonic frame counter feeding the diffuse spawn hash (no wall-clock RNG).
+    diffuse_frame: u32,
     pressure_enabled: bool,
     slice_enabled: bool,
     slice_mode: u32,
@@ -263,6 +271,13 @@ impl GpuContext {
         particles.set_edge_inner(settings.particle_edge());
         particles.set_shading(settings.particle_shading());
         let hero = settings.hero_params();
+        let skybox = skybox::SkyboxRenderer::new(
+            &device,
+            SCENE_COLOR_FORMAT,
+            wgpu::TextureFormat::R16Float,
+            DEPTH_FORMAT,
+            &hero,
+        );
         let composite = composite::CompositeRenderer::new(
             &device,
             format,
@@ -303,6 +318,14 @@ impl GpuContext {
             slice_origin,
         );
 
+        let diffuse = diffuse::DiffuseSystem::new(
+            &device,
+            format,
+            DEPTH_FORMAT,
+            &fluid,
+            settings.diffuse_params(),
+        );
+
         let timers = if timestamp_query {
             Some(timing::GpuTimers::new(
                 &device,
@@ -332,9 +355,12 @@ impl GpuContext {
             wireframe,
             particles,
             environment,
+            skybox,
             composite,
             smoothing,
             slice,
+            diffuse,
+            diffuse_frame: 0,
             pressure_enabled: true,
             slice_enabled: false,
             slice_mode: 0,
@@ -438,9 +464,20 @@ impl GpuContext {
             slice_h,
             tank_lo,
         );
+        // Rebuild the diffuse system against the fresh sim buffers; this also
+        // clears all diffuse particles (a fresh, zeroed buffer) on Reset.
+        let diffuse = diffuse::DiffuseSystem::new(
+            &self.device,
+            self.config.format,
+            DEPTH_FORMAT,
+            &fluid,
+            settings.diffuse_params(),
+        );
         self.fluid = fluid;
         self.particles = particles;
         self.slice = slice;
+        self.diffuse = diffuse;
+        self.diffuse_frame = 0;
         // Timers carry Reset-class layout (max_substeps / detailed / pressure_iters);
         // rebuild them here so a Reset resizes the query set. Only when the adapter
         // supports timestamp queries (i.e. timers existed before).
@@ -647,6 +684,22 @@ impl GpuContext {
         self.hero = hero;
         self.composite.set_hero_params(&self.queue, &hero);
         self.environment.set_params(&self.queue, &hero);
+        self.skybox.set_params(&self.queue, &hero);
+    }
+
+    /// Mirror the Water-tab diffuse (foam/spray/bubble) settings into the diffuse
+    /// system. Called whenever a `render.diffuse.*` slider changes (all Live).
+    pub fn set_diffuse_params(&mut self, params: settings::DiffuseParams) {
+        self.diffuse.set_params(params);
+    }
+
+    /// Advance the diffuse-water particles by `dt` seconds (emit + update). Runs in
+    /// its own command encoder, outside the timestamped sim passes. No-op while the
+    /// feature is disabled.
+    pub fn update_diffuse(&mut self, dt: f32) {
+        self.diffuse_frame = self.diffuse_frame.wrapping_add(1);
+        self.diffuse
+            .record_step(&self.device, &self.queue, dt, self.diffuse_frame);
     }
 
     pub fn set_particle_slow_color(&mut self, rgb: [f32; 3]) {
@@ -922,6 +975,7 @@ impl GpuContext {
         view_proj: &Mat4,
         cam_right: Vec3,
         cam_up: Vec3,
+        eye_to_world: &Mat4,
     ) -> Result<(), String> {
         use wgpu::CurrentSurfaceTexture as Cur;
         let frame = match self.surface.get_current_texture() {
@@ -996,7 +1050,14 @@ impl GpuContext {
 
         self.wireframe.update_camera(&self.queue, view_proj);
         self.environment.update_camera(&self.queue, view_proj);
+        // Camera-only eye->world rotation for the world-fixed environment: the
+        // reflected env + skybox follow the camera but NOT the tank's rotation.
+        self.composite.set_camera(&self.queue, eye_to_world);
+        self.skybox
+            .set_camera(&self.queue, eye_to_world, self.aspect());
         self.particles
+            .update_camera(&self.queue, view_proj, cam_right, cam_up);
+        self.diffuse
             .update_camera(&self.queue, view_proj, cam_right, cam_up);
         self.slice.update_camera(&self.queue, view_proj);
 
@@ -1060,6 +1121,11 @@ impl GpuContext {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
+                    // World background first (fills scene_color behind geometry,
+                    // far depth), then the tank floor/walls + wireframe over it.
+                    if self.skybox.enabled() {
+                        self.skybox.draw(&mut pass);
+                    }
                     self.environment.draw(&mut pass);
                     self.wireframe.draw_scene(&mut pass);
                 }
@@ -1163,6 +1229,7 @@ impl GpuContext {
                     });
                     self.smoothing.draw_y(&mut pass);
                 }
+                let diffuse_active = self.diffuse.enabled();
                 {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("water composite pass"),
@@ -1176,7 +1243,9 @@ impl GpuContext {
                             },
                         })],
                         depth_stencil_attachment: None,
-                        timestamp_writes: if self.slice_enabled {
+                        // render_end goes on the LAST render pass: diffuse if active,
+                        // else slice if enabled, else this composite.
+                        timestamp_writes: if self.slice_enabled || diffuse_active {
                             None
                         } else {
                             self.timers.as_ref().map(|t| t.render_end_writes())
@@ -1185,6 +1254,38 @@ impl GpuContext {
                         multiview_mask: None,
                     });
                     self.composite.draw(&mut pass);
+                }
+                // Persistent foam/spray/bubbles over the composite, depth-tested
+                // against the shared scene depth (environment + wireframe).
+                if diffuse_active {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("diffuse particle pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &self.depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: if self.slice_enabled {
+                            None
+                        } else {
+                            self.timers.as_ref().map(|t| t.render_end_writes())
+                        },
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    self.diffuse.draw(&mut pass);
                 }
             }
             RenderMode::OpticalParticles => {
@@ -1283,7 +1384,13 @@ impl GpuContext {
         let initiated = self
             .timers
             .as_ref()
-            .map(|t| t.record_resolve_and_maybe_copy(&mut encoder, self.fluid.stats_buffer()))
+            .map(|t| {
+                t.record_resolve_and_maybe_copy(
+                    &mut encoder,
+                    self.fluid.stats_buffer(),
+                    self.diffuse.counters_buffer(),
+                )
+            })
             .unwrap_or(false);
 
         self.queue.submit(std::iter::once(encoder.finish()));

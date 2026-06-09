@@ -182,29 +182,15 @@ impl EnvironmentRenderer {
     }
 }
 
-/// Build the environment mesh: a gradient backdrop quad behind the tank, the
-/// tank floor (patterned), and three matte walls (back + left + right). The front
-/// face (camera side) is intentionally left open.
+/// Build the environment mesh: the tank floor (patterned) and two matte walls
+/// (back + left). The world background is the procedural skybox ([`super::skybox`]),
+/// not a backdrop quad. Both the front (+z, camera side) AND the right (+x) faces
+/// are intentionally left open, so they form a clear vertical corner you can look
+/// straight down into the tank through.
 fn environment_mesh(lo: [f32; 3], hi: [f32; 3]) -> Vec<EnvVertex> {
     let lo = Vec3::from_array(lo);
     let hi = Vec3::from_array(hi);
-    let mut v = Vec::with_capacity(6 * 5);
-
-    // Backdrop: a large quad well behind the tank, vertical gradient over its uv.y.
-    let ext = (hi - lo).length();
-    let cx = (lo.x + hi.x) * 0.5;
-    let cy = (lo.y + hi.y) * 0.5;
-    let bz = lo.z - ext * 0.5;
-    let bw = ext * 1.5;
-    let bh = ext * 1.5;
-    push_quad(
-        &mut v,
-        BACKDROP,
-        Vec3::new(cx - bw, cy - bh, bz),
-        Vec3::new(cx + bw, cy - bh, bz),
-        Vec3::new(cx + bw, cy + bh, bz),
-        Vec3::new(cx - bw, cy + bh, bz),
-    );
+    let mut v = Vec::with_capacity(6 * 3);
 
     // Floor (y = lo.y), uv across the x/z footprint.
     push_quad(
@@ -226,7 +212,8 @@ fn environment_mesh(lo: [f32; 3], hi: [f32; 3]) -> Vec<EnvVertex> {
         Vec3::new(lo.x, hi.y, lo.z),
     );
 
-    // Left wall (x = lo.x).
+    // Left wall (x = lo.x). The right wall (x = hi.x) is intentionally omitted so
+    // the +x and +z faces form an open corner facing the default camera.
     push_quad(
         &mut v,
         WALL,
@@ -234,16 +221,6 @@ fn environment_mesh(lo: [f32; 3], hi: [f32; 3]) -> Vec<EnvVertex> {
         Vec3::new(lo.x, lo.y, hi.z),
         Vec3::new(lo.x, hi.y, hi.z),
         Vec3::new(lo.x, hi.y, lo.z),
-    );
-
-    // Right wall (x = hi.x).
-    push_quad(
-        &mut v,
-        WALL,
-        Vec3::new(hi.x, lo.y, lo.z),
-        Vec3::new(hi.x, lo.y, hi.z),
-        Vec3::new(hi.x, hi.y, hi.z),
-        Vec3::new(hi.x, hi.y, lo.z),
     );
 
     v

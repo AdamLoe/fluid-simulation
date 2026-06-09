@@ -391,6 +391,14 @@ impl FluidApp {
         };
         self.profiler.scope_end("update");
 
+        // Advance the render-only diffuse-water particles (foam/spray/bubbles) once
+        // per frame, only when the sim actually stepped, using the summed substep
+        // time. Reads the freshly stepped sim buffers; no-op while disabled/paused.
+        if n_substeps > 0 {
+            let dt = n_substeps as f32 * self.settings.fixed_dt();
+            self.gpu.update_diffuse(dt);
+        }
+
         // --- render ---
         self.profiler.scope_begin("render");
         let aspect = self.gpu.aspect();
@@ -403,9 +411,21 @@ impl FluidApp {
         // `model` cancels out and the quads stay camera-facing — otherwise they tilt
         // with the box and go edge-on (thin dark lines) at certain orientations.
         let (right, up) = self.camera.billboard_basis();
+        // Camera-only eye->world rotation (world-space basis, NO box orientation):
+        // columns are the world directions of the eye-space X/Y/Z axes
+        // (right, up, -forward). The hero-water environment reflection + skybox use
+        // this so the world background follows the camera but stays fixed when the
+        // box rotates (box rotation only changes the gravity source).
+        let fwd = self.camera.view_dir();
+        let eye_to_world = glam::Mat4::from_cols(
+            right.extend(0.0),
+            up.extend(0.0),
+            (-fwd).extend(0.0),
+            glam::Vec4::new(0.0, 0.0, 0.0, 1.0),
+        );
         let inv = self.box_orient.inverse();
         let (right, up) = (inv * right, inv * up);
-        if let Err(e) = self.gpu.render(&view_proj, right, up) {
+        if let Err(e) = self.gpu.render(&view_proj, right, up, &eye_to_world) {
             // Recoverable surface errors (resize/lost); log and continue.
             warn(&format!("[fluid-lab] render error: {e}"));
         }
@@ -597,6 +617,13 @@ impl FluidApp {
         // of plumbing each id individually.
         if id.starts_with("render.hero.") {
             self.gpu.set_hero_params(self.settings.hero_params());
+            log(&format!("[fluid-lab] live {id} = {value}"));
+            return true;
+        }
+        // Diffuse-water (foam/spray/bubble) settings are all Live too: rebuild the
+        // single DiffuseParams snapshot instead of plumbing each id.
+        if id.starts_with("render.diffuse.") {
+            self.gpu.set_diffuse_params(self.settings.diffuse_params());
             log(&format!("[fluid-lab] live {id} = {value}"));
             return true;
         }

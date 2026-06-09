@@ -140,6 +140,10 @@ struct GpuSample {
     cg_iters: u32,
     /// Substeps the per-pass totals were summed over (for ms/substep display).
     substeps: u32,
+    /// Diffuse-water (v1.13) alive counts [foam, spray, bubble].
+    diffuse_alive: [u32; 3],
+    diffuse_emitted: u32,
+    diffuse_clamped: u32,
 }
 
 impl Profiler {
@@ -253,6 +257,9 @@ impl Profiler {
             cg_cats: r.cg_cats,
             cg_iters: r.cg_iters,
             substeps,
+            diffuse_alive: r.diffuse_alive,
+            diffuse_emitted: r.diffuse_emitted,
+            diffuse_clamped: r.diffuse_clamped,
         });
     }
 
@@ -362,6 +369,22 @@ impl Profiler {
                 ));
             }
             out.push_str(&format!("│   liquid cells     {}\n", g.liquid_cells));
+            let diffuse_total = g.diffuse_alive[0] + g.diffuse_alive[1] + g.diffuse_alive[2];
+            if diffuse_total > 0 || g.diffuse_emitted > 0 {
+                out.push_str(&format!(
+                    "│   diffuse alive    {} (foam {} / spray {} / bubble {})  emitted {}{}\n",
+                    diffuse_total,
+                    g.diffuse_alive[0],
+                    g.diffuse_alive[1],
+                    g.diffuse_alive[2],
+                    g.diffuse_emitted,
+                    if g.diffuse_clamped > 0 {
+                        format!("  ⚠ budget-clamped {}", g.diffuse_clamped)
+                    } else {
+                        String::new()
+                    },
+                ));
+            }
         }
         out.push_str("│ CPU scopes (encode time, ms/frame over window):\n");
         for s in &self.scopes {
@@ -439,8 +462,17 @@ impl Profiler {
                 } else {
                     String::new()
                 };
+                let diffuse = format!(
+                    r#","diffuse":{{"alive":{al},"foam":{fo},"spray":{sp},"bubble":{bu},"emitted":{em},"clamped":{cl}}}"#,
+                    al = g.diffuse_alive[0] + g.diffuse_alive[1] + g.diffuse_alive[2],
+                    fo = g.diffuse_alive[0],
+                    sp = g.diffuse_alive[1],
+                    bu = g.diffuse_alive[2],
+                    em = g.diffuse_emitted,
+                    cl = g.diffuse_clamped,
+                );
                 format!(
-                    r#"{{"sim_ms":{sim},"prep_ms":{prep},"pressure_ms":{pres},"finish_ms":{fin},"render_ms":{ren},"liquid_cells":{lc},"substeps":{subs},"detailed":{det}{detail}}}"#,
+                    r#"{{"sim_ms":{sim},"prep_ms":{prep},"pressure_ms":{pres},"finish_ms":{fin},"render_ms":{ren},"liquid_cells":{lc},"substeps":{subs},"detailed":{det}{detail}{diffuse}}}"#,
                     sim = fmt_ms(sim_ms as f64),
                     prep = fmt_ms(g.prep_ms as f64),
                     pres = fmt_ms(g.pressure_ms as f64),
@@ -450,6 +482,7 @@ impl Profiler {
                     subs = g.substeps,
                     det = g.detailed,
                     detail = detail,
+                    diffuse = diffuse,
                 )
             }
         };

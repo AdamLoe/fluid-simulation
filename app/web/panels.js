@@ -722,6 +722,24 @@ function buildProfilerPanel(container, app) {
       </div>
     `;
 
+    if (g.diffuse) {
+      const d = g.diffuse;
+      html += `
+        <div class="prof-row">
+          <span class="prof-key">Foam particles${d.clamped > 0 ? ' <span class="prof-dominant">(capped)</span>' : ""}</span>
+          <span class="prof-val">${(d.alive ?? 0).toLocaleString()}</span>
+        </div>
+        <div class="prof-row">
+          <span class="prof-key">&nbsp;&nbsp;foam / spray / bubble</span>
+          <span class="prof-val">${(d.foam ?? 0).toLocaleString()} / ${(d.spray ?? 0).toLocaleString()} / ${(d.bubble ?? 0).toLocaleString()}</span>
+        </div>
+        <div class="prof-row">
+          <span class="prof-key">&nbsp;&nbsp;emitted / clamped</span>
+          <span class="prof-val">${(d.emitted ?? 0).toLocaleString()} / ${(d.clamped ?? 0).toLocaleString()}</span>
+        </div>
+      `;
+    }
+
     if (g.sections) {
       html += `
         <div class="prof-divider"></div>

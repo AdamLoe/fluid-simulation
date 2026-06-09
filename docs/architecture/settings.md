@@ -172,24 +172,51 @@ The `Water` category (v1.12) holds the hero-water controls, rendered under their
 Every `render.hero.*` setting is **Live** and in the `default` panel group, so sliders
 auto-apply with no reset:
 
-- `render.hero.mode_enabled` — enum master toggle. Off forces the refraction offset to
-  zero (the non-refractive comparison baseline).
+- `render.hero.mode_enabled` — enum master toggle. Off forces both the refraction offset
+  and the reflection strength to zero (the non-hero comparison baseline).
 - `render.hero.debug_view` — enum routing an intermediate composite stage to the
   swapchain (scene color/depth, thickness, refraction UV offset, Fresnel, absorption,
-  water-only).
+  water-only, reflection, env-only). Authoritative list:
+  `settings/mod.rs -> enum_options`.
 - Refraction: `ior` (drives Schlick `f0` — `f0` is never an independent setting),
   `refraction_strength`, `refraction_thickness_scale`, `refraction_max_offset_px`,
   `invalid_refraction_fallback` (enum).
 - Material: `absorption_color` (+`absorption_strength`), `base_tint`, `transparency`,
   `deep_water_darkening`. The two colors use the `color` `slider_scale`.
-- Environment: `floor_pattern_scale`, `floor_pattern_strength`, `backdrop_strength`,
-  `wall_visibility`.
+- Environment prepass: `floor_pattern_scale`, `floor_pattern_strength`,
+  `wall_visibility`. (`backdrop_strength` is an inert legacy id — the backdrop quad was
+  replaced by the procedural skybox; `environment_brightness` controls the new world
+  background.)
+- Reflection (v1.15): `reflection_strength`, `environment_strength`, `environment_mode`
+  (enum Sky/Room/Studio), `environment_rotation`, `environment_brightness`,
+  `skybox_enabled` (enum). The same procedural environment feeds both the world skybox and
+  the water's reflected environment (`rendering.md`).
+- Roughness/specular (v1.15): `roughness_base` + the velocity/chop/foam scales
+  (`roughness_velocity_scale`, `roughness_normal_variance_scale`, `roughness_foam_scale`,
+  Advanced), `specular_strength`, `sun_dir_{x,y,z}` (Advanced) + `sun_intensity`.
+- Micro-normals (v1.15, Advanced, off by default): `micro_normal_enabled` (enum),
+  `micro_normal_strength`, `micro_normal_scale`, `micro_normal_velocity_scale`.
 
 Unlike other Live settings (one GPU setter per id in `set_setting`), the hero settings
 share a **single uniform**: `set_setting` matches the `render.hero.` id prefix, rebuilds
-the flat `Registry::hero_params() -> HeroParams` snapshot, and pushes it to the composite
-+ environment via `GpuContext::set_hero_params`. There is no per-setting GPU plumbing;
-adding a hero knob means a registry row plus a field in `HeroParams`/`hero_uniform`.
+the flat `Registry::hero_params() -> HeroParams` snapshot, and pushes it to the composite,
+environment, **and skybox** via `GpuContext::set_hero_params`. There is no per-setting GPU
+plumbing; adding a hero knob means a registry row plus a field in `HeroParams`/`hero_uniform`.
+The authoritative row list is `settings/mod.rs -> Registry::default` (ids prefixed
+`render.hero.`).
+
+The `render.diffuse.*` block (v1.13) adds the foam/spray/bubble diffuse-water controls
+to the same **Water** tab, all Live, with the same single-snapshot pattern:
+`set_setting` matches the `render.diffuse.` prefix, rebuilds
+`Registry::diffuse_params() -> DiffuseParams`, and pushes it via
+`GpuContext::set_diffuse_params`. The set is the master `enabled` toggle, the active
+`max_particles` cap + `emit_rate`/`emit_budget_per_frame`, the surface-speed and
+wall-impact `*_threshold`/`*_gain` emission signals, per-type lifetimes, shared
+`radius`/`alpha`, `bubble_buoyancy`, `spray_drag`, a `debug_view` enum, and
+`random_seed` (Advanced). `max_particles` is an active cap within a fixed GPU buffer
+capacity, so it applies Live without a reset (see `rendering.md`). The
+authoritative row list is `settings/mod.rs -> Registry::default` (ids prefixed
+`render.diffuse.`).
 
 ## Gotchas
 
