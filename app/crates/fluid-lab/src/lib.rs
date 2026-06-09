@@ -397,6 +397,10 @@ impl FluidApp {
         if n_substeps > 0 {
             let dt = n_substeps as f32 * self.settings.fixed_dt();
             self.gpu.update_diffuse(dt);
+            // Advance wet-wall wetness: reads current cell_type (post-substep),
+            // decays and writes to the persistent wetness buffer. Must run after
+            // update_diffuse (so it sees the latest classification) and before render.
+            self.gpu.update_wetwall(dt);
         }
 
         // --- render ---

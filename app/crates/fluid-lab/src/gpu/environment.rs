@@ -4,6 +4,10 @@
 //! (linear HDR) + `scene_depth` (linear eye distance) targets, ahead of the water
 //! passes. Refraction in [`super::composite`] samples these so the floor/backdrop
 //! visibly bend through the liquid.
+//!
+//! v1.17: wetness buffer + WetWallUniform bound to group 1 so the wall FS can
+//! read per-texel wetness for darkening/gloss/meniscus/contact-shadow. World
+//! position is now threaded VS→FS for the index mapping.
 
 use crate::settings::HeroParams;
 use glam::Vec3;
@@ -37,6 +41,8 @@ pub struct EnvironmentRenderer {
     vertex_count: u32,
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Bind group for the wetness buffer + WetWallUniform (group 1).
+    wetwall_bind_group: wgpu::BindGroup,
 }
 
 impl EnvironmentRenderer {
@@ -47,6 +53,8 @@ impl EnvironmentRenderer {
         depth_format: wgpu::TextureFormat,
         lo: [f32; 3],
         hi: [f32; 3],
+        wetwall_uniform_buf: &wgpu::Buffer,
+        wetwall_wetness_buf: &wgpu::Buffer,
     ) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("environment shader"),
@@ -67,8 +75,9 @@ impl EnvironmentRenderer {
             mapped_at_creation: false,
         });
 
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("environment bgl"),
+        // Group 0: camera/env uniform
+        let bgl0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("environment bgl0"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -82,17 +91,59 @@ impl EnvironmentRenderer {
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("environment bind group"),
-            layout: &bgl,
+            label: Some("environment bind group 0"),
+            layout: &bgl0,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: uniform_buf.as_entire_binding(),
             }],
         });
 
+        // Group 1: wetwall uniform (binding 0) + wetness buffer (binding 1)
+        let bgl1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("environment bgl1 (wetwall)"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let wetwall_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("environment bind group 1 (wetwall)"),
+            layout: &bgl1,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wetwall_uniform_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wetwall_wetness_buf.as_entire_binding(),
+                },
+            ],
+        });
+
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("environment layout"),
-            bind_group_layouts: &[Some(&bgl)],
+            bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
             immediate_size: 0,
         });
 
@@ -151,6 +202,7 @@ impl EnvironmentRenderer {
             vertex_count: verts.len() as u32,
             uniform_buf,
             bind_group,
+            wetwall_bind_group,
         }
     }
 
@@ -177,6 +229,7 @@ impl EnvironmentRenderer {
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(1, &self.wetwall_bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(0..self.vertex_count, 0..1);
     }

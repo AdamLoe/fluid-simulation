@@ -13,6 +13,7 @@ mod slice;
 mod smoke;
 mod smoothing;
 mod timing;
+mod wetwall;
 
 pub use timing::Readout as GpuReadout;
 pub use timing::FINE_SECTIONS;
@@ -97,6 +98,8 @@ pub struct GpuContext {
     diffuse: diffuse::DiffuseSystem,
     /// v1.16 approximate screen-space caustics — two-pass generation + composite.
     caustics: caustics::CausticsSystem,
+    /// v1.17 wet-wall + meniscus — persistent wetness field on tank walls.
+    wetwall: wetwall::WetWallSystem,
     /// Monotonic frame counter feeding the diffuse spawn hash (no wall-clock RNG).
     diffuse_frame: u32,
     pressure_enabled: bool,
@@ -237,6 +240,18 @@ impl GpuContext {
         let particle_radius = crate::sim::H * 0.35;
 
         let (tank_lo, tank_hi) = fluid.tank_bounds();
+        let [grid_nx_init, grid_ny_init, grid_nz_init] = fluid.grid_dims();
+        // WetWallSystem is constructed here and after recreate_fluid (for Reset).
+        // Its wetness buffer + uniform are shared with EnvironmentRenderer (group 1).
+        let wetwall = wetwall::WetWallSystem::new(
+            &device,
+            fluid.cell_type_buffer(),
+            grid_nx_init,
+            grid_ny_init,
+            grid_nz_init,
+            tank_lo,
+            tank_hi,
+        );
         let wireframe = renderer::WireframeRenderer::new(
             &device,
             format,
@@ -253,6 +268,8 @@ impl GpuContext {
             DEPTH_FORMAT,
             tank_lo,
             tank_hi,
+            &wetwall.uniform_buf,
+            &wetwall.wetness_buf,
         );
         let mut particles = particles::ParticleRenderer::new(
             &device,
@@ -302,7 +319,6 @@ impl GpuContext {
         let smoothing =
             smoothing::WaterSmoothRenderer::new(&device, &nearest_z_view, &smooth_z_ping_view);
 
-        let [grid_nx, grid_ny, grid_nz] = fluid.grid_dims();
         let slice_h = crate::sim::H;
         let slice_origin = tank_lo;
         let slice = slice::SliceRenderer::new(
@@ -314,9 +330,9 @@ impl GpuContext {
             fluid.u_vel_buffer(),
             fluid.v_vel_buffer(),
             fluid.w_vel_buffer(),
-            grid_nx,
-            grid_ny,
-            grid_nz,
+            grid_nx_init,
+            grid_ny_init,
+            grid_nz_init,
             slice_h,
             slice_origin,
         );
@@ -381,6 +397,7 @@ impl GpuContext {
             slice,
             diffuse,
             caustics: caustics_sys,
+            wetwall,
             diffuse_frame: 0,
             pressure_enabled: true,
             slice_enabled: false,
@@ -443,6 +460,18 @@ impl GpuContext {
         );
         let particle_radius = crate::sim::H * 0.35;
         let (tank_lo, tank_hi) = fluid.tank_bounds();
+        let [grid_nx, grid_ny, grid_nz] = fluid.grid_dims();
+        // Rebuild WetWallSystem with a fresh zeroed wetness buffer (clears wetness on Reset).
+        // Must be built before EnvironmentRenderer so we can pass the fresh buffer refs.
+        let wetwall = wetwall::WetWallSystem::new(
+            &self.device,
+            fluid.cell_type_buffer(),
+            grid_nx,
+            grid_ny,
+            grid_nz,
+            tank_lo,
+            tank_hi,
+        );
         self.wireframe = renderer::WireframeRenderer::new(
             &self.device,
             self.config.format,
@@ -459,6 +488,8 @@ impl GpuContext {
             DEPTH_FORMAT,
             tank_lo,
             tank_hi,
+            &wetwall.uniform_buf,
+            &wetwall.wetness_buf,
         );
         self.environment.set_params(&self.queue, &self.hero);
         let particles = particles::ParticleRenderer::new(
@@ -468,7 +499,6 @@ impl GpuContext {
             fluid.particle_buffer(),
             particle_radius,
         );
-        let [grid_nx, grid_ny, grid_nz] = fluid.grid_dims();
         let slice_h = crate::sim::H;
         let slice = slice::SliceRenderer::new(
             &self.device,
@@ -498,6 +528,7 @@ impl GpuContext {
         self.particles = particles;
         self.slice = slice;
         self.diffuse = diffuse;
+        self.wetwall = wetwall;
         self.diffuse_frame = 0;
         // Timers carry Reset-class layout (max_substeps / detailed / pressure_iters);
         // rebuild them here so a Reset resizes the query set. Only when the adapter
@@ -716,6 +747,7 @@ impl GpuContext {
         self.environment.set_params(&self.queue, &hero);
         self.skybox.set_params(&self.queue, &hero);
         self.caustics.set_hero_params(&self.queue, &hero);
+        self.wetwall.set_params(&self.queue, &hero);
     }
 
     /// Mirror the Water-tab diffuse (foam/spray/bubble) settings into the diffuse
@@ -731,6 +763,24 @@ impl GpuContext {
         self.diffuse_frame = self.diffuse_frame.wrapping_add(1);
         self.diffuse
             .record_step(&self.device, &self.queue, dt, self.diffuse_frame);
+    }
+
+    /// Advance the wet-wall wetness field by `dt` seconds. Reads the current
+    /// `cell_type` buffer (post-substep, latest classification) and decays/updates
+    /// the persistent wetness target. Runs in its own encoder, after `update_diffuse`
+    /// and before the render prepass.
+    pub fn update_wetwall(&mut self, dt: f32) {
+        let (tank_lo, tank_hi) = self.fluid.tank_bounds();
+        let [nx, ny, nz] = self.fluid.grid_dims();
+        self.wetwall.record_step(
+            &self.device,
+            &self.queue,
+            dt,
+            &self.hero,
+            nx, ny, nz,
+            tank_lo,
+            tank_hi,
+        );
     }
 
     pub fn set_particle_slow_color(&mut self, rgb: [f32; 3]) {
