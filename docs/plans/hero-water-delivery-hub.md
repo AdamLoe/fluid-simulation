@@ -98,6 +98,37 @@ pipeline and is committed before the next starts.
 6. **Orchestrator** — record observed outcome here, migrate durable facts to owning docs,
    commit on the branch, decide next plan.
 
+## FINAL STATUS & HANDOFF (2026-06-09)
+
+**Delivered on branch `hero-water-14-18` (5 commits on top of baseline `239239b` on main; nothing pushed):**
+
+| Plan | Outcome | Confidence | Commit |
+|---|---|---|---|
+| v1.14 marching cubes | **Abandoned at de-risk gate** — occupancy surface lost to screen-space (worst on thin sheets); MC not built; removed-surface decision re-affirmed | high (clear loss, orchestrator-confirmed) | `b115240` |
+| v1.16 caustics | **Shipped** — normal-gradient half-res, additive receiver composite before water; reuses v1.15 sun; default off; 2 must-fix GPU bugs caught+fixed; +0.82 ms | low-med (subtle, still-frame) | `040009a` |
+| v1.17 wet walls | **Shipped** — per-texel wetness from live classification, decay, clears on Reset; wall darken/gloss/streak + meniscus + contact shadow; 0 must-fix; +0.6 ms | **low** (subtle by design, weak A/B) | `213f96c` |
+| v1.18 temporal | **Shipped** — history-blend + camera-reset (NOT reprojection); ping-pongs thickness/smooth_z/whitewater; unifies caustics blend; 3 must-fix caught+fixed; no orbit ghosting; +0.69 ms, +~8 MB | infra solid; **motion-calm unverified from stills** | `81b8431` |
+| docs migration | rendering/gpu-resources/settings/decisions + ownership updated; plans flipped okay_to_delete | — | `353985d` |
+
+Combined-feature gate (all three on one frame): **no device/WGSL errors, 1.16 ms**.
+
+### Live-review checklist (what stills genuinely cannot confirm — these are the LEAD's gates)
+
+Run `cd app && ./run.sh`, open `http://localhost:5184/`, Water render mode, then toggle each Live `render.hero.*` group:
+1. **Caustics** (`render.hero.caustics.enabled`) — in motion, does floor/back-wall light read as *focused light* not noise? Tune `intensity`/`focus_strength`.
+2. **Wet walls** (`render.hero.wet_wall.enabled`) — slosh/dam-break: do impacts leave *decaying* wet streaks; is the meniscus visible but not overdone? (Most uncertain feature.)
+3. **Temporal** (`render.hero.temporal.enabled`) — **#1 item:** is the dam-break visibly *calmer* in motion vs off, with **no ghosting/smearing on a camera orbit**? Tune `history_alpha` / `camera_motion_reset_threshold`.
+
+Visual tuning changes default *values* only — the architecture (passes, buffers, render order) is already migrated and stable regardless.
+
+### Follow-ups left for the lead (honest deferrals, not bugs)
+
+- **Caustics-temporal settings divergence:** v1.18 plan claimed `render.hero.caustics.temporal_enabled/_alpha` were *removed/unified*; in the committed code they were **kept** (caustics blend = `(temporal_enabled && caustic_history) || caustics_temporal_enabled`). settings.md documents the actual state. If a clean removal + `panels.js` migration was intended, that cleanup is outstanding.
+- **Manifest change-to-doc table** doesn't yet name the new files (`gpu/caustics.rs`, `gpu/wetwall.rs`, `gpu/temporal.rs` + shaders); they fit existing row patterns — add explicit rows if desired.
+- v1.16 `caustics.mode` / `resolution_scale` / `blur_radius` are **reserved/not-yet-wired** (tooltips say so) — wire or remove later.
+- Direct foam/spray→wetness coupling **deferred** in v1.17 (`wetness_spray_gain` stubbed at 0; cell-type signal already covers wall contacts).
+- After live sign-off: merge `hero-water-14-18` → main (or cherry-pick), then the plan docs (now `okay_to_delete`) can be deleted via `/clear-plans`.
+
 ## Observed baseline facts (capture `239239b`, 2026-06-09)
 
 - **247,500 particles, 64³ grid, CG press_iters=30, ~42 FPS (~24 ms/frame), 309
@@ -116,7 +147,7 @@ pipeline and is committed before the next starts.
 | v1.16 | approximate caustics | **SHIPPED (branch)** low-med conf | normal-gradient half-res caustics, additive receiver composite before water pass; reuses v1.15 sun_dir; Live `render.hero.caustics.*`, default off. Opus review caught 2 must-fix GPU bugs (scene_color read-write hazard; eye/world normal mismatch) — fixed. Valid on/off A/B, +0.82 ms render. Orchestrator eyeballed: on-floor focused brightening, subtle but coherent. | doc-migrate at final pass | — |
 | v1.17 | wet walls & meniscus | **SHIPPED (branch)** LOW conf | WetWallSystem: per-texel wetness buffer, once-per-frame compute reads current classification, framerate-corrected decay, clears on Reset. environment.wgsl WALL reads wetness (darken/gloss/streak) + subtle meniscus + contact shadow. foam→wetness coupling deferred (cell-type signal covers contacts). Review 0 must-fix. +0.6 ms. **Visual A/B weak (mismatched camera angles, intentionally subtle) → flag for live review.** | doc-migrate at final pass | — |
 | v1.18 | temporal stabilization | **SHIPPED (branch)** infra-solid / motion unverified | TemporalSystem ping-pongs thickness + smooth_z (feeds normals) + whitewater (foam); unifies v1.16 caustics blend; camera-delta from model-free eye_to_world; hard reset on rotation+translation; depth/normal rejects. Opus review caught 3 must-fix (ping-pong desync, reject-wiring, reset-missed-translation) — fixed. No artifacts, no orbit ghosting. +0.69 ms, +~8 MB. **"Calmer in motion" needs live review (#1 item).** | doc-migrate at final pass | — |
-| FINAL | consolidated gate + doc migration | next | — | full build+tests+boot smoke; migrate v1.14 decision + v1.16/17/18 facts into arch/decisions; flip plans okay_to_delete | v1.18 |
+| FINAL | consolidated gate + doc migration | **DONE** | build+28 tests green; combined caustics+wet_wall+temporal boot smoke = NO errors, 1.16 ms; docs migrated (committed `353985d`); plans flipped okay_to_delete | hand off to lead | — |
 
 ## Open questions / risks
 
