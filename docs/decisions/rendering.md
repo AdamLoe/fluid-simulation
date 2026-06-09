@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-08
+last_updated:  2026-06-09
 ---
 
 # Decisions - Rendering
@@ -27,11 +27,21 @@ optical/simple particle views, tank wireframe, and liquid-cell/grid inspection; 
 is no extracted-surface compatibility path.
 
 **Why** - These views make scale, motion, and solver state legible without carrying a
-second heavyweight representation that distracts from the fluid-lab direction.
+second heavyweight representation that distracts from the fluid-lab direction. A v1.14
+de-risk re-evaluated this: a throwaway occupancy-boundary-quad extracted surface was
+built and A/B-captured against the screen-space composite on dam-break, double-splash,
+and a thin mid-flight tongue. The extracted surface **lost in all three** (worst on the
+thin tongue, which disintegrated into stippled noise) — at 64³ the occupancy surface is
+too coarse for thin features, and dense marching cubes on top of an already
+over-budget frame was not justified by a clear win. So screen-space stays and marching
+cubes was **not** built; this re-affirms the decision rather than reversing it.
 
 **Tradeoffs** - The default water view hides some per-particle detail in exchange for
 a more coherent liquid body; the optical and simple particle views remain selectable
 for motion, solver inspection, and fallback comparison.
+
+**Revisit when** - A higher render-grid resolution makes a reconstructed surface beat
+screen-space on thin features (the v1.14 design record for full marching cubes is in git).
 
 **Code anchors** - `crates/fluid-lab/src/gpu/mod.rs -> GpuContext::render`;
 `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer`;
@@ -145,6 +155,90 @@ default off until temporal stabilization lands.
 `crates/fluid-lab/src/lib.rs -> FluidApp::frame` (the camera-only `eye_to_world`).
 
 **Applies to** - `architecture/rendering.md`, `architecture/settings.md`.
+
+## Caustics are approximate normal-gradient focusing, not projected photons
+
+**Decision** - Hero-water caustics are a screen-space **normal-gradient** model: a
+half-res pass focuses the sun by the convergence of the water surface normal × thickness
+visibility, then composites additively into `scene_color` on the floor/back/left receivers
+before the water composite (`gpu/caustics.rs`, v1.16). They are **not** physically
+projected/refracted photon splatting and use no shadow map.
+
+**Why** - Real projected caustics need a photon/light-transport pass and a receiver
+shadow map — a much heavier system for a tank lab. The normal-gradient model reuses the
+surface normal the composite already reconstructs and the existing sun direction, reads as
+"light focusing on the floor through transparent water" for near-zero extra cost, and stays
+coherent with the refraction it feeds (same normal). Compositing into `scene_color` *before*
+the water composite is what lets refraction bend the lit caustics through the liquid.
+
+**Tradeoffs** - The pattern is a plausible focusing cue, not a physically correct caustic;
+receivers are reconstructed from `scene_depth` along the eye ray (no kind G-buffer), so the
+floor/wall gate is a world-position tolerance band rather than an exact surface id. Default
+off.
+
+**Code anchors** - `crates/fluid-lab/src/gpu/caustics.rs -> CausticsSystem`;
+`crates/fluid-lab/src/gpu/shaders/caustics_{generate,composite}.wgsl`.
+
+**Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`,
+`architecture/settings.md`.
+
+**Revisit when** - A projected-photon mode is wanted (the reserved `caustics.mode` enum
+is the seam).
+
+## Wet walls are a procedural render-only cue, not simulated drainage
+
+**Decision** - The wet-wall look — darken/gloss/streak on touched walls, a thin meniscus
+band at the waterline, a contact shadow at the floor/wall join — is driven by a persistent
+per-wall-texel wetness field written each frame from the **current** cell-type
+classification (Liquid adjacent to Solid) and decay-blended over time, then read by the
+wall material (`gpu/wetwall.rs` + `environment.wgsl`, v1.17). It does **not** simulate
+thin-film drainage or per-droplet rivulets, and it never touches the sim buffers.
+
+**Why** - A real thin-film/drainage simulation is its own physics project; the cell-type
+adjacency signal already marks every wall contact (the same signal that spawns spray), so a
+decaying procedural wetness field gives believable lingering wet streaks for almost nothing
+and keeps the sim's determinism contract untouched. Streaks are a cheap procedural cue.
+
+**Tradeoffs** - Wetness is render state only (clears on Reset, persists across frames); it
+cannot show flow direction or true rivulets. Direct particle/spray→wetness coupling is
+registered (`wetness_spray_gain`) but stubbed at 0 — airborne spray re-wetting a wall above
+the waterline is a follow-up. Defaults are intentionally subtle.
+
+**Code anchors** - `crates/fluid-lab/src/gpu/wetwall.rs -> WetWallSystem`;
+`crates/fluid-lab/src/gpu/shaders/wetwall_update.wgsl`; the wall reads in
+`crates/fluid-lab/src/gpu/shaders/environment.wgsl`.
+
+**Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`,
+`architecture/settings.md`.
+
+## Temporal stabilization is history-blend + camera-reset, not reprojection
+
+**Decision** - Hero-water temporal stabilization is per-target exponential **history
+blending** of the screen-space thickness / smooth-Z (→ normal) / whitewater targets plus
+a **hard camera reset** when camera motion exceeds a threshold (`gpu/temporal.rs`, v1.18).
+It is deliberately **not** motion-vector reprojection, neighborhood variance clamping, or
+TAA jitter. The v1.16 caustics in-shader blend is unified under this one control.
+
+**Why** - The app bakes the box model matrix into `view_proj` and rotates billboards to
+compensate; there is **no motion-vector / history-reprojection infrastructure**, and
+building it (motion vectors, disocclusion, neighborhood clamping) is its own project. The
+achievable, useful version is exponential blend + reset-on-camera-move, which kills most of
+the hero-stack shimmer without smearing on orbits. The reset metric uses the model-free
+`eye_to_world` (camera-only) so box rotation/translation does not trigger spurious resets.
+
+**Tradeoffs** - Content motion under a static camera (fast water) is **not** stabilized —
+only camera-move ghosting is guarded, by the reset threshold. Each stabilized full-res
+target doubles (ping-pong) — the series' largest memory add (`gpu-resources.md`).
+
+**Code anchors** - `crates/fluid-lab/src/gpu/temporal.rs -> TemporalSystem`;
+`crates/fluid-lab/src/gpu/shaders/temporal_blend.wgsl`;
+`crates/fluid-lab/src/gpu/mod.rs -> camera_motion`.
+
+**Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`,
+`architecture/settings.md`.
+
+**Revisit when** - True motion-vector reprojection (with `jitter_enabled` / TAA) is built
+to stabilize content motion under a static camera.
 
 ## The tank has an open viewing corner
 

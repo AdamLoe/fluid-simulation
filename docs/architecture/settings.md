@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-08
+last_updated:  2026-06-09
 okay_to_delete: false
 long_lived:    true
 ---
@@ -196,12 +196,31 @@ auto-apply with no reset:
   Advanced), `specular_strength`, `sun_dir_{x,y,z}` (Advanced) + `sun_intensity`.
 - Micro-normals (v1.15, Advanced, off by default): `micro_normal_enabled` (enum),
   `micro_normal_strength`, `micro_normal_scale`, `micro_normal_velocity_scale`.
+- Caustics (`render.hero.caustics.*`, Advanced, off by default): `enabled` plus
+  `intensity`, `focus_strength`, `thickness_scale`, `floor_enabled`, `back_wall_enabled`,
+  `side_walls_enabled`, `motion_scale`, `max_intensity`. `mode`, `resolution_scale`, and
+  `blur_radius` are reserved/not-yet-wired (their tooltips say so). The
+  `caustics.temporal_enabled`/`caustics.temporal_alpha` pair is now driven through the
+  unified Temporal control below (kept for compatibility; see the temporal block).
+- Wet walls (`render.hero.wet_wall.*`, Advanced, off by default): `enabled`,
+  `wetness_decay`, `wetness_contact_gain`, `wetness_spray_gain` (stubbed at 0),
+  `darkening_strength`, `gloss_strength`, `streak_strength`, `meniscus_enabled`,
+  `meniscus_width`, `meniscus_strength`, `meniscus_fresnel_boost`,
+  `contact_shadow_enabled`, `contact_shadow_strength`, `contact_shadow_radius`.
+- Temporal stabilization (`render.hero.temporal.*`, Advanced, off by default): `enabled`,
+  the per-target toggles `thickness_history` / `normal_history` (gates the `smooth_z`
+  blend the normal derives from) / `caustic_history` / `foam_history`, `history_alpha`
+  (`mix(current, history, α)`; 0 = all-current, 1 = frozen), `camera_motion_reset_threshold`,
+  `depth_reject_threshold`, `normal_reject_threshold`, and `jitter_enabled` (kept off;
+  reserved for a future TAA-jitter follow-up). This is the **unified** temporal control:
+  it also governs the v1.16 caustics in-shader history blend (`rendering.md`).
 
 Unlike other Live settings (one GPU setter per id in `set_setting`), the hero settings
 share a **single uniform**: `set_setting` matches the `render.hero.` id prefix, rebuilds
-the flat `Registry::hero_params() -> HeroParams` snapshot, and pushes it to the composite,
-environment, **and skybox** via `GpuContext::set_hero_params`. There is no per-setting GPU
-plumbing; adding a hero knob means a registry row plus a field in `HeroParams`/`hero_uniform`.
+the flat `Registry::hero_params() -> HeroParams` snapshot, and pushes it via
+`GpuContext::set_hero_params`, which fans out to the composite, environment, skybox,
+caustics, and wet-wall uniforms. There is no per-setting GPU plumbing; adding a hero knob
+means a registry row plus a field in `HeroParams`/`hero_uniform`.
 The authoritative row list is `settings/mod.rs -> Registry::default` (ids prefixed
 `render.hero.`).
 

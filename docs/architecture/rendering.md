@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-08
+last_updated:  2026-06-09
 okay_to_delete: false
 long_lived:    true
 ---
@@ -10,8 +10,9 @@ long_lived:    true
 
 The GPU-native render layer draws the wireframe tank, the hero-water screen-space
 composite (scene-color refraction plus a reflected procedural environment over a
-textured tank floor + walls), a procedural world skybox background, selectable
-optical/simple particle views, and an optional grid-slice inspection overlay.
+textured tank floor + walls, with approximate caustics, wet-wall cues, and temporal
+stabilization), a procedural world skybox background, selectable optical/simple particle
+views, and an optional grid-slice inspection overlay.
 These views sample live GPU buffers directly; normal frames do not read simulation
 state back to the CPU. Throttled diagnostics in
 `crates/fluid-lab/src/gpu/timing.rs` own the only runtime readback.
@@ -42,9 +43,12 @@ FluidApp::frame
   -> GpuContext::render(view_proj, billboard_right, billboard_up)
        Water mode (hero):
          scene prepass -> scene_color (Rgba16Float) + scene_depth (R16Float, eye dist):
-           procedural skybox (world background) + environment (floor + back/left walls) + wireframe
+           procedural skybox (world background) + environment (floor + back/left walls,
+             reading the wetness field for darken/gloss/streak/meniscus/contact-shadow) + wireframe
          thickness + whitewater + nearest-Z MRT -> separable depth smoothing ->
-         composite (opaque) samples scene_color at a normal-driven refract UV,
+         temporal history-blend of thickness / smooth-Z / whitewater into stabilized targets ->
+         caustic generation (half-res) -> caustic composite (additive into scene_color) ->
+         composite (opaque) samples scene_color (now caustic-lit) at a normal-driven refract UV,
            absorbs/tints over it, mixes a reflected procedural environment by Fresnel,
            adds a sun specular, writes the final swapchain pixel ->
          diffuse particle pass (foam/spray/bubbles) over the composite, when enabled
@@ -68,6 +72,9 @@ frame, not a per-pass breakdown.
 | Hero-water environment | Water mode only | `crates/fluid-lab/src/gpu/environment.rs -> EnvironmentRenderer` | `crates/fluid-lab/src/gpu/shaders/environment.wgsl` |
 | Screen-space water | `RenderMode::Water` (default) | `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer`; `crates/fluid-lab/src/gpu/smoothing.rs -> WaterSmoothRenderer`; `crates/fluid-lab/src/gpu/composite.rs -> CompositeRenderer` | `crates/fluid-lab/src/gpu/shaders/particles.wgsl`; `crates/fluid-lab/src/gpu/shaders/water_smooth.wgsl`; `crates/fluid-lab/src/gpu/shaders/composite.wgsl` |
 | Diffuse water (foam/spray/bubbles) | Water mode, `render.diffuse.enabled` | `crates/fluid-lab/src/gpu/diffuse.rs -> DiffuseSystem` | `crates/fluid-lab/src/gpu/shaders/diffuse_{emit,update,render}.wgsl` |
+| Caustics (floor/back-wall light focusing) | Water mode, `render.hero.caustics.enabled` | `crates/fluid-lab/src/gpu/caustics.rs -> CausticsSystem` | `crates/fluid-lab/src/gpu/shaders/caustics_{generate,composite}.wgsl` |
+| Wet walls / meniscus / contact shadow | Water mode, `render.hero.wet_wall.enabled` | `crates/fluid-lab/src/gpu/wetwall.rs -> WetWallSystem` (write) + `EnvironmentRenderer` (read) | `crates/fluid-lab/src/gpu/shaders/wetwall_update.wgsl`; reads in `environment.wgsl` |
+| Temporal stabilization | Water mode, `render.hero.temporal.enabled` | `crates/fluid-lab/src/gpu/temporal.rs -> TemporalSystem` | `crates/fluid-lab/src/gpu/shaders/temporal_blend.wgsl` |
 | Optical particles | alternate `render.particle_view` | `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer` | `crates/fluid-lab/src/gpu/shaders/particles.wgsl` |
 | Simple particles | alternate `render.particle_view` | `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer` | `crates/fluid-lab/src/gpu/shaders/particles.wgsl` |
 | Grid slice | optional overlay | `crates/fluid-lab/src/gpu/slice.rs -> SliceRenderer` | `crates/fluid-lab/src/gpu/shaders/slice.wgsl` |
@@ -171,6 +178,53 @@ uniform via `GpuContext::set_diffuse_params` (Live, like `HeroParams`).
 counts + emitted/clamped flow through the throttled `timing.rs` readback into
 `stats_json.gpu.diffuse` and the profiler console line.
 
+**Approximate caustics.** `CausticsSystem` (`crates/fluid-lab/src/gpu/caustics.rs`)
+casts focused-light patterns on the tank floor and back/left walls. It runs two
+fullscreen passes inserted *before* the water composite so refraction sees lit
+caustics. The **generation** pass (`caustics_generate.wgsl`) writes a half-res scalar
+caustic map from the stabilized water normal/thickness and the shared
+`HeroParams.sun_direction` (the same sun the skybox/specular use). The
+**composite** pass (`caustics_composite.wgsl`) reconstructs each receiver's world hit
+point from `scene_depth` along the eye ray (no kind G-buffer; it gates floor/back/left
+by world position) and blends additively into `scene_color` — so the water's refracted
+background tap picks up the caustic lighting, and non-receiver geometry is untouched.
+Caustics are screen-space normal-gradient focusing, **not** projected/refracted photons
+(`../decisions/rendering.md`). Default off; all `render.hero.caustics.*` are Live.
+
+**Wet walls, meniscus & contact shadow.** `WetWallSystem`
+(`crates/fluid-lab/src/gpu/wetwall.rs`) owns a persistent per-wall-texel `f32` wetness
+field (`gpu-resources.md`) updated once per frame by a compute pass
+(`wetwall_update.wgsl`, own encoder, run from `GpuContext::update_wetwall` after
+`update_diffuse`, outside the timestamped sim passes). Each texel reads the **current**
+`cell_type` classification (Liquid cells adjacent to a Solid wall) and decay-blends
+`wetness = max(new_contact, prev * pow(decay, dt*60))` — framerate-corrected so streaks
+linger in seconds, not frames. The wall material in `environment.wgsl` reads the field
+to darken/gloss/streak wet regions, draw a thin Fresnel meniscus band at the waterline,
+and a contact shadow at the floor/wall join. This is a procedural **render-only** cue,
+not simulated thin-film drainage (`../decisions/rendering.md`); particle→wetness coupling
+(`wetness_spray_gain`) is registered but stubbed at 0. Wetness persists across frames and
+clears on Reset (`WetWallSystem` rebuilt with a fresh zeroed buffer in `recreate_fluid`,
+which also rebinds the fresh buffer into the rebuilt `EnvironmentRenderer`). All
+`render.hero.wet_wall.*` are Live.
+
+**Temporal stabilization.** `TemporalSystem` (`crates/fluid-lab/src/gpu/temporal.rs`)
+reduces the shimmer across the hero stack by **history-blending** the three full-res
+R16 screen-space targets — `thickness`, `smooth_z` (which derives the surface normal and
+curvature; there is no stored normal target), and `whitewater` (the screen-space foam
+signal; the diffuse particles are alpha-blended geometry and cannot be blended) — into
+ping-pong stabilized outputs that the caustics and water composite read instead of the
+raw targets. The blend (`temporal_blend.wgsl`) runs **after** smooth-Y and the thickness
+pass and **before** caustics generation: `out = mix(current, history, history_alpha)`,
+with per-pixel depth/normal validity rejects. **Known limitation:** this is history-blend
+plus a hard **camera reset**, *not* motion-vector reprojection. The reset metric is a CPU
+camera-motion delta from the model-free `eye_to_world` (`crates/fluid-lab/src/gpu/mod.rs
+-> camera_motion`), covering both rotation and translation over
+`camera_motion_reset_threshold`; on a reset (or after resize/`Outdated` rebuild) history
+is dropped for one frame. Content motion under a static camera is *not* stabilized — a
+future reprojection follow-up would address it (`../decisions/rendering.md`). The v1.16
+caustics in-shader history blend is driven through this unified
+`render.hero.temporal.*` control. All temporal settings are Live; default off.
+
 **Optical particles.** This alternate particle view keeps the v1.10 shaded billboard
 path reachable through `render.particle_view`. It exposes per-particle motion and
 speed color directly, with Beer-Lambert per-billboard optical depth, depth testing
@@ -213,12 +267,16 @@ an image-space composite over particle data, not a mesh extraction compatibility
   dependency, so `recreate_fluid` does not rebuild it (unlike the renderers below).
 - **Slice bind groups reference live GPU buffers.** `GpuContext::recreate_fluid`
   rebuilds `WireframeRenderer`, `EnvironmentRenderer`, `ParticleRenderer`,
-  `SliceRenderer`, and `DiffuseSystem` after recreating `GpuFluid` (the wireframe +
-  environment depend on tank bounds; the diffuse compute bind groups reference the
-  sim cell-type/face-velocity buffers); old renderer bind groups must not survive
-  that reset. The current `HeroParams` are re-applied to the rebuilt environment.
-  Rebuilding `DiffuseSystem` also clears all diffuse particles (a fresh, zeroed
-  buffer) on Reset.
+  `SliceRenderer`, `DiffuseSystem`, and `WetWallSystem` after recreating `GpuFluid`
+  (the wireframe + environment depend on tank bounds; the diffuse + wetwall compute
+  bind groups reference the sim cell-type/face-velocity buffers); old renderer bind
+  groups must not survive that reset. The current `HeroParams` are re-applied to the
+  rebuilt environment. Rebuilding `DiffuseSystem` clears all diffuse particles, and
+  rebuilding `WetWallSystem` clears the wetness field (fresh, zeroed buffers), on
+  Reset; the rebuilt `EnvironmentRenderer` is bound to the fresh wetness buffer.
+  `recreate_fluid` also drops the temporal + caustics history (one clean post-reset
+  frame). The swapchain-sized temporal/caustics ping-pong targets themselves are
+  rebuilt on `resize`/`Outdated`, not on `recreate_fluid`.
 - **Particle look survives fluid recreation.** `GpuContext` stores current particle
   look values and reapplies them to the newly built renderers.
 - **`WireframeRenderer` uses inline WGSL.** It has no separate shader file.

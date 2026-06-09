@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-08
+last_updated:  2026-06-09
 okay_to_delete: false
 long_lived:    true
 ---
@@ -29,8 +29,11 @@ At boot, `GpuContext::new` requests a `HighPerformance` adapter, clones the full
   fluid/tank dependency, so it is NOT rebuilt on recreate), `ParticleRenderer`,
   `CompositeRenderer`, `WaterSmoothRenderer`, `SliceRenderer`, `DiffuseSystem`
   (`gpu/diffuse.rs`, the render-only foam/spray/bubble particles — owns its own
-  persistent particle + counter + uniform buffers); renderers that need
-  simulation data receive buffer handles from `GpuFluid` at construction, not raw
+  persistent particle + counter + uniform buffers), `CausticsSystem`
+  (`gpu/caustics.rs`, half-res caustic ping-pong targets), `WetWallSystem`
+  (`gpu/wetwall.rs`, the persistent per-wall-texel wetness buffer; rebuilt on recreate),
+  and `TemporalSystem` (`gpu/temporal.rs`, full-res history ping-pong); renderers that
+  need simulation data receive buffer handles from `GpuFluid` at construction, not raw
   device buffers. `GpuFluid::grid_dims()` and `GpuFluid::tank_bounds()` thread the
   per-axis cell counts and the world-space tank AABB into the renderers (the wireframe
   + environment geometry are sized from the tank AABB) on both construct and recreate.
@@ -75,7 +78,7 @@ Bind groups are built once in `GpuFluid::new`; buffers never move after creation
 
 **naga drops unused bindings.** When a WGSL shader does not reference a binding, naga's reflection omits it from the auto-generated `BindGroupLayout`. If the Rust side builds a BGL from the pipeline's reflected layout and that BGL is then used to create a bind group that _does_ include the unused binding, the counts mismatch and pipeline creation fails silently. The fix is either to ensure every shader references `params` (binding 0) or to pass an explicit `BindGroupLayoutDescriptor` to `create_compute_pipeline`. Any new shader that adds a params uniform must actually read a field from it.
 
-**Reset-class settings require buffer reallocation.** The per-axis grid resolutions `grid.res_x/res_y/res_z`, particle count, `fixed_dt`, `max_substeps`, and `dev.detailed_gpu_profiling` are baked into buffer sizes, uniforms, or timer layout at construction. Changing them requires calling `GpuContext::recreate_fluid`, which calls `GpuFluid::new` and rebuilds the `WireframeRenderer`, `EnvironmentRenderer`, `ParticleRenderer`, `SliceRenderer`, and `DiffuseSystem` from the new buffer handles (and re-applies the current `HeroParams` to the rebuilt environment; rebuilding `DiffuseSystem` clears its particles and rebinds the fresh sim buffers). `GpuTimers` is also rebuilt from the new `max_substeps` / mode / `pressure_iters`. The device, surface, and format are untouched. Live/tweak-class settings are written to uniforms or renderer state without a rebuild.
+**Reset-class settings require buffer reallocation.** The per-axis grid resolutions `grid.res_x/res_y/res_z`, particle count, `fixed_dt`, `max_substeps`, and `dev.detailed_gpu_profiling` are baked into buffer sizes, uniforms, or timer layout at construction. Changing them requires calling `GpuContext::recreate_fluid`, which calls `GpuFluid::new` and rebuilds the `WireframeRenderer`, `EnvironmentRenderer`, `ParticleRenderer`, `SliceRenderer`, `DiffuseSystem`, and `WetWallSystem` from the new buffer handles (and re-applies the current `HeroParams` to the rebuilt environment; rebuilding `DiffuseSystem` clears its particles, rebuilding `WetWallSystem` zeroes the wetness field and rebinds it into the environment, and both rebind the fresh sim buffers; temporal + caustics history is also dropped for a clean first frame). The swapchain-sized temporal/caustics ping-pong targets are rebuilt on `resize`/`Outdated`, not here. `GpuTimers` is also rebuilt from the new `max_substeps` / mode / `pressure_iters`. The device, surface, and format are untouched. Live/tweak-class settings are written to uniforms or renderer state without a rebuild.
 
 **Particle-linear work uses one shared tiled dispatch shape.**
 `gpu/fluid.rs -> particle_dispatch_shape` is the contract for every particle-linear
@@ -113,8 +116,27 @@ two scene targets ~12 MB. There is still no extracted-surface vertex allocation.
 The diffuse-water system (`gpu/diffuse.rs -> DiffuseSystem`) owns one persistent
 particle storage buffer at a **fixed capacity** (`DIFFUSE_CAPACITY`, 48 B/particle
 ≈ 12.6 MB) plus a small counters buffer; `render.diffuse.max_particles` is an active
-cap within that capacity (Live, no realloc). This is render memory, not counted in
-`gpu_buffer_mb`.
+cap within that capacity (Live, no realloc).
+
+The hero-water finishing systems own three more render-memory allocations, all GPU-only
+(no readback) and none counted in `gpu_buffer_mb`:
+
+- **Caustics** (`gpu/caustics.rs -> CausticsSystem`) — a **half-res** `R16Float`
+  ping-pong pair (the working caustic map + its temporal history); ≈ 1 MB total at
+  1280×800. The composite/composite-bind groups read the freshly-written half each frame.
+- **Wetness** (`gpu/wetwall.rs -> WetWallSystem`) — one flat `f32` `STORAGE | COPY_DST`
+  buffer, **one texel per wall surface cell**: back wall `nx·ny` + left wall `nz·ny` +
+  floor `nx·nz` concatenated (sized from the per-axis grid dims). At default 64³ that is
+  ~12k texels × 4 B ≈ 48 KB — negligible. Shares a small `WetWallUniform` (dims +
+  tank bounds + strengths) with `environment.wgsl` so the wall FS and the update pass map
+  world position → texel identically. Rebuilt (zeroed) on `recreate_fluid`.
+- **Temporal** (`gpu/temporal.rs -> TemporalSystem`) — true **full-res** `R16Float`
+  ping-pong (two stabilized textures) per enabled target: `thickness` + `smooth_z`
+  (default-on) ≈ **8 MB**, plus `whitewater` ≈ **4 MB** when `foam_history` is on, at
+  1280×800 — the series' largest memory add. Caustics history is the existing half-res
+  pair (no extra full-res caustic ping-pong). The camera-reset metric needs no GPU buffer:
+  `prev_eye_to_world` is a CPU `Mat4` on `GpuContext`, diffed each frame into a scalar
+  pushed through the temporal uniform.
 
 **No per-frame readbacks.** The only allowed readback is the smoke test (one-shot at boot, in `smoke::run_atomic_smoke_test`) and the throttled timing + liveness readback driven by `GpuTimers::record_resolve_and_maybe_copy`. Normal sim steps submit compute encoders and return; no `map_async` on hot paths.
 

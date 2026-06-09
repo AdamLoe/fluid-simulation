@@ -34,7 +34,7 @@
     },
     {
       "id": "rendering",
-      "summary": "GPU-native scene + inspection rendering: the typed RenderMode enum (Water/OpticalParticles/SimpleParticles) + wireframe tank + grid slice, the hero-water screen-space path (scene_color/scene_depth prepass, refractable environment, scene-color refraction composite, HeroParams Water-tab controls + debug views), water thickness/whitewater/composite ownership, the no-normal-frame-readback invariant, the tank model matrix, and the removed extracted-surface compatibility path",
+      "summary": "GPU-native scene + inspection rendering: the typed RenderMode enum (Water/OpticalParticles/SimpleParticles) + wireframe tank + grid slice, the hero-water screen-space path (scene_color/scene_depth prepass, refractable environment, scene-color refraction composite, HeroParams Water-tab controls + debug views), water thickness/whitewater/composite ownership, the hero finishing systems (approximate normal-gradient caustics, the per-wall-texel wetness field + meniscus + contact shadow, temporal history-blend + camera-reset stabilization), the no-normal-frame-readback invariant, the tank model matrix, and the removed extracted-surface compatibility path",
       "owner": "architecture/rendering.md",
       "references": ["architecture/simulation.md", "architecture/gpu-resources.md", "architecture/app-shell.md", "architecture/fluid-system-llm-brief.md"]
     },
@@ -70,7 +70,7 @@
     },
     {
       "id": "dec-rendering",
-      "summary": "GPU-native no-readback inspection views, screen-space water plus optical/simple particle and liquid-cell inspection, multi-pass render policy (now with a scene-color refraction prepass), hero features as Live sub-features of the Water view rather than new render modes, separate particle/grid representations, visual realism subordinate to observability",
+      "summary": "GPU-native no-readback inspection views, screen-space water plus optical/simple particle and liquid-cell inspection, multi-pass render policy (now with a scene-color refraction prepass), hero features as Live sub-features of the Water view rather than new render modes, the removed extracted-surface path re-affirmed by the v1.14 de-risk, approximate normal-gradient caustics (not projected photons), wet walls as a procedural render-only cue (not simulated drainage), temporal stabilization as history-blend + camera-reset (not reprojection), separate particle/grid representations, visual realism subordinate to observability",
       "owner": "decisions/rendering.md",
       "references": []
     },
