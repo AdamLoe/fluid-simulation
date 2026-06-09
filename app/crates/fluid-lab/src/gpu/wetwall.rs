@@ -42,7 +42,7 @@ pub struct WetWallUniform {
     pub render0:     [f32; 4],
     /// [meniscus_width, meniscus_strength, meniscus_fresnel_boost, contact_shadow_enabled]
     pub render1:     [f32; 4],
-    /// [contact_shadow_strength, contact_shadow_radius, debug_view (0=off), pad]
+    /// [contact_shadow_strength, contact_shadow_radius, debug_view (0=off), blur_radius]
     pub render2:     [f32; 4],
 }
 
@@ -94,7 +94,7 @@ impl WetWallSystem {
             tank_hi:     [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
             render0:     [0.18, 0.25, 0.12, 1.0],  // darkening, gloss, streak, meniscus_en
             render1:     [0.04, 0.15, 0.12, 1.0],  // meniscus_width, strength, fresnel, shadow_en
-            render2:     [0.15, 0.08, 0.0, 0.0],   // shadow_strength, shadow_radius, debug, pad
+            render2:     [0.15, 0.08, 0.0, 1.0],   // shadow_strength, shadow_radius, debug, blur_radius
         };
         let uniform_buf = {
             use wgpu::util::DeviceExt;
@@ -197,6 +197,12 @@ impl WetWallSystem {
         tank_lo: [f32; 3],
         tank_hi: [f32; 3],
     ) {
+        // NOTE: we re-read ss from the live hero setting here. wet_wall_supersample is
+        // Reset-class, so between a live ss change and the next Reset the uniform's
+        // face_counts/dims describe a different ss than the buffer (self.total_texels).
+        // This is a known transient: the compute pass dispatches over total (old ss) but
+        // the environment reads with new ss counts → misaligned wetness until Reset.
+        // Self-heals on Reset. A future fix would derive ss from a stored field on Self.
         let ss = (hero.wet_wall_supersample as u32).max(1).min(4);
         let nx_ss = nx * ss;
         let ny_ss = ny * ss;
@@ -232,7 +238,7 @@ impl WetWallSystem {
                 hero.wet_wall_contact_shadow_strength.max(0.0),
                 hero.wet_wall_contact_shadow_radius.max(0.0),
                 hero.wet_wall_debug_view as f32,
-                0.0,
+                hero.wet_wall_blur.max(0.0),
             ],
         };
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniform));
@@ -300,7 +306,7 @@ impl WetWallSystem {
             hero.wet_wall_contact_shadow_strength.max(0.0),
             hero.wet_wall_contact_shadow_radius.max(0.0),
             hero.wet_wall_debug_view as f32,
-            0.0,
+            hero.wet_wall_blur.max(0.0),
         ];
         queue.write_buffer(&self.uniform_buf, 80, bytemuck::cast_slice(&render0));
         queue.write_buffer(&self.uniform_buf, 96, bytemuck::cast_slice(&render1));

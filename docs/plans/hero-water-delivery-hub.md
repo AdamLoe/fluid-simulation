@@ -222,6 +222,50 @@ invisible. Highest-leverage untried levers identified:
 so the blob pools into a calm sheet, `camera.distance` ~2.0-2.5 — judging smoothness needs a
 SETTLED low-spray surface, not a mid-splash frame.
 
+## Round-3 diagnosis (wall regression + de-pixelation + flat-water)
+
+**A. Wall regression root cause (commit ee5328a, "polish 2").** The supersample change made
+`WetWallUniform.dims` store the *supersampled* counts (`dims.x = nx_ss = nx*ss`, default ss=2).
+But `wetwall_update.wgsl::cell_idx` (line ~34) still strides the `cell_type` buffer with
+`wu.dims.x`/`wu.dims.y` — now `nx_ss`/`ny_ss` instead of the original sim `nx`/`ny`. The
+`cell_type` buffer is laid out `i + j*nx + k*nx*ny` with ORIGINAL nx/ny (`sim::Dims::cell_idx`,
+`i + nx*(j + ny*k)`). So every contact lookup reads the wrong (and frequently out-of-range,
+wrapping) cell → a wall texel's wetness is sampled from a cell `~ss×` away, producing the
+"80% of a wall missing, leftover chunk duplicated above and below" wrap/scale artifact. The
+write *index* into the wetness buffer (`tid`) and all three `environment.wgsl` READ mappings are
+internally consistent on the supersampled dims — they are NOT the bug. The single defect is the
+`cell_type` stride in `cell_idx`.
+
+  - **Fix (shader-only):** in `wetwall_update.wgsl::cell_idx`, recover the original grid dims by
+    dividing out `ss`: `let nx = wu.dims.x / ss; let ny = wu.dims.y / ss;` and stride
+    `i + j*nx + k*nx*ny`. Exact because `nx_ss = nx*ss`. (`face_counts.w` already carries the
+    original nx, but ny is not stored — the divide recovers both with no Rust change.)
+
+**B. De-pixelation (supersample + blur), done right.** With (A) fixed, write/read dims already
+agree on the supersampled grid and the buffer is sized to match. `supersample` is `ApplyClass::
+Reset` (registry line ~1608), so the buffer is rebuilt on change — no Live desync (the Live
+`set_params` path only rewrites the uniform; `total_texels`/buffer stay construction-sized, which
+is correct precisely because the setting is Reset-class). The remaining smoothness gap is the
+READ: `environment.wgsl` already does bicubic-smooth (`wet_smooth`) bilinear, but a real blur on
+the read (a small box/tent over neighbour texels, gated by a Live width) removes residual
+blockiness without inventing wrap. Keep ss default 2 (ss=3-4 for hero close-ups), add a Live
+`render.hero.wet_wall.blur` (texel radius 0-2) consumed in the three `*_wetness` readers.
+
+**C. Flat-water-against-walls (composite normal-snap) — difficulty M.** `composite.wgsl` has the
+eye-space normal `n`, the eye-space front depth `front_z` (= -z_eye from `smoothed_z_tex`), and
+the per-pixel eye ray (reconstructed exactly as the dbg=9 branch does:
+`fdir_eye = normalize(vec3(ndc.x*thf*aspect, ndc.y*thf, -1))`). What it LACKS to test against the
+tank planes (x=±1, z=±1, y=-1, box-local): the camera world eye *position* and the box-local
+transform. Both already exist in `mod.rs::render` (`eye_world`, `box_pos`, `box_orient`, and
+`tank_bounds`) — `environment.rs::set_eye_world` already plumbs box-local eye + box_rot into the
+env uniform; the composite `Cam` uniform (composite.rs `CamUniform`, currently rotation-only)
+must be expanded the same way (add box-local eye, box_rot columns, tank_lo/hi). Then per pixel:
+`eye_pos_eye = fdir_eye * (front_z / -fdir_eye.z)`; rotate+translate into box-local; if it lies
+within an epsilon of a wall/floor plane, `mix(n, plane_normal_eye, flatten_strength)` (the plane
+normal must be carried into eye space via the inverse of `eye_to_world`·box_rot). Minimal-viable
+= the normal-snap; a fuller per-wall water-fill pass is a larger lift and only needed if the snap
+reads too abrupt at the waterline.
+
 ## See also
 
 - [`roadmap.md`](roadmap.md) — series order + the de-risk gate outcome goes here when known.

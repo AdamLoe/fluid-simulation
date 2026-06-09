@@ -289,6 +289,17 @@ pub struct HeroParams {
     /// so the wetness field has more detail than one texel per sim cell.
     /// Reset-class: buffer size changes. Default 2.
     pub wet_wall_supersample: u32,
+    // --- Wet wall round-3: read-side blur (v1.20) ---
+    /// Blur radius in supersampled texels applied when reading wetness in environment.wgsl.
+    /// Larger values smooth blocky wetness patterns at the cost of slight spread. Live. Default 1.0.
+    pub wet_wall_blur: f32,
+    // --- Flat-water-against-walls (v1.20) ---
+    /// Blend strength for snapping water surface normals flat against tank walls/floor.
+    /// At 1.0, water pressed against glass renders as a flat sheet. Live. Default 0.8.
+    pub flat_water_strength: f32,
+    /// Distance (box-local units) within which the flat-water normal snap engages.
+    /// Roughly one cell ≈ 0.03 units in a [-1,1]^3 tank at 64-cell resolution. Live. Default 0.04.
+    pub flat_water_epsilon: f32,
 }
 
 /// A flat snapshot of the diffuse-water (foam/spray/bubble) settings (v1.13). Like
@@ -1616,6 +1627,43 @@ impl Default for Registry {
                 technical_tooltip: Some("Reset-class. Multiplies the per-axis texel count so the buffer has ss^2 texels per sim cell face. 1 = original resolution; 2 = 4x texels per face; 4 = 16x. Buffer is rebuilt on Reset."),
                 apply: ApplyClass::Reset,
             },
+            Setting {
+                id: "render.hero.wet_wall.blur",
+                label: "Wall wetness blur",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(1.0),
+                value: Value::F32(1.0),
+                validation: Validation::F32Range { min: 0.0, max: 2.0 },
+                tooltip: Some("Read-side blur radius in supersampled texels. Smooths blocky wetness patterns. 0=off, 1=one-texel box filter, 2=wider."),
+                technical_tooltip: Some("Live. Applied in environment.wgsl wetness readers as a separable box average over up to 2*floor(radius)+1 texels per axis, before the smooth-step bilinear. Stored in render2.w of WetWallUniform."),
+                apply: ApplyClass::Live,
+            },
+            // --- Flat-water-against-walls (v1.20). Live: batched into composite Hero uniform. ---
+            Setting {
+                id: "render.hero.flat_water.strength",
+                label: "Flat water strength",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(0.8),
+                value: Value::F32(0.8),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Blends the water surface normal toward the adjacent wall/floor plane when the water front is within epsilon of the tank glass. At 1.0, wall-pressed water renders as a flat sheet."),
+                technical_tooltip: Some("Live. In composite.wgsl: reconstructs front-surface box-local position from smooth_z + eye ray, tests min signed-distance to the five tank planes, and blends n toward the plane normal by strength*smoothstep. Requires box-local eye + box_rot in composite CamUniform."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.flat_water.epsilon",
+                label: "Flat water epsilon",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(0.04),
+                value: Value::F32(0.04),
+                validation: Validation::F32Range { min: 0.0, max: 0.2 },
+                tooltip: Some("Distance from a tank wall (box-local units, [-1,1]^3 tank) within which the flat-water normal snap engages. ~0.04 ≈ one cell at 64-cell resolution."),
+                technical_tooltip: Some("Live. Controls the smoothstep ramp width for the normal blend toward the nearest tank plane normal. Box-local units; the tank occupies [-1,1]^3 so walls are at +-1 on x and z, floor at y=-1."),
+                apply: ApplyClass::Live,
+            },
             // --- Temporal stabilization (v1.18). All Live: sliders rebuild the
             // HeroParams uniform via the existing render.hero.* batch route. ---
             Setting {
@@ -2345,6 +2393,10 @@ impl Registry {
             wet_wall_reflectivity: self.f32_or("render.hero.wet_wall.reflectivity", 0.55),
             wet_wall_specular: self.f32_or("render.hero.wet_wall.specular", 0.6),
             wet_wall_supersample: self.u32_or("render.hero.wet_wall.supersample", 2),
+            // --- Wet wall round-3: blur + flat-water (v1.20) ---
+            wet_wall_blur: self.f32_or("render.hero.wet_wall.blur", 1.0),
+            flat_water_strength: self.f32_or("render.hero.flat_water.strength", 0.8),
+            flat_water_epsilon: self.f32_or("render.hero.flat_water.epsilon", 0.04),
         }
     }
 
@@ -2776,6 +2828,10 @@ mod tests {
             // --- v1.19 round-2 wet wall reflectivity ---
             "render.hero.wet_wall.reflectivity",
             "render.hero.wet_wall.specular",
+            // --- v1.20 round-3 wet wall blur + flat-water ---
+            "render.hero.wet_wall.blur",
+            "render.hero.flat_water.strength",
+            "render.hero.flat_water.epsilon",
             // --- v1.18 temporal ---
             "render.hero.temporal.enabled",
             "render.hero.temporal.thickness_history",
@@ -2833,6 +2889,10 @@ mod tests {
         assert!((hero.wet_wall_reflectivity - 0.55).abs() < 1e-5, "wet_wall_reflectivity default 0.55");
         assert!((hero.wet_wall_specular - 0.6).abs() < 1e-5, "wet_wall_specular default 0.6");
         assert_eq!(hero.wet_wall_supersample, 2, "wet_wall_supersample default 2");
+        // v1.20 round-3 wet wall blur + flat-water defaults
+        assert!((hero.wet_wall_blur - 1.0).abs() < 1e-5, "wet_wall_blur default 1.0");
+        assert!((hero.flat_water_strength - 0.8).abs() < 1e-5, "flat_water_strength default 0.8");
+        assert!((hero.flat_water_epsilon - 0.04).abs() < 1e-5, "flat_water_epsilon default 0.04");
     }
 
     #[test]

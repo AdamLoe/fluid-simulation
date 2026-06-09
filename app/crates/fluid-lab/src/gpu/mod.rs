@@ -1229,7 +1229,17 @@ impl GpuContext {
         self.environment.set_eye_world(&self.queue, eye_world_local, box_rot);
         // Camera-only eye->world rotation for the world-fixed environment: the
         // reflected env + skybox follow the camera but NOT the tank's rotation.
-        self.composite.set_camera(&self.queue, eye_to_world);
+        // Also pass box-local eye + box_rot + tank bounds for the flat-water snap.
+        let (tank_lo_arr, tank_hi_arr) = self.fluid.tank_bounds();
+        self.composite.set_camera(
+            &self.queue,
+            eye_to_world,
+            eye_world_local,
+            box_rot,
+            tank_lo_arr,
+            tank_hi_arr,
+            &self.hero,
+        );
         self.skybox
             .set_camera(&self.queue, eye_to_world, self.aspect());
         self.caustics.cache_eye_to_world(eye_to_world);

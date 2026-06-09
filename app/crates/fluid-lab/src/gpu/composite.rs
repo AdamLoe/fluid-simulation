@@ -36,12 +36,23 @@ struct HeroUniform {
     norm: [f32; 4],  // x = normal_stencil (as f32), y = normal_smooth_strength, zw = unused
 }
 
-/// Per-frame camera rotation (eye-space -> world-space, camera only). std140: a
-/// single mat4x4 holding the 3x3 rotation in its upper-left block.
+/// Per-frame camera uniform for composite.wgsl.
+/// - eye_to_world: camera-only eye->world rotation (mat4x4, upper-left 3x3 used).
+/// - box_eye_local: camera eye in box-local space (xyz, w=unused).
+/// - box_rot_col0/1/2: box-local→world rotation columns (mat3 padded to vec4s).
+/// - tank_lo/hi: tank bounds in box-local space (xyz, w=unused).
+/// - flat: flat_water params (x=strength, y=epsilon, zw=unused).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct CamUniform {
-    eye_to_world: [[f32; 4]; 4],
+    eye_to_world:  [[f32; 4]; 4],
+    box_eye_local: [f32; 4],
+    box_rot_col0:  [f32; 4],
+    box_rot_col1:  [f32; 4],
+    box_rot_col2:  [f32; 4],
+    tank_lo:       [f32; 4],
+    tank_hi:       [f32; 4],
+    flat:          [f32; 4], // x=strength, y=epsilon, zw=unused
 }
 
 fn hero_uniform(hero: &HeroParams) -> HeroUniform {
@@ -210,7 +221,14 @@ impl CompositeRenderer {
         let cam_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("composite camera uniform"),
             contents: bytemuck::bytes_of(&CamUniform {
-                eye_to_world: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                eye_to_world:  glam::Mat4::IDENTITY.to_cols_array_2d(),
+                box_eye_local: [0.0; 4],
+                box_rot_col0:  [1.0, 0.0, 0.0, 0.0],
+                box_rot_col1:  [0.0, 1.0, 0.0, 0.0],
+                box_rot_col2:  [0.0, 0.0, 1.0, 0.0],
+                tank_lo:       [-1.0, -1.0, -1.0, 0.0],
+                tank_hi:       [ 1.0,  1.0,  1.0, 0.0],
+                flat:          [0.0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -435,12 +453,31 @@ impl CompositeRenderer {
         queue.write_buffer(&self.hero_buf, 0, bytemuck::bytes_of(&hero_uniform(hero)));
     }
 
-    /// Push the per-frame camera eye->world rotation used to sample the reflected
-    /// environment in world space (so reflections stay fixed to the world while
-    /// the box rotates). `eye_to_world` holds the rotation in its upper-left 3x3.
-    pub fn set_camera(&self, queue: &wgpu::Queue, eye_to_world: &glam::Mat4) {
+    /// Push the per-frame camera uniforms needed by composite.wgsl.
+    /// - `eye_to_world`: camera-only eye->world rotation (env reflection stays world-fixed).
+    /// - `eye_world_local`: camera eye in box-local space (for flat-water plane tests).
+    /// - `box_rot`: box-local→world rotation (for env sample direction from box-local).
+    /// - `tank_lo`/`tank_hi`: tank bounds in box-local space.
+    /// - `hero`: hero params carrying flat_water_strength and flat_water_epsilon.
+    pub fn set_camera(
+        &self,
+        queue: &wgpu::Queue,
+        eye_to_world: &glam::Mat4,
+        eye_world_local: glam::Vec3,
+        box_rot: glam::Mat3,
+        tank_lo: [f32; 3],
+        tank_hi: [f32; 3],
+        hero: &crate::settings::HeroParams,
+    ) {
         let cam = CamUniform {
-            eye_to_world: eye_to_world.to_cols_array_2d(),
+            eye_to_world:  eye_to_world.to_cols_array_2d(),
+            box_eye_local: [eye_world_local.x, eye_world_local.y, eye_world_local.z, 0.0],
+            box_rot_col0:  [box_rot.x_axis.x, box_rot.x_axis.y, box_rot.x_axis.z, 0.0],
+            box_rot_col1:  [box_rot.y_axis.x, box_rot.y_axis.y, box_rot.y_axis.z, 0.0],
+            box_rot_col2:  [box_rot.z_axis.x, box_rot.z_axis.y, box_rot.z_axis.z, 0.0],
+            tank_lo:       [tank_lo[0], tank_lo[1], tank_lo[2], 0.0],
+            tank_hi:       [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
+            flat:          [hero.flat_water_strength.clamp(0.0, 1.0), hero.flat_water_epsilon.max(0.0), 0.0, 0.0],
         };
         queue.write_buffer(&self.cam_buf, 0, bytemuck::bytes_of(&cam));
     }

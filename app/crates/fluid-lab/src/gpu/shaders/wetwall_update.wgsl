@@ -30,8 +30,14 @@ struct WetWallUniform {
 @group(0) @binding(2) var<storage, read_write> wetness: array<f32>;
 
 // cell_type buffer layout: linear index = i + j*nx + k*nx*ny  (i=x, j=y, k=z)
+// IMPORTANT: wu.dims.x/y/z are SUPERSAMPLED counts (nx_ss = nx * ss).
+// The cell_type buffer is indexed with the ORIGINAL sim-grid dims (nx, ny, nz).
+// Recover them by dividing by ss (the division is exact because nx_ss = nx * ss).
 fn cell_idx(i: u32, j: u32, k: u32) -> u32 {
-    return i + j * wu.dims.x + k * wu.dims.x * wu.dims.y;
+    let ss = wu.face_counts.y;
+    let nx = wu.dims.x / ss;
+    let ny = wu.dims.y / ss;
+    return i + j * nx + k * nx * ny;
 }
 
 const WG: u32 = 64u;

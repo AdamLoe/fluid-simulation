@@ -12,3 +12,4 @@ app/web/dist/**
 
 # stray capture dir when harness cwd is app/
 app/captures/
+app/tools/captures/
