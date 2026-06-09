@@ -11,7 +11,11 @@ struct CameraUniform {
     up: [f32; 4],         // xyz = camera up,    w = speed_scale
     slow_color: [f32; 4], // xyz = RGB, w = optical density
     fast_color: [f32; 4], // xyz = RGB, w = unused
-    extra: [f32; 4], // x = edge_inner_radius, y = shading_strength, z = volume_scale, w = simple alpha
+    // x = edge_inner_radius, y = shading_strength, z = volume_scale,
+    // w = splat_scale (nearest_z footprint multiplier for fs_thickness; clamped
+    //     to [0,1] range it also serves as simple-alpha for fs_simple — values
+    //     > 1.0 are harmless there as they clamp to 1.0).
+    extra: [f32; 4],
 }
 
 pub struct ParticleRenderer {
@@ -30,6 +34,9 @@ pub struct ParticleRenderer {
     water_optical_density: f32,
     edge_inner: f32,
     shading: f32,
+    /// Multiplier on the nearest_z splat footprint. Live-tunable via
+    /// `render.hero.smooth_thickness_splat_scale`. Default 1.3.
+    pub splat_scale: f32,
 }
 
 impl ParticleRenderer {
@@ -264,6 +271,7 @@ impl ParticleRenderer {
             water_optical_density: 1.25,
             edge_inner: 0.6,
             shading: 0.25,
+            splat_scale: 1.3,
         }
     }
 
@@ -321,7 +329,7 @@ impl ParticleRenderer {
                 self.fast_color[2],
                 0.0,
             ],
-            extra: [self.edge_inner, self.shading, self.volume_scale, 1.0],
+            extra: [self.edge_inner, self.shading, self.volume_scale, self.splat_scale.max(0.0)],
         };
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&u));
     }

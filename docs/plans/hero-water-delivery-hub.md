@@ -159,6 +159,32 @@ Visual tuning changes default *values* only — the architecture (passes, buffer
 - **v1.16 needs v1.15's light direction**; v1.17 wants v1.13's foam; the planner for each
   must verify those hooks exist in the committed baseline, not assume the plan's wording.
 
+## Polish iteration (2026-06-09)
+
+Live-review feedback (lead looked UP CLOSE): (1) wet walls "way too pixely"; (2) water
+"still looks like spheres" up close. Marching cubes stays OFF the table — fix in screen space.
+
+**Diagnosis (read-only pass, no code touched):**
+
+- **Sphere look.** `smooth_z` is produced by `gpu/smoothing.rs` + `shaders/water_smooth.wgsl`
+  as a single separable bilateral pass — exactly one X draw (`draw_x`) then one Y draw
+  (`draw_y`) in `gpu/mod.rs` (`water smooth x/y pass`, ~lines 1350–1396), radius **3**,
+  `sigma_spatial 1.65`, `sigma_range = max(0.035, center*0.018)`. The normal in
+  `composite.wgsl::water_normal` is a 1-px central finite-difference off that under-smoothed
+  `smooth_z`, so each particle billboard splat survives as a bump. The thickness/`nearest_z`
+  splat in `particles.wgsl::fs_thickness` uses `cam.right.w` (particle world radius) — same
+  small footprint, so splats don't overlap enough to fuse pre-smoothing.
+- **Pixely walls.** Wetness is **one f32 per simulation-grid wall texel** (grid default 64,
+  `wetwall.rs`), and `environment.wgsl` reads it with `u32(fi)`/`u32(fj)` **nearest** truncation
+  (`back_wall_wetness` etc., ~lines 68–165). At a close camera that's a coarse, hard-edged
+  texel grid. The `_pair` helpers already interpolate in j for the meniscus, but the base read
+  is nearest in both axes at grid res.
+
+**Plan:** raise smoothing to Live-tunable iteration count + radius (loop the X/Y bilateral
+N times), optionally widen the thickness splat radius; add a bilinear (and small-blur) wetness
+read and/or supersample the wetness field per wall. Capture UP CLOSE via Live `camera.distance`
+(min 2.0) — NOT a wide tank shot.
+
 ## See also
 
 - [`roadmap.md`](roadmap.md) — series order + the de-risk gate outcome goes here when known.

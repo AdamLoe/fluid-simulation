@@ -1,5 +1,5 @@
 struct Params {
-    axis_radius: vec4<f32>,
+    axis_radius: vec4<f32>, // xy = axis, z = radius (f32), w = sigma_spatial
 };
 
 @group(0) @binding(0) var src_z: texture_2d<f32>;
@@ -38,7 +38,9 @@ fn fs(in: VsOut) -> @location(0) f32 {
 
     let axis = vec2<i32>(i32(params.axis_radius.x), i32(params.axis_radius.y));
     let radius = i32(params.axis_radius.z);
-    let sigma_spatial = 1.65;
+    // sigma_spatial is stored in w; derived from radius on the Rust side so the
+    // Gaussian is never hard-truncated (sigma ≈ radius / 2).
+    let sigma_spatial = max(params.axis_radius.w, 0.5);
     let sigma_range = max(0.035, center * 0.018);
     var sum = 0.0;
     var weight_sum = 0.0;

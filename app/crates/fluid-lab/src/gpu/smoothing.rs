@@ -6,7 +6,7 @@ use wgpu::util::DeviceExt;
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SmoothUniform {
-    axis_radius: [f32; 4], // xy = integer pixel axis as f32, z = radius, w = unused
+    axis_radius: [f32; 4], // xy = integer pixel axis as f32, z = radius, w = sigma_spatial
 }
 
 pub struct WaterSmoothRenderer {
@@ -14,8 +14,11 @@ pub struct WaterSmoothRenderer {
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_x: wgpu::Buffer,
     uniform_y: wgpu::Buffer,
+    /// First iteration: reads nearest_z_view.
     bind_x: wgpu::BindGroup,
     bind_y: wgpu::BindGroup,
+    /// Subsequent iterations: reads smooth_z_view (the accumulated output).
+    bind_x_iter: wgpu::BindGroup,
 }
 
 impl WaterSmoothRenderer {
@@ -23,6 +26,8 @@ impl WaterSmoothRenderer {
         device: &wgpu::Device,
         nearest_z_view: &wgpu::TextureView,
         ping_view: &wgpu::TextureView,
+        smooth_z_view: &wgpu::TextureView,
+        radius: u32,
     ) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water smooth shader"),
@@ -53,8 +58,9 @@ impl WaterSmoothRenderer {
                 },
             ],
         });
-        let uniform_x = create_uniform(device, [1.0, 0.0, 3.0, 0.0], "water smooth x uniform");
-        let uniform_y = create_uniform(device, [0.0, 1.0, 3.0, 0.0], "water smooth y uniform");
+        let (r, sigma) = radius_sigma(radius);
+        let uniform_x = create_uniform(device, [1.0, 0.0, r, sigma], "water smooth x uniform");
+        let uniform_y = create_uniform(device, [0.0, 1.0, r, sigma], "water smooth y uniform");
         let bind_x = create_bind_group(
             device,
             &bind_group_layout,
@@ -68,6 +74,13 @@ impl WaterSmoothRenderer {
             ping_view,
             &uniform_y,
             "water smooth y bind group",
+        );
+        let bind_x_iter = create_bind_group(
+            device,
+            &bind_group_layout,
+            smooth_z_view,
+            &uniform_x,
+            "water smooth x iter bind group",
         );
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("water smooth layout"),
@@ -110,6 +123,7 @@ impl WaterSmoothRenderer {
             uniform_y,
             bind_x,
             bind_y,
+            bind_x_iter,
         }
     }
 
@@ -118,6 +132,7 @@ impl WaterSmoothRenderer {
         device: &wgpu::Device,
         nearest_z_view: &wgpu::TextureView,
         ping_view: &wgpu::TextureView,
+        smooth_z_view: &wgpu::TextureView,
     ) {
         self.bind_x = create_bind_group(
             device,
@@ -133,10 +148,33 @@ impl WaterSmoothRenderer {
             &self.uniform_y,
             "water smooth y bind group",
         );
+        self.bind_x_iter = create_bind_group(
+            device,
+            &self.bind_group_layout,
+            smooth_z_view,
+            &self.uniform_x,
+            "water smooth x iter bind group",
+        );
     }
 
-    pub fn draw_x(&self, pass: &mut wgpu::RenderPass<'_>) {
+    /// Update the bilateral kernel radius (and derived sigma_spatial). Call
+    /// whenever the `render.hero.smooth_radius` Live setting changes.
+    pub fn update_radius(&self, queue: &wgpu::Queue, radius: u32) {
+        let (r, sigma) = radius_sigma(radius);
+        let ux = SmoothUniform { axis_radius: [1.0, 0.0, r, sigma] };
+        let uy = SmoothUniform { axis_radius: [0.0, 1.0, r, sigma] };
+        queue.write_buffer(&self.uniform_x, 0, bytemuck::bytes_of(&ux));
+        queue.write_buffer(&self.uniform_y, 0, bytemuck::bytes_of(&uy));
+    }
+
+    /// Draw the first X pass (reads nearest_z).
+    pub fn draw_x_first(&self, pass: &mut wgpu::RenderPass<'_>) {
         self.draw(pass, &self.bind_x);
+    }
+
+    /// Draw an X pass for iteration >= 2 (reads accumulated smooth_z).
+    pub fn draw_x_iter(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.draw(pass, &self.bind_x_iter);
     }
 
     pub fn draw_y(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -150,12 +188,22 @@ impl WaterSmoothRenderer {
     }
 }
 
+/// Derive radius (f32) and sigma_spatial from an integer radius setting.
+/// sigma_spatial scales with radius so the Gaussian is never truncated too
+/// aggressively: sigma = radius / 2.0 (so the kernel edge is ~2.7 sigma;
+/// at radius 3 this gives sigma=1.5, slightly tighter than the old hardcoded 1.65).
+fn radius_sigma(radius: u32) -> (f32, f32) {
+    let r = radius.max(1) as f32;
+    let sigma = (r / 2.0_f32).max(0.5);
+    (r, sigma)
+}
+
 fn create_uniform(device: &wgpu::Device, axis_radius: [f32; 4], label: &str) -> wgpu::Buffer {
     let uniform = SmoothUniform { axis_radius };
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(label),
         contents: bytemuck::bytes_of(&uniform),
-        usage: wgpu::BufferUsages::UNIFORM,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     })
 }
 

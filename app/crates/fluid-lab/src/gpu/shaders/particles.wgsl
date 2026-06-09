@@ -133,11 +133,15 @@ fn fs_thickness(in: VsOut) -> ThicknessOut {
     let radius_world = cam.right.w;
     let kernel_len = 2.0 * radius_world * nz * edge;
     let volume_scale = cam.extra.z;
+    // cam.extra.w = splat_scale: enlarges the nearest_z footprint so adjacent
+    // particle splats overlap more before bilateral smoothing. Does NOT affect
+    // the thickness accumulation.
+    let splat_scale = max(cam.extra.w, 0.5);
 
     var out: ThicknessOut;
     let thickness = max(0.0, kernel_len * volume_scale);
     out.thickness = thickness;
-    out.nearest_z = clamp(in.center_eye_distance - radius_world * nz, 0.0, 65504.0);
+    out.nearest_z = clamp(in.center_eye_distance - radius_world * splat_scale * nz, 0.0, 65504.0);
     out.whitewater = thickness * in.speed_fraction;
     return out;
 }

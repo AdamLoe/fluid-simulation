@@ -304,8 +304,13 @@ impl GpuContext {
             &hero,
         );
         environment.set_params(&queue, &hero);
-        let smoothing =
-            smoothing::WaterSmoothRenderer::new(&device, &nearest_z_view, &smooth_z_ping_view);
+        let smoothing = smoothing::WaterSmoothRenderer::new(
+            &device,
+            &nearest_z_view,
+            &smooth_z_ping_view,
+            &smooth_z_view,
+            hero.smooth_radius,
+        );
 
         let slice_h = crate::sim::H;
         let slice_origin = tank_lo;
@@ -578,6 +583,9 @@ impl GpuContext {
             .set_water_optical_density(self.water_optical_density);
         self.particles.set_edge_inner(self.particle_edge);
         self.particles.set_shading(self.particle_shading);
+        // Restore splat_scale so a user-tuned render.hero.smooth_thickness_splat_scale
+        // survives Reset / scene change (ParticleRenderer::new resets it to 1.3).
+        self.particles.splat_scale = self.hero.smooth_thickness_splat_scale;
         log(&format!(
             "[fluid-lab][gpu] recreated fluid: dims={}x{}x{} particles={}",
             grid_nx,
@@ -691,8 +699,12 @@ impl GpuContext {
             &self.scene_depth_view,
         );
         self.composite.set_size(&self.queue, width, height);
-        self.smoothing
-            .set_views(&self.device, &self.nearest_z_view, &self.smooth_z_ping_view);
+        self.smoothing.set_views(
+            &self.device,
+            &self.nearest_z_view,
+            &self.smooth_z_ping_view,
+            &self.smooth_z_view,
+        );
         self.caustics.set_views(
             &self.device,
             self.temporal.stable_smooth_z(),
@@ -793,6 +805,8 @@ impl GpuContext {
         self.skybox.set_params(&self.queue, &hero);
         self.caustics.set_hero_params(&self.queue, &hero);
         self.wetwall.set_params(&self.queue, &hero);
+        self.smoothing.update_radius(&self.queue, hero.smooth_radius);
+        self.particles.splat_scale = hero.smooth_thickness_splat_scale;
     }
 
     /// Mirror the Water-tab diffuse (foam/spray/bubble) settings into the diffuse
@@ -1174,6 +1188,7 @@ impl GpuContext {
                     &self.device,
                     &self.nearest_z_view,
                     &self.smooth_z_ping_view,
+                    &self.smooth_z_view,
                 );
                 self.caustics.set_views(
                     &self.device,
@@ -1347,53 +1362,62 @@ impl GpuContext {
                     self.particles
                         .draw_thickness(&mut pass, self.fluid.particle_count());
                 }
-                {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("water smooth x pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &self.smooth_z_ping_view,
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 65504.0,
-                                    g: 0.0,
-                                    b: 0.0,
-                                    a: 0.0,
-                                }),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    self.smoothing.draw_x(&mut pass);
-                }
-                {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("water smooth y pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &self.smooth_z_view,
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 65504.0,
-                                    g: 0.0,
-                                    b: 0.0,
-                                    a: 0.0,
-                                }),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    self.smoothing.draw_y(&mut pass);
+                // Iterated bilateral depth smoothing. Iteration 0 reads nearest_z;
+                // iterations 1+ compound the result in smooth_z via a second X bind group.
+                let smooth_iters = self.hero.smooth_iterations.max(1);
+                for iter in 0..smooth_iters {
+                    {
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("water smooth x pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &self.smooth_z_ping_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: 65504.0,
+                                        g: 0.0,
+                                        b: 0.0,
+                                        a: 0.0,
+                                    }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        if iter == 0 {
+                            self.smoothing.draw_x_first(&mut pass);
+                        } else {
+                            self.smoothing.draw_x_iter(&mut pass);
+                        }
+                    }
+                    {
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("water smooth y pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &self.smooth_z_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: 65504.0,
+                                        g: 0.0,
+                                        b: 0.0,
+                                        a: 0.0,
+                                    }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        self.smoothing.draw_y(&mut pass);
+                    }
                 }
                 // v1.18 Temporal stabilization passes: blend thickness, smooth_z, whitewater
                 // with their histories. Runs AFTER smooth-y writes smooth_z_view and AFTER

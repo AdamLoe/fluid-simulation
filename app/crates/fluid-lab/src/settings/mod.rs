@@ -265,6 +265,14 @@ pub struct HeroParams {
     pub temporal_normal_reject_threshold: f32,
     /// Reserved: TAA jitter. Always OFF in v1.18; not wired.
     pub temporal_jitter_enabled: bool,
+    // --- Screen-space surface quality (v1.19 polish) ---
+    /// Number of bilateral smooth X+Y iterations. Default 2.
+    pub smooth_iterations: u32,
+    /// Bilateral kernel half-width in pixels. Default 5.
+    pub smooth_radius: u32,
+    /// Scale applied to particle world radius when writing nearest_z splat.
+    /// Larger values fatten overlapping splats so they fuse more before smoothing.
+    pub smooth_thickness_splat_scale: f32,
 }
 
 /// A flat snapshot of the diffuse-water (foam/spray/bubble) settings (v1.13). Like
@@ -1678,6 +1686,47 @@ impl Default for Registry {
                 technical_tooltip: Some("Reserved. Always off in v1.18 — the app bakes the model matrix into view_proj and TAA jitter is deferred to a future version."),
                 apply: ApplyClass::Live,
             },
+            // --- Screen-space surface quality (v1.19 polish). All Live: sliders
+            // rebuild the HeroParams uniform via the existing render.hero.* batch
+            // route. smooth_iterations/smooth_radius wire through smoothing.rs;
+            // smooth_thickness_splat_scale routes through the particle camera
+            // uniform so the particle system scales the nearest_z splat footprint. ---
+            Setting {
+                id: "render.hero.smooth_iterations",
+                label: "Smooth iterations",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::U32(2),
+                value: Value::U32(2),
+                validation: Validation::U32Range { min: 1, max: 4 },
+                tooltip: Some("How many bilateral smoothing passes to run on the water depth each frame. More passes reduce the sphere look by fusing adjacent particle splats."),
+                technical_tooltip: Some("Live. Each iteration runs one X+Y bilateral pass (ping-pong). sigma_spatial scales with the radius setting; the depth-range Gaussian keeps silhouettes intact."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.smooth_radius",
+                label: "Smooth radius",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::U32(5),
+                value: Value::U32(5),
+                validation: Validation::U32Range { min: 3, max: 8 },
+                tooltip: Some("Bilateral filter kernel half-width in pixels. Wider kernels merge more adjacent particle splats at the cost of a bit of performance."),
+                technical_tooltip: Some("Live. sigma_spatial = radius / 2 so the Gaussian is never hard-truncated. The range Gaussian (sigma_range proportional to depth) stays tight to preserve silhouettes."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "render.hero.smooth_thickness_splat_scale",
+                label: "Splat scale",
+                category: Category::Water,
+                panel_group: PanelGroup::Advanced,
+                default: Value::F32(1.3),
+                value: Value::F32(1.3),
+                validation: Validation::F32Range { min: 0.5, max: 3.0 },
+                tooltip: Some("Enlarges the depth-capture footprint of each particle splat so neighbours overlap more before smoothing. A small increase (1.2-1.5x) noticeably helps fusing."),
+                technical_tooltip: Some("Live. Multiplies cam.right.w (particle world radius) in the nearest_z write inside fs_thickness. Does NOT change the visible particle size or thickness accumulation."),
+                apply: ApplyClass::Live,
+            },
             // --- Diffuse water: persistent foam / spray / bubbles (v1.13). All
             // Live: sliders rebuild the DiffuseParams uniform; no realloc, no reset.
             // `max_particles` is an active cap within a fixed GPU buffer capacity. ---
@@ -2210,6 +2259,10 @@ impl Registry {
             temporal_depth_reject_threshold: self.f32_or("render.hero.temporal.depth_reject_threshold", 0.1),
             temporal_normal_reject_threshold: self.f32_or("render.hero.temporal.normal_reject_threshold", 0.3),
             temporal_jitter_enabled: self.u32_or("render.hero.temporal.jitter_enabled", 0) != 0,
+            // --- Screen-space surface quality (v1.19 polish) ---
+            smooth_iterations: self.u32_or("render.hero.smooth_iterations", 2),
+            smooth_radius: self.u32_or("render.hero.smooth_radius", 5),
+            smooth_thickness_splat_scale: self.f32_or("render.hero.smooth_thickness_splat_scale", 1.3),
         }
     }
 
@@ -2632,6 +2685,10 @@ mod tests {
             "render.hero.wet_wall.contact_shadow_strength",
             "render.hero.wet_wall.contact_shadow_radius",
             "render.hero.wet_wall.debug_view",
+            // --- v1.19 surface quality ---
+            "render.hero.smooth_iterations",
+            "render.hero.smooth_radius",
+            "render.hero.smooth_thickness_splat_scale",
             // --- v1.18 temporal ---
             "render.hero.temporal.enabled",
             "render.hero.temporal.thickness_history",
@@ -2679,6 +2736,10 @@ mod tests {
         assert!((hero.temporal_history_alpha - 0.15).abs() < 1e-5, "history_alpha default 0.15");
         assert!((hero.temporal_camera_motion_reset_threshold - 0.02).abs() < 1e-5);
         assert!(!hero.temporal_jitter_enabled, "jitter_enabled defaults OFF");
+        // v1.19 surface quality defaults
+        assert_eq!(hero.smooth_iterations, 2, "smooth_iterations default 2");
+        assert_eq!(hero.smooth_radius, 5, "smooth_radius default 5");
+        assert!((hero.smooth_thickness_splat_scale - 1.3).abs() < 1e-5, "splat_scale default 1.3");
     }
 
     #[test]

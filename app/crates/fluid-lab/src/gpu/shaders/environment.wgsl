@@ -65,7 +65,15 @@ fn vs(
 
 // ─── Wetness helpers ──────────────────────────────────────────────────────────
 
+// Cubic-Hermite ("smoothstep") blend weight — makes wetness transitions
+// between grid cells smooth rather than linearly pixelated at the grid scale.
+fn wet_smooth(t: f32) -> f32 {
+    return t * t * (3.0 - 2.0 * t);
+}
+
 // Map a world position on the back wall (z≈lo.z) to its wetness-buffer index.
+// Uses bicubic-smooth interpolation to eliminate the hard texel edges visible
+// up close (bilinear was still too blocky at low grid resolution).
 fn back_wall_wetness(p: vec3<f32>) -> f32 {
     let nx = ww.dims.x;
     let ny = ww.dims.y;
@@ -73,19 +81,24 @@ fn back_wall_wetness(p: vec3<f32>) -> f32 {
     let hi = ww.tank_hi.xyz;
     let span_x = hi.x - lo.x;
     let span_y = hi.y - lo.y;
-    // Map [lo.x, hi.x] -> [0, nx-1], [lo.y, hi.y] -> [0, ny-1]
     let fi = clamp((p.x - lo.x) / span_x, 0.0, 1.0) * f32(nx - 1u);
     let fj = clamp((p.y - lo.y) / span_y, 0.0, 1.0) * f32(ny - 1u);
-    let i = u32(fi);
-    let j = u32(fj);
+    let i0 = u32(fi);
+    let i1 = min(i0 + 1u, nx - 1u);
+    let j0 = u32(fj);
+    let j1 = min(j0 + 1u, ny - 1u);
+    let tx = wet_smooth(fract(fi));
+    let ty = wet_smooth(fract(fj));
     let back_count = ww.face_counts.x; // nx*ny
-    let idx = j * nx + i;
-    if idx >= back_count { return 0.0; }
-    return wetness[idx];
+    let w00 = select(0.0, wetness[j0 * nx + i0], (j0 * nx + i0) < back_count);
+    let w10 = select(0.0, wetness[j0 * nx + i1], (j0 * nx + i1) < back_count);
+    let w01 = select(0.0, wetness[j1 * nx + i0], (j1 * nx + i0) < back_count);
+    let w11 = select(0.0, wetness[j1 * nx + i1], (j1 * nx + i1) < back_count);
+    return mix(mix(w00, w10, tx), mix(w01, w11, tx), ty);
 }
 
-// Wetness for the back wall at a given normalized y in [0,1].
-// Returns wetness at the cell just above (j+1) and just below (j) for gradient.
+// Wetness for the back wall at a given world position.
+// Returns bilinear-sampled wetness at rows j and j+1 for the meniscus gradient.
 fn back_wall_wetness_pair(p: vec3<f32>) -> vec2<f32> {
     let nx = ww.dims.x;
     let ny = ww.dims.y;
@@ -95,18 +108,25 @@ fn back_wall_wetness_pair(p: vec3<f32>) -> vec2<f32> {
     let span_y = hi.y - lo.y;
     let fi = clamp((p.x - lo.x) / span_x, 0.0, 1.0) * f32(nx - 1u);
     let fj_raw = clamp((p.y - lo.y) / span_y, 0.0, 1.0) * f32(ny - 1u);
-    let i   = u32(fi);
-    let j   = u32(fj_raw);
-    let j1  = min(j + 1u, ny - 1u);
+    let i0  = u32(fi);
+    let i1  = min(i0 + 1u, nx - 1u);
+    let tx  = fract(fi);
+    let j0  = u32(fj_raw);
+    let j1  = min(j0 + 1u, ny - 1u);
     let back_count = ww.face_counts.x;
-    let w0_idx = j  * nx + i;
-    let w1_idx = j1 * nx + i;
-    let w0 = select(0.0, wetness[w0_idx], w0_idx < back_count);
-    let w1 = select(0.0, wetness[w1_idx], w1_idx < back_count);
+    // Row j0 (below): bilinear in x
+    let w00 = select(0.0, wetness[j0 * nx + i0], (j0 * nx + i0) < back_count);
+    let w01 = select(0.0, wetness[j0 * nx + i1], (j0 * nx + i1) < back_count);
+    let w0 = mix(w00, w01, tx);
+    // Row j1 (above): bilinear in x
+    let w10 = select(0.0, wetness[j1 * nx + i0], (j1 * nx + i0) < back_count);
+    let w11 = select(0.0, wetness[j1 * nx + i1], (j1 * nx + i1) < back_count);
+    let w1 = mix(w10, w11, tx);
     return vec2<f32>(w0, w1);
 }
 
-// Map a world position on the left wall (x≈lo.x) to its wetness-buffer index.
+// Map a world position on the left wall (x≈lo.x) to its wetness.
+// Uses bicubic-smooth interpolation for smooth transitions at grid scale.
 fn left_wall_wetness(p: vec3<f32>) -> f32 {
     let nz = ww.dims.z;
     let ny = ww.dims.y;
@@ -116,14 +136,23 @@ fn left_wall_wetness(p: vec3<f32>) -> f32 {
     let span_y = hi.y - lo.y;
     let fk = clamp((p.z - lo.z) / span_z, 0.0, 1.0) * f32(nz - 1u);
     let fj = clamp((p.y - lo.y) / span_y, 0.0, 1.0) * f32(ny - 1u);
-    let k = u32(fk);
-    let j = u32(fj);
+    let k0 = u32(fk);
+    let k1 = min(k0 + 1u, nz - 1u);
+    let j0 = u32(fj);
+    let j1 = min(j0 + 1u, ny - 1u);
+    let tk = wet_smooth(fract(fk));
+    let tj = wet_smooth(fract(fj));
     let back_count = ww.face_counts.x;
     let left_count = ww.face_counts.z; // nz*ny
-    let local_idx  = j * nz + k;
-    let idx = back_count + local_idx;
-    if local_idx >= left_count { return 0.0; }
-    return wetness[idx];
+    let idx00 = j0 * nz + k0;
+    let idx10 = j0 * nz + k1;
+    let idx01 = j1 * nz + k0;
+    let idx11 = j1 * nz + k1;
+    let w00 = select(0.0, wetness[back_count + idx00], idx00 < left_count);
+    let w10 = select(0.0, wetness[back_count + idx10], idx10 < left_count);
+    let w01 = select(0.0, wetness[back_count + idx01], idx01 < left_count);
+    let w11 = select(0.0, wetness[back_count + idx11], idx11 < left_count);
+    return mix(mix(w00, w10, tk), mix(w01, w11, tk), tj);
 }
 
 fn left_wall_wetness_pair(p: vec3<f32>) -> vec2<f32> {
@@ -135,19 +164,26 @@ fn left_wall_wetness_pair(p: vec3<f32>) -> vec2<f32> {
     let span_y = hi.y - lo.y;
     let fk = clamp((p.z - lo.z) / span_z, 0.0, 1.0) * f32(nz - 1u);
     let fj_raw = clamp((p.y - lo.y) / span_y, 0.0, 1.0) * f32(ny - 1u);
-    let k   = u32(fk);
-    let j   = u32(fj_raw);
-    let j1  = min(j + 1u, ny - 1u);
+    let k0  = u32(fk);
+    let k1  = min(k0 + 1u, nz - 1u);
+    let tk  = fract(fk);
+    let j0  = u32(fj_raw);
+    let j1  = min(j0 + 1u, ny - 1u);
     let back_count = ww.face_counts.x;
     let left_count = ww.face_counts.z;
-    let w0_idx = j  * nz + k;
-    let w1_idx = j1 * nz + k;
-    let w0 = select(0.0, wetness[back_count + w0_idx], w0_idx < left_count);
-    let w1 = select(0.0, wetness[back_count + w1_idx], w1_idx < left_count);
+    // Row j0 (below): bilinear in k
+    let w00 = select(0.0, wetness[back_count + j0 * nz + k0], (j0 * nz + k0) < left_count);
+    let w01 = select(0.0, wetness[back_count + j0 * nz + k1], (j0 * nz + k1) < left_count);
+    let w0 = mix(w00, w01, tk);
+    // Row j1 (above): bilinear in k
+    let w10 = select(0.0, wetness[back_count + j1 * nz + k0], (j1 * nz + k0) < left_count);
+    let w11 = select(0.0, wetness[back_count + j1 * nz + k1], (j1 * nz + k1) < left_count);
+    let w1 = mix(w10, w11, tk);
     return vec2<f32>(w0, w1);
 }
 
 // Map a world position on the floor (y≈lo.y) to its wetness.
+// Uses bicubic-smooth interpolation for smooth transitions at grid scale.
 fn floor_wetness(p: vec3<f32>) -> f32 {
     let nx = ww.dims.x;
     let nz = ww.dims.z;
@@ -157,14 +193,25 @@ fn floor_wetness(p: vec3<f32>) -> f32 {
     let span_z = hi.z - lo.z;
     let fi = clamp((p.x - lo.x) / span_x, 0.0, 1.0) * f32(nx - 1u);
     let fk = clamp((p.z - lo.z) / span_z, 0.0, 1.0) * f32(nz - 1u);
-    let i = u32(fi);
-    let k = u32(fk);
+    let i0 = u32(fi);
+    let i1 = min(i0 + 1u, nx - 1u);
+    let k0 = u32(fk);
+    let k1 = min(k0 + 1u, nz - 1u);
+    let ti = wet_smooth(fract(fi));
+    let tk = wet_smooth(fract(fk));
     let back_count = ww.face_counts.x;
     let left_count = ww.face_counts.z;
     let floor_count = nx * nz;
-    let local_idx = k * nx + i;
-    if local_idx >= floor_count { return 0.0; }
-    return wetness[back_count + left_count + local_idx];
+    let idx00 = k0 * nx + i0;
+    let idx10 = k0 * nx + i1;
+    let idx01 = k1 * nx + i0;
+    let idx11 = k1 * nx + i1;
+    let base = back_count + left_count;
+    let w00 = select(0.0, wetness[base + idx00], idx00 < floor_count);
+    let w10 = select(0.0, wetness[base + idx10], idx10 < floor_count);
+    let w01 = select(0.0, wetness[base + idx01], idx01 < floor_count);
+    let w11 = select(0.0, wetness[base + idx11], idx11 < floor_count);
+    return mix(mix(w00, w10, ti), mix(w01, w11, ti), tk);
 }
 
 // ─── Fragment stage ───────────────────────────────────────────────────────────
