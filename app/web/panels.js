@@ -176,11 +176,22 @@ const APPLY_BADGE = {
   reload: { text: "reload to apply", cls: "badge-reload" },
 };
 
+function showApplyBadge(badge, apply) {
+  const bi = APPLY_BADGE[apply];
+  if (!bi) {
+    badge.style.display = "none";
+    return;
+  }
+  badge.textContent = bi.text;
+  badge.className = "cfg-badge " + bi.cls;
+  badge.style.display = "inline";
+}
+
 function filteredSettingsForTab(settings, tabId) {
   return settings.filter((s) => s.tab === tabId && !HIDDEN_SETTING_IDS.has(s.id));
 }
 
-function buildConfigPanel(container, app, tabId, allSettings = safeConfigJson(app)) {
+function buildConfigPanel(container, app, tabId, allSettings = safeConfigJson(app), pendingApplyIds = new Set()) {
   hideTip();
   container.innerHTML = "";
 
@@ -191,16 +202,16 @@ function buildConfigPanel(container, app, tabId, allSettings = safeConfigJson(ap
   }
 
   if (tabId === "modes") {
-    buildModesPanel(container, app, settings);
+    buildModesPanel(container, app, settings, pendingApplyIds);
     return;
   }
 
   const rowEls = {};
-  appendCategorySections(container, settings, rowEls, app);
+  appendCategorySections(container, settings, rowEls, app, pendingApplyIds);
   appendResetDefaultsAction(container, app, tabId, settings);
 }
 
-function buildModesPanel(container, app, settings) {
+function buildModesPanel(container, app, settings, pendingApplyIds = new Set()) {
   const rowEls = {};
   const settingsById = new Map(settings.map((s) => [s.id, s]));
   const orderedDefault = [];
@@ -222,7 +233,7 @@ function buildModesPanel(container, app, settings) {
       const setting = settingsById.get(id);
       if (setting) {
         orderedDefault.push(setting);
-        const row = buildSettingRow(setting, app);
+        const row = buildSettingRow(setting, app, pendingApplyIds.has(setting.id));
         rowEls[setting.id] = row.el;
         section.appendChild(row.el);
       }
@@ -235,7 +246,7 @@ function buildModesPanel(container, app, settings) {
 
   const leftover = settings.filter((s) => !orderedDefault.includes(s));
   if (leftover.length) {
-    appendCategorySections(container, leftover, rowEls, app);
+    appendCategorySections(container, leftover, rowEls, app, pendingApplyIds);
   }
 
   appendResetDefaultsAction(container, app, "modes", settings);
@@ -250,18 +261,20 @@ function appendResetDefaultsAction(container, app, tabId, tabSettings) {
   resetBtn.textContent = "Reset to Defaults";
   resetBtn.title = "Restore this tab to compiled defaults";
   resetBtn.addEventListener("click", () => {
+    const pendingApplyIds = new Set();
     for (const s of tabSettings) {
       app.set_setting(s.id, s.default);
+      if (s.apply !== "live") pendingApplyIds.add(s.id);
     }
     persistCurrentSettings(app);
-    buildConfigPanel(container, app, tabId);
+    buildConfigPanel(container, app, tabId, safeConfigJson(app), pendingApplyIds);
   });
 
   actions.appendChild(resetBtn);
   container.appendChild(actions);
 }
 
-function appendCategorySections(parent, settings, rowEls, app) {
+function appendCategorySections(parent, settings, rowEls, app, pendingApplyIds = new Set()) {
   if (!settings.length) return;
 
   const categories = [];
@@ -284,7 +297,7 @@ function appendCategorySections(parent, settings, rowEls, app) {
     section.appendChild(heading);
 
     for (const s of byCategory[cat]) {
-      const row = buildSettingRow(s, app);
+      const row = buildSettingRow(s, app, pendingApplyIds.has(s.id));
       rowEls[s.id] = row.el;
       section.appendChild(row.el);
     }
@@ -330,7 +343,7 @@ function persistCurrentSettings(app) {
   saveStoredConfig(safeConfigJson(app));
 }
 
-function buildSettingRow(s, app) {
+function buildSettingRow(s, app, showPending = false) {
   const isF32 = s.type === "f32";
   const step = isF32 ? (s.max - s.min) / 200 : 1;
   const decimals = isF32 ? 3 : 0;
@@ -356,7 +369,7 @@ function buildSettingRow(s, app) {
   appendHelpIcons(labelWrap, s);
 
   if (Array.isArray(s.options) && s.options.length) {
-    return buildEnumRow(s, app, row, labelWrap);
+    return buildEnumRow(s, app, row, labelWrap, showPending);
   }
 
   if (s.slider_scale === "color") {
@@ -403,6 +416,7 @@ function buildSettingRow(s, app) {
   row.appendChild(labelWrap);
   row.appendChild(controls);
   row.appendChild(badge);
+  if (showPending) showApplyBadge(badge, s.apply);
 
   function applyChange(rawVal) {
     const v = clamp(isF32 ? parseFloat(rawVal) : parseInt(rawVal, 10), s.min, s.max);
@@ -415,12 +429,7 @@ function buildSettingRow(s, app) {
     persistCurrentSettings(app);
 
     if (!live && s.apply !== "live") {
-      const bi = APPLY_BADGE[s.apply];
-      if (bi) {
-        badge.textContent = bi.text;
-        badge.className = "cfg-badge " + bi.cls;
-        badge.style.display = "inline";
-      }
+      showApplyBadge(badge, s.apply);
     } else {
       badge.style.display = "none";
     }
@@ -433,7 +442,7 @@ function buildSettingRow(s, app) {
   return { el: row };
 }
 
-function buildEnumRow(s, app, row, labelWrap) {
+function buildEnumRow(s, app, row, labelWrap, showPending = false) {
   const controls = document.createElement("div");
   controls.className = "cfg-controls";
 
@@ -463,6 +472,7 @@ function buildEnumRow(s, app, row, labelWrap) {
   row.appendChild(labelWrap);
   row.appendChild(controls);
   row.appendChild(badge);
+  if (showPending) showApplyBadge(badge, s.apply);
 
   const autoReset = s.id === "scene.preset";
 
@@ -478,12 +488,7 @@ function buildEnumRow(s, app, row, labelWrap) {
       app.reset();
       badge.style.display = "none";
     } else if (s.apply !== "live") {
-      const bi = APPLY_BADGE[s.apply];
-      if (bi) {
-        badge.textContent = bi.text;
-        badge.className = "cfg-badge " + bi.cls;
-        badge.style.display = "inline";
-      }
+      showApplyBadge(badge, s.apply);
     }
   }
 
