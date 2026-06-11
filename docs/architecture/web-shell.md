@@ -69,17 +69,18 @@ Rows support:
 - per-setting reset-to-default buttons,
 - optional functional and technical help affordances.
 
-Changes call `app.set_setting(id, value)` and persist visible settings to
-`localStorage` under `fluidlab.config.v1`. Hidden scheduler booleans
+Changes call `app.set_setting(id, value)` and persist non-default visible setting
+overrides to `localStorage` under `fluidlab.config.v1`. Hidden scheduler booleans
 (`interaction.auto_roll_enabled`, `interaction.wave_enabled`) are real registry
 settings but are not rendered or persisted as user choices. The `apply` field drives
 the row dot and reset/reload badge. Stored settings replay on startup; if any restored
 setting is reset-class, the panel calls `app.reset()` once to materialize them.
 
-Tab-level "Reset to Defaults" restores only the active config tab's rows and rewrites
-the stored visible settings snapshot. `scene.preset` still auto-calls `app.reset()`;
-other reset-class scene settings, such as `scene.drop_height`, show the normal reset
-badge.
+Tab-level "Reset to Defaults" restores only the active config tab's rows, removes
+default-valued rows from persisted overrides, and keeps reset/reload badges visible for
+settings that still need the running app to reset or reload. `scene.preset` still
+auto-calls `app.reset()` when changed directly; other reset-class scene settings, such as
+`scene.drop_height`, show the normal reset badge.
 
 The Modes tab exposes only product-mode tuning (auto-roll strength/cadence and wave
 strength/frequency). Product Mode itself is owned by the bottom control in `main.js`.
