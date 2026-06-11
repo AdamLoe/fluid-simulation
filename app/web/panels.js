@@ -148,7 +148,7 @@ function saveStoredConfig(settings) {
   try {
     const map = {};
     for (const s of settings) {
-      if (!HIDDEN_SETTING_IDS.has(s.id)) {
+      if (!HIDDEN_SETTING_IDS.has(s.id) && !isDefaultValue(s)) {
         map[s.id] = s.value;
       }
     }
@@ -156,6 +156,13 @@ function saveStoredConfig(settings) {
   } catch (e) {
     console.warn("[panels] localStorage write failed:", e);
   }
+}
+
+function isDefaultValue(s) {
+  if (typeof s.value !== "number" || typeof s.default !== "number") {
+    return s.value === s.default;
+  }
+  return Math.abs(s.value - s.default) <= 1.0e-6;
 }
 
 const APPLY_DOT = {
