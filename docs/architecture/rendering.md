@@ -45,7 +45,8 @@ FluidApp::frame
          scene prepass -> scene_color (Rgba16Float) + scene_depth (R16Float, eye dist):
            procedural skybox (world background) + environment (floor + back/left walls,
              reading the wetness field for darken/gloss/streak/meniscus/contact-shadow) + wireframe
-         thickness + whitewater + nearest-Z MRT -> separable depth smoothing ->
+         thickness + whitewater + nearest-Z MRT -> wall-fill sheet injection ->
+         separable depth smoothing ->
          temporal history-blend of thickness / smooth-Z / whitewater into stabilized targets ->
          caustic generation (half-res) -> caustic composite (additive into scene_color) ->
          composite (opaque) samples scene_color (now caustic-lit) at a normal-driven refract UV,
@@ -74,6 +75,7 @@ frame, not a per-pass breakdown.
 | Diffuse water (foam/spray/bubbles) | Water mode, `render.diffuse.enabled` | `crates/fluid-lab/src/gpu/diffuse.rs -> DiffuseSystem` | `crates/fluid-lab/src/gpu/shaders/diffuse_{emit,update,render}.wgsl` |
 | Caustics (floor/back-wall light focusing) | Water mode, `render.hero.caustics.enabled` | `crates/fluid-lab/src/gpu/caustics.rs -> CausticsSystem` | `crates/fluid-lab/src/gpu/shaders/caustics_{generate,composite}.wgsl` |
 | Wet walls / meniscus / contact shadow | Water mode, `render.hero.wet_wall.enabled` | `crates/fluid-lab/src/gpu/wetwall.rs -> WetWallSystem` (write) + `EnvironmentRenderer` (read) | `crates/fluid-lab/src/gpu/shaders/wetwall_update.wgsl`; reads in `environment.wgsl` |
+| Dense wall fill | Water mode, `render.hero.flat_water.fill_enabled` | `crates/fluid-lab/src/gpu/wallfill.rs -> WallOccupancySystem` (write) + `WallFillRenderer` (MRT injection) | `crates/fluid-lab/src/gpu/shaders/wallfill.wgsl` |
 | Temporal stabilization | Water mode, `render.hero.temporal.enabled` | `crates/fluid-lab/src/gpu/temporal.rs -> TemporalSystem` | `crates/fluid-lab/src/gpu/shaders/temporal_blend.wgsl` |
 | Optical particles | alternate `render.particle_view` | `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer` | `crates/fluid-lab/src/gpu/shaders/particles.wgsl` |
 | Simple particles | alternate `render.particle_view` | `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer` | `crates/fluid-lab/src/gpu/shaders/particles.wgsl` |
@@ -192,20 +194,42 @@ Caustics are screen-space normal-gradient focusing, **not** projected/refracted 
 (`../decisions/rendering.md`). Default off; all `render.hero.caustics.*` are Live.
 
 **Wet walls, meniscus & contact shadow.** `WetWallSystem`
-(`crates/fluid-lab/src/gpu/wetwall.rs`) owns a persistent per-wall-texel `f32` wetness
-field (`gpu-resources.md`) updated once per frame by a compute pass
+(`crates/fluid-lab/src/gpu/wetwall.rs`) owns a persistent supersampled per-wall-texel
+`f32` wetness field (`gpu-resources.md`) updated once per frame by a compute pass
 (`wetwall_update.wgsl`, own encoder, run from `GpuContext::update_wetwall` after
-`update_diffuse`, outside the timestamped sim passes). Each texel reads the **current**
-`cell_type` classification (Liquid cells adjacent to a Solid wall) and decay-blends
+`update_diffuse`, outside the timestamped sim passes). Each supersampled texel reads
+fractional **current** `cell_type` coverage from the adjacent interior layer (Liquid cells
+adjacent to a Solid wall, bilinear over the wall axes) and decay-blends
 `wetness = max(new_contact, prev * pow(decay, dt*60))` — framerate-corrected so streaks
 linger in seconds, not frames. The wall material in `environment.wgsl` reads the field
-to darken/gloss/streak wet regions, draw a thin Fresnel meniscus band at the waterline,
-and a contact shadow at the floor/wall join. This is a procedural **render-only** cue,
-not simulated thin-film drainage (`../decisions/rendering.md`); particle→wetness coupling
+to darken/streak wet regions, blend environment reflections, scale sun sheen by wall
+gloss/specular, draw a thin Fresnel meniscus band at the waterline, and add a contact
+shadow at the floor/wall join. This is a procedural **render-only** cue, not simulated
+thin-film drainage (`../decisions/rendering.md`); particle→wetness coupling
 (`wetness_spray_gain`) is registered but stubbed at 0. Wetness persists across frames and
 clears on Reset (`WetWallSystem` rebuilt with a fresh zeroed buffer in `recreate_fluid`,
-which also rebinds the fresh buffer into the rebuilt `EnvironmentRenderer`). All
-`render.hero.wet_wall.*` are Live.
+which also rebinds the fresh buffer into the rebuilt `EnvironmentRenderer`). Most
+`render.hero.wet_wall.*` settings are Live; `render.hero.wet_wall.supersample` is
+Reset-class because it changes the wetness buffer dimensions. `WetWallSystem` stores the
+allocation-time supersampled dimensions and keeps using them until Reset, so changing the
+Reset-class setting cannot desynchronize the uniform from the allocated buffer mid-run.
+
+**Dense wall fill.** `WallOccupancySystem` (`crates/fluid-lab/src/gpu/wallfill.rs`)
+maintains a dense, current-frame wall occupancy buffer from `cell_type` for the back,
+left, right, front, and floor faces. The atlas is supersampled by
+`render.hero.flat_water.fill_supersample` per wall axis (default 8, selectable to 32),
+so vertical faces store `nx*ss` by `ny*ss` or `nz*ss` by `ny*ss` fractional coverage
+texels instead of one hard texel per sim cell. The render pass runs after particle
+thickness/nearest-Z writes and before bilateral smoothing, intersects each visible tank
+plane per pixel, bilinearly samples the dense atlas in both wall axes, smooths the
+coverage curve by `waterline_softness`, and injects a subtle flat sheet into the same MRT
+targets (`thickness` Add, `nearest_z` Min, `whitewater` Add zero). It also writes a
+full-resolution `wallfill_mask` target, cleared every frame, so `composite.wgsl` can tune
+fill-only color, absorption, reflection, and roughness without changing normal water.
+Because occupancy is stored by wall row instead of as one topmost waterline per column, a
+dry gap between lower and upper water patches remains dry. `fill_strength` scales the
+injected slab, `fill_slab` controls optical body thickness, and `waterline_softness`
+controls the final coverage easing rather than supersampling more texels.
 
 **Temporal stabilization.** `TemporalSystem` (`crates/fluid-lab/src/gpu/temporal.rs`)
 reduces the shimmer across the hero stack by **history-blending** the three full-res

@@ -1,14 +1,12 @@
-//! Wall-fill system (v1.21): continuous gap-filled flat water sheet against glass.
+//! Wall-fill system (v1.21): dense per-wall-cell flat water sheet against glass.
 //!
 //! Two sub-systems:
 //!
-//! `WallOccupancySystem` — a compute pass that writes per-column occupancy
-//! (is any interior cell in this wall column currently Liquid?) and waterline
-//! fraction ((topmost_Liquid_j + 1) / ny — the cell-TOP fraction, matching
-//! y_frac = (hit.y-lo)/size in the render pass) into a dedicated storage buffer.
-//! Runs every frame (no decay), always reflecting the current `cell_type` state.
+//! `WallOccupancySystem` — a compute pass that writes dense per-wall-cell occupancy
+//! into a dedicated storage buffer. Runs every frame (no decay), always reflecting
+//! the current `cell_type` state.
 //! Covers 5 faces: back (z=lo), left (x=lo), right (x=hi), front (z=hi), floor (y=lo).
-//! Buffer layout: [occ f32, waterline_frac f32] per column, 5 faces concatenated.
+//! Buffer layout: one `f32` occupancy value per supersampled face texel, 5 faces concatenated.
 //!
 //! `WallFillRenderer` — a render pass that draws a single full-screen triangle,
 //! intersects each of the 5 tank planes per pixel, and writes into the SAME three
@@ -16,20 +14,20 @@
 //!   target 0 thickness  (R16Float, Add)  — fill_slab
 //!   target 1 nearest_z  (R16Float, Min)  — glass-plane eye distance
 //!   target 2 whitewater (R16Float, Add)  — 0.0 (foam untouched)
+//!   target 3 wallfill mask (R16Float, Replace) — per-pixel fill coverage
 //! This runs AFTER the particle thickness pass (LoadOp::Load) and BEFORE the
 //! bilateral smoothing passes, so the fill is smoothed with the rest of the surface
-//! and composited identically. No changes to the composite or smoothing shaders.
+//! while the mask lets the composite tune fill-only color/reflection. Smoothing does
+//! not need a separate path.
 //!
-//! Column counts per face:
-//!   back  / front (z walls): nc = nx  (column index = i)
-//!   left  / right (x walls): nc = nz  (column index = k)
-//!   floor (y=lo):             nc = nx * nz  (column index = i + k*nx, or k*nx + i)
-//! Total columns: nc_back + nc_left + nc_right + nc_front + nc_floor
-//!              = nx + nz + nz + nx + nx*nz = 2*nx + 2*nz + nx*nz.
+//! Face storage lengths:
+//!   back  / front (z walls): (nx*ss) * (ny*ss)  (index = j*nx_ss + i)
+//!   left  / right (x walls): (nz*ss) * (ny*ss)  (index = j*nz_ss + k)
+//!   floor (y=lo):             (nx*ss) * (nz*ss)  (index = k*nx_ss + i)
 
+use crate::settings::HeroParams;
 use glam::{Mat3, Mat4, Vec3};
 use wgpu::util::DeviceExt;
-use crate::settings::HeroParams;
 
 const WG: u32 = 64;
 
@@ -37,18 +35,20 @@ const WG: u32 = 64;
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct OccUniform {
-    /// x=nx, y=ny, z=nz, w=total_columns
-    dims:     [u32; 4],
-    /// x=nc_back(nx), y=nc_left(nz), z=nc_right(nz), w=nc_front(nx)
-    nc:       [u32; 4],
-    /// x=nc_floor(nx*nz), yzw=unused
+    /// x=nx_ss, y=ny_ss, z=nz_ss, w=total occupancy entries
+    dims: [u32; 4],
+    /// x=nx, y=ny, z=nz, w=ss
+    orig: [u32; 4],
+    /// x=back(nx_ss*ny_ss), y=left(nz_ss*ny_ss), z=right(nz_ss*ny_ss), w=front(nx_ss*ny_ss)
+    nc: [u32; 4],
+    /// x=nc_floor(nx_ss*nz_ss), yzw=unused
     nc_floor: [u32; 4],
     /// x=fill_enabled(0/1), y=fill_strength, z=fill_slab, w=waterline_softness
-    fill:     [f32; 4],
+    fill: [f32; 4],
     /// tank world-space lower corner, w=unused
-    tank_lo:  [f32; 4],
+    tank_lo: [f32; 4],
     /// tank world-space upper corner, w=unused
-    tank_hi:  [f32; 4],
+    tank_hi: [f32; 4],
 }
 
 /// Per-frame camera uniform for the fill render pass.
@@ -56,43 +56,53 @@ struct OccUniform {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct FillUniform {
     /// x=fill_enabled, y=fill_strength, z=fill_slab, w=waterline_softness
-    fill:          [f32; 4],
-    /// x=nx, y=ny, z=nz, w=total_columns
-    dims:          [u32; 4],
-    /// x=nc_back, y=nc_left, z=nc_right, w=nc_front
-    nc:            [u32; 4],
+    fill: [f32; 4],
+    /// x=nx_ss, y=ny_ss, z=nz_ss, w=total occupancy entries
+    dims: [u32; 4],
+    /// x=back(nx_ss*ny_ss), y=left(nz_ss*ny_ss), z=right(nz_ss*ny_ss), w=front(nx_ss*ny_ss)
+    nc: [u32; 4],
     /// x=nc_floor, yzw=unused
-    nc_floor:      [u32; 4],
+    nc_floor: [u32; 4],
     /// x=tan(fov_y/2), y=width, z=height, w=unused
-    cam_params:    [f32; 4],
+    cam_params: [f32; 4],
     /// tank lo (xyz, w=unused)
-    tank_lo:       [f32; 4],
+    tank_lo: [f32; 4],
     /// tank hi (xyz, w=unused)
-    tank_hi:       [f32; 4],
+    tank_hi: [f32; 4],
     /// camera eye in box-local space (xyz, w=unused)
     box_eye_local: [f32; 4],
     /// box-local→world rotation col0 (padded)
-    box_rot_col0:  [f32; 4],
+    box_rot_col0: [f32; 4],
     /// box-local→world rotation col1
-    box_rot_col1:  [f32; 4],
+    box_rot_col1: [f32; 4],
     /// box-local→world rotation col2
-    box_rot_col2:  [f32; 4],
+    box_rot_col2: [f32; 4],
     /// eye→world rotation (mat4x4, upper-left 3x3 used)
-    eye_to_world:  [[f32; 4]; 4],
+    eye_to_world: [[f32; 4]; 4],
     /// x=flat_water epsilon, yzw=unused
-    flat_epsilon:  [f32; 4],
+    flat_epsilon: [f32; 4],
 }
 
 pub struct WallOccupancySystem {
-    /// Storage buffer: 2 f32 per column (occ, waterline_frac).
-    pub occ_buf:     wgpu::Buffer,
+    /// Storage buffer: 1 f32 occupancy value per wall texel/cell.
+    pub occ_buf: wgpu::Buffer,
     /// Uniform buffer (OccUniform).
-    uniform_buf:     wgpu::Buffer,
-    pipeline:        wgpu::ComputePipeline,
-    bind_group:      wgpu::BindGroup,
-    total_columns:   u32,
-    nx: u32, ny: u32, nz: u32,
-    nc_back: u32, nc_left: u32, nc_right: u32, nc_front: u32, nc_floor: u32,
+    uniform_buf: wgpu::Buffer,
+    pipeline: wgpu::ComputePipeline,
+    bind_group: wgpu::BindGroup,
+    total_columns: u32,
+    ss: u32,
+    orig_nx: u32,
+    orig_ny: u32,
+    orig_nz: u32,
+    nx: u32,
+    ny: u32,
+    nz: u32,
+    nc_back: u32,
+    nc_left: u32,
+    nc_right: u32,
+    nc_front: u32,
+    nc_floor: u32,
     tank_lo: [f32; 3],
     tank_hi: [f32; 3],
 }
@@ -101,24 +111,35 @@ impl WallOccupancySystem {
     pub fn new(
         device: &wgpu::Device,
         cell_type_buf: &wgpu::Buffer,
-        nx: u32, ny: u32, nz: u32,
+        nx: u32,
+        ny: u32,
+        nz: u32,
         tank_lo: [f32; 3],
         tank_hi: [f32; 3],
         hero: &HeroParams,
     ) -> Self {
-        let nc_back  = nx;
-        let nc_left  = nz;
-        let nc_right = nz;
-        let nc_front = nx;
-        let nc_floor = nx * nz;
+        let ss = hero.flat_water_fill_supersample.max(1).min(32);
+        let nx_ss = nx.saturating_mul(ss);
+        let ny_ss = ny.saturating_mul(ss);
+        let nz_ss = nz.saturating_mul(ss);
+        let nc_back = nx_ss * ny_ss;
+        let nc_left = nz_ss * ny_ss;
+        let nc_right = nz_ss * ny_ss;
+        let nc_front = nx_ss * ny_ss;
+        let nc_floor = nx_ss * nz_ss;
         let total_columns = nc_back + nc_left + nc_right + nc_front + nc_floor;
 
         let init_u = OccUniform {
-            dims:     [nx, ny, nz, total_columns],
-            nc:       [nc_back, nc_left, nc_right, nc_front],
+            dims: [nx_ss, ny_ss, nz_ss, total_columns],
+            orig: [nx, ny, nz, ss],
+            nc: [nc_back, nc_left, nc_right, nc_front],
             nc_floor: [nc_floor, 0, 0, 0],
-            fill:     [
-                if hero.flat_water_fill_enabled { 1.0 } else { 0.0 },
+            fill: [
+                if hero.flat_water_fill_enabled {
+                    1.0
+                } else {
+                    0.0
+                },
                 hero.flat_water_fill_strength.clamp(0.0, 1.0),
                 hero.flat_water_fill_slab.max(0.0),
                 hero.flat_water_waterline_softness.max(0.001),
@@ -133,19 +154,17 @@ impl WallOccupancySystem {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // 2 f32 per column.
+        // 1 f32 per wall texel/cell.
         let occ_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wallfill occ buffer"),
-            size: (total_columns as u64) * 2 * 4,
+            size: (total_columns as u64) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wallfill compute shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/wallfill.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/wallfill.wgsl").into()),
         });
 
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -191,9 +210,18 @@ impl WallOccupancySystem {
             label: Some("wallfill occ bg"),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: cell_type_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: occ_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: cell_type_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: occ_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -218,27 +246,37 @@ impl WallOccupancySystem {
             pipeline,
             bind_group,
             total_columns,
-            nx, ny, nz,
-            nc_back, nc_left, nc_right, nc_front, nc_floor,
+            ss,
+            orig_nx: nx,
+            orig_ny: ny,
+            orig_nz: nz,
+            nx: nx_ss,
+            ny: ny_ss,
+            nz: nz_ss,
+            nc_back,
+            nc_left,
+            nc_right,
+            nc_front,
+            nc_floor,
             tank_lo,
             tank_hi,
         }
     }
 
     /// Dispatch the occupancy compute pass.
-    pub fn record_step(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        hero: &HeroParams,
-    ) {
+    pub fn record_step(&self, device: &wgpu::Device, queue: &wgpu::Queue, hero: &HeroParams) {
         // Update uniform with current fill params.
         let u = OccUniform {
-            dims:     [self.nx, self.ny, self.nz, self.total_columns],
-            nc:       [self.nc_back, self.nc_left, self.nc_right, self.nc_front],
+            dims: [self.nx, self.ny, self.nz, self.total_columns],
+            orig: [self.orig_nx, self.orig_ny, self.orig_nz, self.ss],
+            nc: [self.nc_back, self.nc_left, self.nc_right, self.nc_front],
             nc_floor: [self.nc_floor, 0, 0, 0],
-            fill:     [
-                if hero.flat_water_fill_enabled { 1.0 } else { 0.0 },
+            fill: [
+                if hero.flat_water_fill_enabled {
+                    1.0
+                } else {
+                    0.0
+                },
                 hero.flat_water_fill_strength.clamp(0.0, 1.0),
                 hero.flat_water_fill_slab.max(0.0),
                 hero.flat_water_waterline_softness.max(0.001),
@@ -273,7 +311,13 @@ impl WallOccupancySystem {
     }
 
     pub fn column_counts(&self) -> (u32, u32, u32, u32, u32) {
-        (self.nc_back, self.nc_left, self.nc_right, self.nc_front, self.nc_floor)
+        (
+            self.nc_back,
+            self.nc_left,
+            self.nc_right,
+            self.nc_front,
+            self.nc_floor,
+        )
     }
 
     pub fn total_columns(&self) -> u32 {
@@ -286,46 +330,52 @@ impl WallOccupancySystem {
 // ============================================================
 
 pub struct WallFillRenderer {
-    pipeline:        wgpu::RenderPipeline,
+    pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    fill_buf:        wgpu::Buffer,
-    bind_group:      wgpu::BindGroup,
-    nx: u32, ny: u32, nz: u32,
-    nc_back: u32, nc_left: u32, nc_right: u32, nc_front: u32, nc_floor: u32,
+    fill_buf: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    nx: u32,
+    ny: u32,
+    nz: u32,
+    nc_back: u32,
+    nc_left: u32,
+    nc_right: u32,
+    nc_front: u32,
+    nc_floor: u32,
     total_columns: u32,
     tank_lo: [f32; 3],
     tank_hi: [f32; 3],
 }
 
 impl WallFillRenderer {
-    pub fn new(
-        device: &wgpu::Device,
-        occ: &WallOccupancySystem,
-        hero: &HeroParams,
-    ) -> Self {
+    pub fn new(device: &wgpu::Device, occ: &WallOccupancySystem, hero: &HeroParams) -> Self {
         let (nx, ny, nz) = occ.dims();
         let (nc_back, nc_left, nc_right, nc_front, nc_floor) = occ.column_counts();
         let total_columns = occ.total_columns();
 
         let init_fill = FillUniform {
             fill: [
-                if hero.flat_water_fill_enabled { 1.0 } else { 0.0 },
+                if hero.flat_water_fill_enabled {
+                    1.0
+                } else {
+                    0.0
+                },
                 hero.flat_water_fill_strength.clamp(0.0, 1.0),
                 hero.flat_water_fill_slab.max(0.0),
                 hero.flat_water_waterline_softness.max(0.001),
             ],
-            dims:          [nx, ny, nz, total_columns],
-            nc:            [nc_back, nc_left, nc_right, nc_front],
-            nc_floor:      [nc_floor, 0, 0, 0],
-            cam_params:    [(50.0_f32.to_radians() * 0.5).tan(), 1.0, 1.0, 0.0],
-            tank_lo:       [occ.tank_lo[0], occ.tank_lo[1], occ.tank_lo[2], 0.0],
-            tank_hi:       [occ.tank_hi[0], occ.tank_hi[1], occ.tank_hi[2], 0.0],
+            dims: [nx, ny, nz, total_columns],
+            nc: [nc_back, nc_left, nc_right, nc_front],
+            nc_floor: [nc_floor, 0, 0, 0],
+            cam_params: [(50.0_f32.to_radians() * 0.5).tan(), 1.0, 1.0, 0.0],
+            tank_lo: [occ.tank_lo[0], occ.tank_lo[1], occ.tank_lo[2], 0.0],
+            tank_hi: [occ.tank_hi[0], occ.tank_hi[1], occ.tank_hi[2], 0.0],
             box_eye_local: [0.0; 4],
-            box_rot_col0:  [1.0, 0.0, 0.0, 0.0],
-            box_rot_col1:  [0.0, 1.0, 0.0, 0.0],
-            box_rot_col2:  [0.0, 0.0, 1.0, 0.0],
-            eye_to_world:  Mat4::IDENTITY.to_cols_array_2d(),
-            flat_epsilon:  [hero.flat_water_epsilon.max(0.0), 0.0, 0.0, 0.0],
+            box_rot_col0: [1.0, 0.0, 0.0, 0.0],
+            box_rot_col1: [0.0, 1.0, 0.0, 0.0],
+            box_rot_col2: [0.0, 0.0, 1.0, 0.0],
+            eye_to_world: Mat4::IDENTITY.to_cols_array_2d(),
+            flat_epsilon: [hero.flat_water_epsilon.max(0.0), 0.0, 0.0, 0.0],
         };
 
         let fill_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -336,9 +386,7 @@ impl WallFillRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wallfill render shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/wallfill.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/wallfill.wgsl").into()),
         });
 
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -373,8 +421,14 @@ impl WallFillRenderer {
             label: Some("wallfill fill bg"),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 3, resource: fill_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: occ.occ_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: fill_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: occ.occ_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -384,10 +438,12 @@ impl WallFillRenderer {
             immediate_size: 0,
         });
 
-        // Pipeline matching the SAME blend modes as the particle thickness pipeline:
+        // Pipeline matching the SAME blend modes as the particle thickness pipeline,
+        // plus a wall-fill-only coverage mask for composite-time color/reflection tuning:
         //   target 0 (thickness): Add/Add
         //   target 1 (nearest_z): Min/Min
         //   target 2 (whitewater): Add/Add
+        //   target 3 (wallfill_mask): Replace
         let add_blend = wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -441,6 +497,11 @@ impl WallFillRenderer {
                         blend: Some(add_blend),
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::R16Float,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
                 ],
                 compilation_options: Default::default(),
             }),
@@ -459,8 +520,14 @@ impl WallFillRenderer {
             bind_group_layout: bgl,
             fill_buf,
             bind_group,
-            nx, ny, nz,
-            nc_back, nc_left, nc_right, nc_front, nc_floor,
+            nx,
+            ny,
+            nz,
+            nc_back,
+            nc_left,
+            nc_right,
+            nc_front,
+            nc_floor,
             total_columns,
             tank_lo: occ.tank_lo,
             tank_hi: occ.tank_hi,
@@ -473,16 +540,26 @@ impl WallFillRenderer {
             label: Some("wallfill fill bg"),
             layout: &self.bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 3, resource: self.fill_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: occ.occ_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.fill_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: occ.occ_buf.as_entire_binding(),
+                },
             ],
         });
         // Update stored dims from new occ.
         let (nx, ny, nz) = occ.dims();
         let (nc_back, nc_left, nc_right, nc_front, nc_floor) = occ.column_counts();
-        self.nx = nx; self.ny = ny; self.nz = nz;
-        self.nc_back = nc_back; self.nc_left = nc_left;
-        self.nc_right = nc_right; self.nc_front = nc_front;
+        self.nx = nx;
+        self.ny = ny;
+        self.nz = nz;
+        self.nc_back = nc_back;
+        self.nc_left = nc_left;
+        self.nc_right = nc_right;
+        self.nc_front = nc_front;
         self.nc_floor = nc_floor;
         self.total_columns = occ.total_columns();
         self.tank_lo = occ.tank_lo;
@@ -502,13 +579,17 @@ impl WallFillRenderer {
     ) {
         let fu = FillUniform {
             fill: [
-                if hero.flat_water_fill_enabled { 1.0 } else { 0.0 },
+                if hero.flat_water_fill_enabled {
+                    1.0
+                } else {
+                    0.0
+                },
                 hero.flat_water_fill_strength.clamp(0.0, 1.0),
                 hero.flat_water_fill_slab.max(0.0),
                 hero.flat_water_waterline_softness.max(0.001),
             ],
-            dims:     [self.nx, self.ny, self.nz, self.total_columns],
-            nc:       [self.nc_back, self.nc_left, self.nc_right, self.nc_front],
+            dims: [self.nx, self.ny, self.nz, self.total_columns],
+            nc: [self.nc_back, self.nc_left, self.nc_right, self.nc_front],
             nc_floor: [self.nc_floor, 0, 0, 0],
             cam_params: [
                 (50.0_f32.to_radians() * 0.5).tan(),
@@ -519,11 +600,11 @@ impl WallFillRenderer {
             tank_lo: [self.tank_lo[0], self.tank_lo[1], self.tank_lo[2], 0.0],
             tank_hi: [self.tank_hi[0], self.tank_hi[1], self.tank_hi[2], 0.0],
             box_eye_local: [eye_world_local.x, eye_world_local.y, eye_world_local.z, 0.0],
-            box_rot_col0:  [box_rot.x_axis.x, box_rot.x_axis.y, box_rot.x_axis.z, 0.0],
-            box_rot_col1:  [box_rot.y_axis.x, box_rot.y_axis.y, box_rot.y_axis.z, 0.0],
-            box_rot_col2:  [box_rot.z_axis.x, box_rot.z_axis.y, box_rot.z_axis.z, 0.0],
-            eye_to_world:  eye_to_world.to_cols_array_2d(),
-            flat_epsilon:  [hero.flat_water_epsilon.max(0.0), 0.0, 0.0, 0.0],
+            box_rot_col0: [box_rot.x_axis.x, box_rot.x_axis.y, box_rot.x_axis.z, 0.0],
+            box_rot_col1: [box_rot.y_axis.x, box_rot.y_axis.y, box_rot.y_axis.z, 0.0],
+            box_rot_col2: [box_rot.z_axis.x, box_rot.z_axis.y, box_rot.z_axis.z, 0.0],
+            eye_to_world: eye_to_world.to_cols_array_2d(),
+            flat_epsilon: [hero.flat_water_epsilon.max(0.0), 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&self.fill_buf, 0, bytemuck::bytes_of(&fu));
     }

@@ -31,8 +31,10 @@ At boot, `GpuContext::new` requests a `HighPerformance` adapter, clones the full
   (`gpu/diffuse.rs`, the render-only foam/spray/bubble particles — owns its own
   persistent particle + counter + uniform buffers), `CausticsSystem`
   (`gpu/caustics.rs`, half-res caustic ping-pong targets), `WetWallSystem`
-  (`gpu/wetwall.rs`, the persistent per-wall-texel wetness buffer; rebuilt on recreate),
-  and `TemporalSystem` (`gpu/temporal.rs`, full-res history ping-pong); renderers that
+  (`gpu/wetwall.rs`, the persistent supersampled per-wall-texel wetness buffer; rebuilt
+  on recreate), `WallOccupancySystem` / `WallFillRenderer` (`gpu/wallfill.rs`, the dense
+  current-frame wall-fill occupancy buffer + MRT injection renderer), and
+  `TemporalSystem` (`gpu/temporal.rs`, full-res history ping-pong); renderers that
   need simulation data receive buffer handles from `GpuFluid` at construction, not raw
   device buffers. `GpuFluid::grid_dims()` and `GpuFluid::tank_bounds()` thread the
   per-axis cell counts and the world-space tank AABB into the renderers (the wireframe
@@ -78,7 +80,7 @@ Bind groups are built once in `GpuFluid::new`; buffers never move after creation
 
 **naga drops unused bindings.** When a WGSL shader does not reference a binding, naga's reflection omits it from the auto-generated `BindGroupLayout`. If the Rust side builds a BGL from the pipeline's reflected layout and that BGL is then used to create a bind group that _does_ include the unused binding, the counts mismatch and pipeline creation fails silently. The fix is either to ensure every shader references `params` (binding 0) or to pass an explicit `BindGroupLayoutDescriptor` to `create_compute_pipeline`. Any new shader that adds a params uniform must actually read a field from it.
 
-**Reset-class settings require buffer reallocation.** The per-axis grid resolutions `grid.res_x/res_y/res_z`, particle count, `fixed_dt`, `max_substeps`, and `dev.detailed_gpu_profiling` are baked into buffer sizes, uniforms, or timer layout at construction. Changing them requires calling `GpuContext::recreate_fluid`, which calls `GpuFluid::new` and rebuilds the `WireframeRenderer`, `EnvironmentRenderer`, `ParticleRenderer`, `SliceRenderer`, `DiffuseSystem`, and `WetWallSystem` from the new buffer handles (and re-applies the current `HeroParams` to the rebuilt environment; rebuilding `DiffuseSystem` clears its particles, rebuilding `WetWallSystem` zeroes the wetness field and rebinds it into the environment, and both rebind the fresh sim buffers; temporal + caustics history is also dropped for a clean first frame). The swapchain-sized temporal/caustics ping-pong targets are rebuilt on `resize`/`Outdated`, not here. `GpuTimers` is also rebuilt from the new `max_substeps` / mode / `pressure_iters`. The device, surface, and format are untouched. Live/tweak-class settings are written to uniforms or renderer state without a rebuild.
+**Reset-class settings require buffer reallocation.** The per-axis grid resolutions `grid.res_x/res_y/res_z`, particle count, `fixed_dt`, `max_substeps`, `render.hero.wet_wall.supersample`, `render.hero.flat_water.fill_supersample`, and `dev.detailed_gpu_profiling` are baked into buffer sizes, uniforms, or timer layout at construction. Changing them requires calling `GpuContext::recreate_fluid`, which calls `GpuFluid::new` and rebuilds the `WireframeRenderer`, `EnvironmentRenderer`, `ParticleRenderer`, `SliceRenderer`, `DiffuseSystem`, `WetWallSystem`, and `WallOccupancySystem` from the new buffer handles (and re-applies the current `HeroParams` to the rebuilt environment; rebuilding `DiffuseSystem` clears its particles, rebuilding `WetWallSystem` zeroes the wetness field and rebinds it into the environment, and both wet-wall/wall-fill systems rebind the fresh sim buffers; temporal + caustics history is also dropped for a clean first frame). The swapchain-sized temporal/caustics ping-pong targets plus `wallfill_mask` are rebuilt on `resize`/`Outdated`, not here. `GpuTimers` is also rebuilt from the new `max_substeps` / mode / `pressure_iters`. The device, surface, and format are untouched. Live/tweak-class settings are written to uniforms or renderer state without a rebuild.
 
 **Particle-linear work uses one shared tiled dispatch shape.**
 `gpu/fluid.rs -> particle_dispatch_shape` is the contract for every particle-linear
@@ -125,11 +127,22 @@ The hero-water finishing systems own three more render-memory allocations, all G
   ping-pong pair (the working caustic map + its temporal history); ≈ 1 MB total at
   1280×800. The composite/composite-bind groups read the freshly-written half each frame.
 - **Wetness** (`gpu/wetwall.rs -> WetWallSystem`) — one flat `f32` `STORAGE | COPY_DST`
-  buffer, **one texel per wall surface cell**: back wall `nx·ny` + left wall `nz·ny` +
-  floor `nx·nz` concatenated (sized from the per-axis grid dims). At default 64³ that is
-  ~12k texels × 4 B ≈ 48 KB — negligible. Shares a small `WetWallUniform` (dims +
-  tank bounds + strengths) with `environment.wgsl` so the wall FS and the update pass map
-  world position → texel identically. Rebuilt (zeroed) on `recreate_fluid`.
+  buffer, supersampled by `render.hero.wet_wall.supersample` per wall axis:
+  back wall `(nx*ss)·(ny*ss)` + left wall `(nz*ss)·(ny*ss)` + floor
+  `(nx*ss)·(nz*ss)` concatenated. At default 64³ and `ss=8`, that is ~786k texels × 4 B
+  ≈ 3.0 MB; at selectable max `ss=32`, ~12.6M texels ≈ 48 MB. Shares a small
+  `WetWallUniform` (allocation-time supersampled dims + tank bounds + strengths) with
+  `environment.wgsl` so the wall FS and update pass map world position → texel
+  identically. Rebuilt (zeroed) on `recreate_fluid`.
+- **Wall fill occupancy** (`gpu/wallfill.rs -> WallOccupancySystem`) — one flat `f32`
+  storage buffer with dense current-frame wall occupancy, supersampled by
+  `render.hero.flat_water.fill_supersample`: back/front `(nx*ss)·(ny*ss)` each,
+  left/right `(nz*ss)·(ny*ss)` each, plus floor `(nx*ss)·(nz*ss)`. At default 64³ and
+  `ss=8` this is ~1.84M entries × 4 B ≈ 7.0 MB; at selectable max `ss=32`,
+  ~29.4M entries ≈ 112 MB. It is recomputed from `cell_type` every frame while wall fill
+  is enabled and is rebound when `recreate_fluid` creates fresh sim buffers. The wall-fill
+  render pass also clears/writes one swapchain-sized `R16Float` `wallfill_mask` target
+  each frame; the composite samples it for fill-only optical controls.
 - **Temporal** (`gpu/temporal.rs -> TemporalSystem`) — true **full-res** `R16Float`
   ping-pong (two stabilized textures) per enabled target: `thickness` + `smooth_z`
   (default-on) ≈ **8 MB**, plus `whitewater` ≈ **4 MB** when `foam_history` is on, at

@@ -187,12 +187,17 @@ is the seam).
 
 ## Wet walls are a procedural render-only cue, not simulated drainage
 
-**Decision** - The wet-wall look — darken/gloss/streak on touched walls, a thin meniscus
-band at the waterline, a contact shadow at the floor/wall join — is driven by a persistent
-per-wall-texel wetness field written each frame from the **current** cell-type
-classification (Liquid adjacent to Solid) and decay-blended over time, then read by the
-wall material (`gpu/wetwall.rs` + `environment.wgsl`, v1.17). It does **not** simulate
-thin-film drainage or per-droplet rivulets, and it never touches the sim buffers.
+**Decision** - The wet-wall look — darken/streak/reflect/gloss on touched walls, a thin
+meniscus band at the waterline, a contact shadow at the floor/wall join — is driven by a
+persistent supersampled per-wall-texel wetness field written each frame from the
+**current** cell-type classification (Liquid adjacent to Solid, sampled as fractional
+coverage on the supersampled wall axes) and decay-blended over time, then read by the
+wall material (`gpu/wetwall.rs` + `environment.wgsl`, v1.17+). The wall-fill sheet is
+likewise render-only: `gpu/wallfill.rs` writes a supersampled dense occupancy atlas from
+the current `cell_type`, injects the sheet into the screen-space water MRTs before
+smoothing, and writes a screen-space `wallfill_mask` that lets composite apply fill-only
+color, absorption, reflection, and roughness controls. These cues do **not** simulate
+thin-film drainage or per-droplet rivulets, and they never touch the sim buffers.
 
 **Why** - A real thin-film/drainage simulation is its own physics project; the cell-type
 adjacency signal already marks every wall contact (the same signal that spawns spray), so a
@@ -200,13 +205,18 @@ decaying procedural wetness field gives believable lingering wet streaks for alm
 and keeps the sim's determinism contract untouched. Streaks are a cheap procedural cue.
 
 **Tradeoffs** - Wetness is render state only (clears on Reset, persists across frames); it
-cannot show flow direction or true rivulets. Direct particle/spray→wetness coupling is
-registered (`wetness_spray_gain`) but stubbed at 0 — airborne spray re-wetting a wall above
-the waterline is a follow-up. Defaults are intentionally subtle.
+cannot show flow direction or true rivulets. Supersampling and bilinear contact coverage
+reduce visible cell blocks, but the signal still originates from grid classification rather
+than individual droplets. Direct particle/spray→wetness coupling is registered
+(`wetness_spray_gain`) but stubbed at 0 — airborne spray re-wetting a wall above the
+waterline is a follow-up. The dense wall-fill mask fixes vertical merging from the old
+topmost-waterline column model, but it remains a screen-space visual sheet rather than
+additional simulated water mass. Defaults are intentionally subtle.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/wetwall.rs -> WetWallSystem`;
 `crates/fluid-lab/src/gpu/shaders/wetwall_update.wgsl`; the wall reads in
-`crates/fluid-lab/src/gpu/shaders/environment.wgsl`.
+`crates/fluid-lab/src/gpu/shaders/environment.wgsl`; `crates/fluid-lab/src/gpu/wallfill.rs
+-> WallOccupancySystem`.
 
 **Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`,
 `architecture/settings.md`.

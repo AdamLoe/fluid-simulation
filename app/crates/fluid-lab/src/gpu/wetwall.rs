@@ -6,9 +6,9 @@
 //! walls and render a meniscus highlight and contact shadow.
 //!
 //! Buffer layout (one `f32` per texel, concatenated):
-//!   [0 .. nx*ny)           back wall  (z = lo.z): i in [0,nx), j in [0,ny)
-//!   [nx*ny .. nx*ny+nz*ny) left wall  (x = lo.x): k in [0,nz), j in [0,ny)
-//!   [nx*ny+nz*ny .. total) floor       (y = lo.y): i in [0,nx), k in [0,nz)
+//!   [0 .. nx_ss*ny_ss)           back wall  (z = lo.z): i in [0,nx_ss), j in [0,ny_ss)
+//!   [.. + nz_ss*ny_ss)           left wall  (x = lo.x): k in [0,nz_ss), j in [0,ny_ss)
+//!   [.. + nx_ss*nz_ss)           floor      (y = lo.y): i in [0,nx_ss), k in [0,nz_ss)
 //!
 //! The write-pass mapping and the environment FS mapping share the `WetWallUniform`
 //! so the indices are identical.
@@ -28,49 +28,53 @@ const WG: u32 = 64;
 pub struct WetWallUniform {
     /// [nx_ss, ny_ss, nz_ss, total_texels_ss]
     /// nx_ss = nx * supersample (supersampled texel dimensions).
-    pub dims:        [u32; 4],
+    pub dims: [u32; 4],
     /// [back_count_ss (nx_ss*ny_ss), supersample, left_count_ss (nz_ss*ny_ss), nx (original cell grid)]
     /// supersample at .y, original nx at .w — both previously unused zero fields.
     pub face_counts: [u32; 4],
     /// [wetness_decay, dt, contact_gain, enabled (0/1 as f32)]
-    pub params:      [f32; 4],
+    pub params: [f32; 4],
     /// tank world-space lower corner, w=unused
-    pub tank_lo:     [f32; 4],
+    pub tank_lo: [f32; 4],
     /// tank world-space upper corner, w=unused
-    pub tank_hi:     [f32; 4],
+    pub tank_hi: [f32; 4],
     /// [darkening_strength, gloss_strength, streak_strength, meniscus_enabled]
-    pub render0:     [f32; 4],
+    pub render0: [f32; 4],
     /// [meniscus_width, meniscus_strength, meniscus_fresnel_boost, contact_shadow_enabled]
-    pub render1:     [f32; 4],
+    pub render1: [f32; 4],
     /// [contact_shadow_strength, contact_shadow_radius, debug_view (0=off), blur_radius]
-    pub render2:     [f32; 4],
+    pub render2: [f32; 4],
 }
 
 pub struct WetWallSystem {
     /// Flat `f32` storage for the wetness field — one value per wall texel.
-    pub wetness_buf:  wgpu::Buffer,
+    pub wetness_buf: wgpu::Buffer,
     /// Shared uniform buffer (WetWallUniform) written each `record_step`.
-    pub uniform_buf:  wgpu::Buffer,
+    pub uniform_buf: wgpu::Buffer,
     update_pipeline: wgpu::ComputePipeline,
-    update_bg:       wgpu::BindGroup,
-    total_texels:    u32,
+    update_bg: wgpu::BindGroup,
+    alloc_dims: [u32; 4],
+    alloc_faces: [u32; 4],
+    total_texels: u32,
 }
 
 impl WetWallSystem {
     pub fn new(
         device: &wgpu::Device,
         cell_type_buf: &wgpu::Buffer,
-        nx: u32, ny: u32, nz: u32,
+        nx: u32,
+        ny: u32,
+        nz: u32,
         tank_lo: [f32; 3],
         tank_hi: [f32; 3],
         supersample: u32,
     ) -> Self {
-        let ss = supersample.max(1).min(4);
+        let ss = supersample.max(1).min(32);
         let nx_ss = nx * ss;
         let ny_ss = ny * ss;
         let nz_ss = nz * ss;
-        let back_count  = nx_ss * ny_ss;
-        let left_count  = nz_ss * ny_ss;
+        let back_count = nx_ss * ny_ss;
+        let left_count = nz_ss * ny_ss;
         let floor_count = nx_ss * nz_ss;
         let total_texels = back_count + left_count + floor_count;
 
@@ -87,14 +91,14 @@ impl WetWallSystem {
         // can read it before the first `record_step`.
         // dims stores the supersampled counts; face_counts.y = ss, .w = original nx.
         let init_uniform = WetWallUniform {
-            dims:        [nx_ss, ny_ss, nz_ss, total_texels],
+            dims: [nx_ss, ny_ss, nz_ss, total_texels],
             face_counts: [back_count, ss, left_count, nx],
-            params:      [0.97, 1.0 / 60.0, 1.0, 1.0], // decay, dt, contact_gain, enabled
-            tank_lo:     [tank_lo[0], tank_lo[1], tank_lo[2], 0.0],
-            tank_hi:     [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
-            render0:     [0.18, 0.25, 0.12, 1.0],  // darkening, gloss, streak, meniscus_en
-            render1:     [0.04, 0.15, 0.12, 1.0],  // meniscus_width, strength, fresnel, shadow_en
-            render2:     [0.15, 0.08, 0.0, 1.0],   // shadow_strength, shadow_radius, debug, blur_radius
+            params: [0.97, 1.0 / 60.0, 1.0, 1.0], // decay, dt, contact_gain, enabled
+            tank_lo: [tank_lo[0], tank_lo[1], tank_lo[2], 0.0],
+            tank_hi: [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
+            render0: [0.18, 0.25, 0.12, 1.0], // darkening, gloss, streak, meniscus_en
+            render1: [0.04, 0.15, 0.12, 1.0], // meniscus_width, strength, fresnel, shadow_en
+            render2: [0.15, 0.08, 0.0, 1.0],  // shadow_strength, shadow_radius, debug, blur_radius
         };
         let uniform_buf = {
             use wgpu::util::DeviceExt;
@@ -107,9 +111,7 @@ impl WetWallSystem {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wetwall update shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/wetwall_update.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/wetwall_update.wgsl").into()),
         });
 
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -155,9 +157,18 @@ impl WetWallSystem {
             label: Some("wetwall update bg"),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: cell_type_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wetness_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: cell_type_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wetness_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -181,6 +192,8 @@ impl WetWallSystem {
             uniform_buf,
             update_pipeline,
             update_bg,
+            alloc_dims: [nx_ss, ny_ss, nz_ss, total_texels],
+            alloc_faces: [back_count, ss, left_count, nx],
             total_texels,
         }
     }
@@ -193,27 +206,17 @@ impl WetWallSystem {
         queue: &wgpu::Queue,
         dt: f32,
         hero: &HeroParams,
-        nx: u32, ny: u32, nz: u32,
+        _nx: u32,
+        _ny: u32,
+        _nz: u32,
         tank_lo: [f32; 3],
         tank_hi: [f32; 3],
     ) {
-        // NOTE: we re-read ss from the live hero setting here. wet_wall_supersample is
-        // Reset-class, so between a live ss change and the next Reset the uniform's
-        // face_counts/dims describe a different ss than the buffer (self.total_texels).
-        // This is a known transient: the compute pass dispatches over total (old ss) but
-        // the environment reads with new ss counts → misaligned wetness until Reset.
-        // Self-heals on Reset. A future fix would derive ss from a stored field on Self.
-        let ss = (hero.wet_wall_supersample as u32).max(1).min(4);
-        let nx_ss = nx * ss;
-        let ny_ss = ny * ss;
-        let nz_ss = nz * ss;
-        let back_count  = nx_ss * ny_ss;
-        let left_count  = nz_ss * ny_ss;
-        let total       = self.total_texels;
+        let total = self.total_texels;
 
         let uniform = WetWallUniform {
-            dims:        [nx_ss, ny_ss, nz_ss, total],
-            face_counts: [back_count, ss, left_count, nx],
+            dims: self.alloc_dims,
+            face_counts: self.alloc_faces,
             params: [
                 hero.wet_wall_wetness_decay.clamp(0.0, 1.0),
                 dt,
@@ -226,13 +229,21 @@ impl WetWallSystem {
                 hero.wet_wall_darkening_strength.max(0.0),
                 hero.wet_wall_gloss_strength.max(0.0),
                 hero.wet_wall_streak_strength.max(0.0),
-                if hero.wet_wall_meniscus_enabled { 1.0 } else { 0.0 },
+                if hero.wet_wall_meniscus_enabled {
+                    1.0
+                } else {
+                    0.0
+                },
             ],
             render1: [
                 hero.wet_wall_meniscus_width.max(0.0),
                 hero.wet_wall_meniscus_strength.max(0.0),
                 hero.wet_wall_meniscus_fresnel_boost.max(0.0),
-                if hero.wet_wall_contact_shadow_enabled { 1.0 } else { 0.0 },
+                if hero.wet_wall_contact_shadow_enabled {
+                    1.0
+                } else {
+                    0.0
+                },
             ],
             render2: [
                 hero.wet_wall_contact_shadow_strength.max(0.0),
@@ -294,13 +305,21 @@ impl WetWallSystem {
             hero.wet_wall_darkening_strength.max(0.0),
             hero.wet_wall_gloss_strength.max(0.0),
             hero.wet_wall_streak_strength.max(0.0),
-            if hero.wet_wall_meniscus_enabled { 1.0 } else { 0.0 },
+            if hero.wet_wall_meniscus_enabled {
+                1.0
+            } else {
+                0.0
+            },
         ];
         let render1: [f32; 4] = [
             hero.wet_wall_meniscus_width.max(0.0),
             hero.wet_wall_meniscus_strength.max(0.0),
             hero.wet_wall_meniscus_fresnel_boost.max(0.0),
-            if hero.wet_wall_contact_shadow_enabled { 1.0 } else { 0.0 },
+            if hero.wet_wall_contact_shadow_enabled {
+                1.0
+            } else {
+                0.0
+            },
         ];
         let render2: [f32; 4] = [
             hero.wet_wall_contact_shadow_strength.max(0.0),

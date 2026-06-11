@@ -169,8 +169,9 @@ is accepted only as a legacy compatibility no-op that logs a redirect to
 
 The `Water` category (v1.12) holds the hero-water controls, rendered under their own
 **Water** workspace tab (`web/panels.js -> TAB_CATEGORY_ALLOWLIST.water = {"Water"}`).
-Every `render.hero.*` setting is **Live** and in the `default` panel group, so sliders
-auto-apply with no reset:
+Most `render.hero.*` settings are **Live** and in the `default` panel group, so sliders
+auto-apply with no reset; controls that resize GPU buffers, such as
+`render.hero.wet_wall.supersample`, are Reset-class.
 
 - `render.hero.mode_enabled` — enum master toggle. Off forces both the refraction offset
   and the reflection strength to zero (the non-hero comparison baseline).
@@ -202,11 +203,22 @@ auto-apply with no reset:
   `blur_radius` are reserved/not-yet-wired (their tooltips say so). The
   `caustics.temporal_enabled`/`caustics.temporal_alpha` pair is now driven through the
   unified Temporal control below (kept for compatibility; see the temporal block).
-- Wet walls (`render.hero.wet_wall.*`, Advanced, off by default): `enabled`,
+- Wet walls (`render.hero.wet_wall.*`, Advanced): `enabled`,
   `wetness_decay`, `wetness_contact_gain`, `wetness_spray_gain` (stubbed at 0),
   `darkening_strength`, `gloss_strength`, `streak_strength`, `meniscus_enabled`,
   `meniscus_width`, `meniscus_strength`, `meniscus_fresnel_boost`,
-  `contact_shadow_enabled`, `contact_shadow_strength`, `contact_shadow_radius`.
+  `contact_shadow_enabled`, `contact_shadow_strength`, `contact_shadow_radius`,
+  `debug_view`, `reflectivity`, `specular`, `blur` (Live), and `supersample`
+  (Reset-class, rebuilds the wetness buffer; default 8, selectable to 32).
+- Flat wall fill (`render.hero.flat_water.*`, Advanced): `strength`, `epsilon`,
+  `depth_strength`, `fill_enabled`, `fill_strength`, `fill_slab`, `fill_supersample`
+  (Reset-class, rebuilds the wall occupancy atlas; default 8, selectable to 32),
+  `fill_color_strength`, `fill_reflection_strength`, `fill_roughness`,
+  `fill_absorption_strength`, and `waterline_softness`. Most fill controls are Live:
+  strength scales the injected slab,
+  slab changes optical body thickness, softness eases the continuously sampled wall-atlas
+  coverage to anti-alias wet/dry edges, and the color/reflection controls apply only
+  where the wall-fill mask is present in composite.
 - Temporal stabilization (`render.hero.temporal.*`, Advanced, off by default): `enabled`,
   the per-target toggles `thickness_history` / `normal_history` (gates the `smooth_z`
   blend the normal derives from) / `caustic_history` / `foam_history`, `history_alpha`
@@ -215,12 +227,13 @@ auto-apply with no reset:
   reserved for a future TAA-jitter follow-up). This is the **unified** temporal control:
   it also governs the v1.16 caustics in-shader history blend (`rendering.md`).
 
-Unlike other Live settings (one GPU setter per id in `set_setting`), the hero settings
-share a **single uniform**: `set_setting` matches the `render.hero.` id prefix, rebuilds
-the flat `Registry::hero_params() -> HeroParams` snapshot, and pushes it via
+Unlike other Live settings (one GPU setter per id in `set_setting`), the Live hero
+settings share a **single uniform**: `set_setting` matches the `render.hero.` id prefix,
+rebuilds the flat `Registry::hero_params() -> HeroParams` snapshot, and pushes it via
 `GpuContext::set_hero_params`, which fans out to the composite, environment, skybox,
-caustics, and wet-wall uniforms. There is no per-setting GPU plumbing; adding a hero knob
-means a registry row plus a field in `HeroParams`/`hero_uniform`.
+caustics, and wet-wall uniforms. Reset-class hero settings still update the registry but
+do not resize GPU resources until Reset. There is no per-setting GPU plumbing for Live
+hero knobs; adding one means a registry row plus a field in `HeroParams`/`hero_uniform`.
 The authoritative row list is `settings/mod.rs -> Registry::default` (ids prefixed
 `render.hero.`).
 

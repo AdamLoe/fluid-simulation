@@ -18,6 +18,8 @@ struct Hero {
     spec: vec4<f32>,   // x = specular strength, yzw = unused
     // --- Surface normal quality (v1.19 round-2) ---
     norm: vec4<f32>,   // x = normal_stencil (px), y = normal_smooth_strength, zw = unused
+    // --- Wall-fill-only composite controls ---
+    wallfill: vec4<f32>, // x=color strength, y=reflection multiplier, z=roughness, w=absorption strength
 };
 
 // Per-frame camera uniform for composite.wgsl.
@@ -46,6 +48,7 @@ struct Cam {
 @group(0) @binding(6) var scene_color_tex: texture_2d<f32>;
 @group(0) @binding(7) var scene_depth_tex: texture_2d<f32>;
 @group(0) @binding(8) var<uniform> cam: Cam;
+@group(0) @binding(9) var wallfill_mask_tex: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -136,6 +139,7 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let pixel = clamp(vec2<i32>(floor(in.clip.xy)), vec2<i32>(0, 0), dims - vec2<i32>(1, 1));
 
     let thickness = max(0.0, textureSample(thickness_tex, thickness_sampler, in.uv).r);
+    let wall_fill_mask = clamp(textureSample(wallfill_mask_tex, thickness_sampler, in.uv).r, 0.0, 1.0);
     var front_z = load_z(pixel, dims);
     let has_water = thickness > 1.0e-4 && front_z < 60000.0;
     var n = water_normal(pixel, dims);
@@ -342,11 +346,12 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let n_var = clamp(curv * 4.0, 0.0, 1.0);
 
     // --- Roughness: base + velocity proxy + chop + foam ---
-    let roughness = clamp(
+    var roughness = clamp(
         hero.envc.z + speed_fraction * hero.rough.x + n_var * hero.rough.y + foam * hero.rough.z,
         0.0,
         1.0,
     );
+    roughness = mix(roughness, clamp(hero.wallfill.z, 0.0, 1.0), wall_fill_mask);
 
     // --- Micro-normals: optional screen-space surface "tooth" ---
     var nr = n;
@@ -394,14 +399,18 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     // Beer-Lambert absorption of the refracted background through the water.
+    let fill_absorb_scale = mix(1.0, clamp(hero.wallfill.w, 0.0, 1.0), wall_fill_mask);
+    let fill_color_scale = mix(1.0, clamp(hero.wallfill.x, 0.0, 1.0), wall_fill_mask);
+    let absorption_thickness = thickness * fill_absorb_scale;
+    let color_thickness = thickness * fill_color_scale;
     let ext = max(vec3<f32>(0.0), hero.absorb.rgb * hero.absorb.w);
-    let trans = exp(-ext * thickness);
+    let trans = exp(-ext * absorption_thickness);
     let bg_through = bg * trans;
 
     // Water body color, growing with thickness; lit by a fixed key light.
     let key = normalize(vec3<f32>(-0.35, 0.55, 0.75));
     let diffuse = max(0.0, dot(n, key));
-    let body_amt = 1.0 - exp(-hero.misc.x * thickness);
+    let body_amt = 1.0 - exp(-hero.misc.x * color_thickness);
     let body_col = hero.tint.rgb * (0.6 + 0.4 * diffuse);
     let opacity = clamp(body_amt * (1.0 - hero.tint.w), 0.0, 1.0);
     var color = mix(bg_through, body_col, opacity);
@@ -421,7 +430,8 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     // Roughness softening: blend toward an averaged (upward) sky sample.
     let env_avg = env_sample(m3 * vec3<f32>(0.0, 0.0, 1.0), env_ctrl, hero.sun);
     reflected = mix(reflected, env_avg, roughness) * hero.refl.y;
-    let refl_amt = clamp(fresnel * hero.refl.x, 0.0, 1.0);
+    let fill_refl_scale = mix(1.0, max(hero.wallfill.y, 0.0), wall_fill_mask);
+    let refl_amt = clamp(fresnel * hero.refl.x * fill_refl_scale, 0.0, 1.0);
     color = mix(color, reflected, refl_amt);
 
     // Sun specular highlight along the reflection vector; width follows roughness.

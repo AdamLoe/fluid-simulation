@@ -81,6 +81,11 @@ fn wet_smooth(t: f32) -> f32 {
     return t * t * (3.0 - 2.0 * t);
 }
 
+fn wet_filter_weight(delta: f32, blur_r: i32) -> f32 {
+    let radius = max(f32(blur_r) + 0.5, 0.5);
+    return max(0.0, 1.0 - abs(delta) / radius);
+}
+
 // Read a single back-wall texel safely (returns 0 if out-of-bounds).
 fn back_texel(i: i32, j: i32, nx: u32, ny: u32, back_count: u32) -> f32 {
     if i < 0 || j < 0 || u32(i) >= nx || u32(j) >= ny { return 0.0; }
@@ -103,7 +108,7 @@ fn floor_texel(i: i32, k: i32, nx: u32, nz: u32, back_count: u32, left_count: u3
 }
 
 // Map a world position on the back wall (z≈lo.z) to its wetness-buffer index.
-// Uses bicubic-smooth interpolation + an optional box blur for smoother look.
+// Uses bicubic-smooth interpolation + an optional triangular weighted filter for smoother look.
 fn back_wall_wetness(p: vec3<f32>) -> f32 {
     let nx = ww.dims.x;
     let ny = ww.dims.y;
@@ -114,7 +119,7 @@ fn back_wall_wetness(p: vec3<f32>) -> f32 {
     let fi = clamp((p.x - lo.x) / span_x, 0.0, 1.0) * f32(nx - 1u);
     let fj = clamp((p.y - lo.y) / span_y, 0.0, 1.0) * f32(ny - 1u);
     let back_count = ww.face_counts.x;
-    let blur_r = i32(clamp(ww.render2.w, 0.0, 2.0));
+    let blur_r = i32(clamp(ww.render2.w, 0.0, 4.0));
     if blur_r <= 0 {
         let i0 = u32(fi);
         let i1 = min(i0 + 1u, nx - 1u);
@@ -128,26 +133,27 @@ fn back_wall_wetness(p: vec3<f32>) -> f32 {
         let w11 = select(0.0, wetness[j1 * nx + i1], (j1 * nx + i1) < back_count);
         return mix(mix(w00, w10, tx), mix(w01, w11, tx), ty);
     }
-    // Box blur: average over [-blur_r, blur_r] in each axis around the nearest texel.
+    // Triangular filter over [-blur_r, blur_r] in each axis around the nearest texel.
     // Round to nearest center (not truncate) so the kernel is symmetric about fi/fj.
     // Weight each tap by its bilinear closeness to fi/fj so sub-texel smoothness is
     // preserved within the blur: taps near the fractional position count more than
     // taps at the far edge of the kernel, preventing blocky step artifacts.
     let ci = i32(floor(fi + 0.5));
     let cj = i32(floor(fj + 0.5));
-    let fi_frac = fract(fi);
-    let fj_frac = fract(fj);
+    let fi_off = fi - f32(ci);
+    let fj_off = fj - f32(cj);
     var sum = 0.0;
     var cnt = 0.0;
     for (var dj = -blur_r; dj <= blur_r; dj++) {
-        let wj = 1.0 - clamp(abs(f32(dj) - (fj_frac - 0.5)), 0.0, 1.0);
+        let wj = wet_filter_weight(f32(dj) - fj_off, blur_r);
         for (var di = -blur_r; di <= blur_r; di++) {
-            let wi = 1.0 - clamp(abs(f32(di) - (fi_frac - 0.5)), 0.0, 1.0);
-            let w = wi * wj + 1.0e-4; // small floor so cnt stays positive
+            let wi = wet_filter_weight(f32(di) - fi_off, blur_r);
+            let w = wi * wj;
             sum += back_texel(ci + di, cj + dj, nx, ny, back_count) * w;
             cnt += w;
         }
     }
+    if cnt <= 0.0 { return 0.0; }
     return sum / cnt;
 }
 
@@ -183,7 +189,7 @@ fn back_wall_wetness_pair(p: vec3<f32>) -> vec2<f32> {
 }
 
 // Map a world position on the left wall (x≈lo.x) to its wetness.
-// Uses bicubic-smooth interpolation + optional box blur for smooth look.
+// Uses bicubic-smooth interpolation + optional triangular weighted filtering.
 fn left_wall_wetness(p: vec3<f32>) -> f32 {
     let nz = ww.dims.z;
     let ny = ww.dims.y;
@@ -195,7 +201,7 @@ fn left_wall_wetness(p: vec3<f32>) -> f32 {
     let fj = clamp((p.y - lo.y) / span_y, 0.0, 1.0) * f32(ny - 1u);
     let back_count = ww.face_counts.x;
     let left_count = ww.face_counts.z; // nz*ny
-    let blur_r = i32(clamp(ww.render2.w, 0.0, 2.0));
+    let blur_r = i32(clamp(ww.render2.w, 0.0, 4.0));
     if blur_r <= 0 {
         let k0 = u32(fk);
         let k1 = min(k0 + 1u, nz - 1u);
@@ -213,22 +219,23 @@ fn left_wall_wetness(p: vec3<f32>) -> f32 {
         let w11 = select(0.0, wetness[back_count + idx11], idx11 < left_count);
         return mix(mix(w00, w10, tk), mix(w01, w11, tk), tj);
     }
-    // Round to nearest center; bilinear-weight each tap (same scheme as back_wall_wetness).
+    // Round to nearest center; triangular-weight each tap (same scheme as back_wall_wetness).
     let ck = i32(floor(fk + 0.5));
     let cj = i32(floor(fj + 0.5));
-    let fk_frac = fract(fk);
-    let fj_frac = fract(fj);
+    let fk_off = fk - f32(ck);
+    let fj_off = fj - f32(cj);
     var sum = 0.0;
     var cnt = 0.0;
     for (var dj = -blur_r; dj <= blur_r; dj++) {
-        let wj = 1.0 - clamp(abs(f32(dj) - (fj_frac - 0.5)), 0.0, 1.0);
+        let wj = wet_filter_weight(f32(dj) - fj_off, blur_r);
         for (var dk = -blur_r; dk <= blur_r; dk++) {
-            let wk = 1.0 - clamp(abs(f32(dk) - (fk_frac - 0.5)), 0.0, 1.0);
-            let w = wk * wj + 1.0e-4;
+            let wk = wet_filter_weight(f32(dk) - fk_off, blur_r);
+            let w = wk * wj;
             sum += left_texel(ck + dk, cj + dj, nz, ny, back_count, left_count) * w;
             cnt += w;
         }
     }
+    if cnt <= 0.0 { return 0.0; }
     return sum / cnt;
 }
 
@@ -260,7 +267,7 @@ fn left_wall_wetness_pair(p: vec3<f32>) -> vec2<f32> {
 }
 
 // Map a world position on the floor (y≈lo.y) to its wetness.
-// Uses bicubic-smooth interpolation + optional box blur for smooth look.
+// Uses bicubic-smooth interpolation + optional triangular weighted filtering.
 fn floor_wetness(p: vec3<f32>) -> f32 {
     let nx = ww.dims.x;
     let nz = ww.dims.z;
@@ -273,7 +280,7 @@ fn floor_wetness(p: vec3<f32>) -> f32 {
     let back_count = ww.face_counts.x;
     let left_count = ww.face_counts.z;
     let floor_count = nx * nz;
-    let blur_r = i32(clamp(ww.render2.w, 0.0, 2.0));
+    let blur_r = i32(clamp(ww.render2.w, 0.0, 4.0));
     if blur_r <= 0 {
         let i0 = u32(fi);
         let i1 = min(i0 + 1u, nx - 1u);
@@ -292,22 +299,23 @@ fn floor_wetness(p: vec3<f32>) -> f32 {
         let w11 = select(0.0, wetness[base + idx11], idx11 < floor_count);
         return mix(mix(w00, w10, ti), mix(w01, w11, ti), tk);
     }
-    // Round to nearest center; bilinear-weight each tap (same scheme as back_wall_wetness).
+    // Round to nearest center; triangular-weight each tap (same scheme as back_wall_wetness).
     let ci = i32(floor(fi + 0.5));
     let ck = i32(floor(fk + 0.5));
-    let fi_frac = fract(fi);
-    let fk_frac = fract(fk);
+    let fi_off = fi - f32(ci);
+    let fk_off = fk - f32(ck);
     var sum = 0.0;
     var cnt = 0.0;
     for (var dk = -blur_r; dk <= blur_r; dk++) {
-        let wk = 1.0 - clamp(abs(f32(dk) - (fk_frac - 0.5)), 0.0, 1.0);
+        let wk = wet_filter_weight(f32(dk) - fk_off, blur_r);
         for (var di = -blur_r; di <= blur_r; di++) {
-            let wi = 1.0 - clamp(abs(f32(di) - (fi_frac - 0.5)), 0.0, 1.0);
-            let w = wi * wk + 1.0e-4;
+            let wi = wet_filter_weight(f32(di) - fi_off, blur_r);
+            let w = wi * wk;
             sum += floor_texel(ci + di, ck + dk, nx, nz, back_count, left_count, floor_count) * w;
             cnt += w;
         }
     }
+    if cnt <= 0.0 { return 0.0; }
     return sum / cnt;
 }
 
@@ -416,7 +424,8 @@ fn fs(in: VsOut) -> FsOut {
             // wet patches should look like wet glass reflecting the world.
             let wet_reflectivity = env.wet_refl.x;
             let wet_spec_str     = env.wet_refl.y;
-            if wet > 0.001 && (wet_reflectivity > 0.001 || wet_spec_str > 0.001) {
+            let wet_gloss_str    = clamp(gloss_str, 0.0, 1.0);
+            if wet > 0.001 && (wet_reflectivity > 0.001 || (wet_spec_str > 0.001 && wet_gloss_str > 0.001)) {
                 // Per-face constant outward normal in BOX-LOCAL space.
                 let face_normal_local = select(vec3<f32>(1.0, 0.0, 0.0),
                                                vec3<f32>(0.0, 0.0, 1.0), is_back);
@@ -445,11 +454,12 @@ fn fs(in: VsOut) -> FsOut {
                 color = mix(color, reflected_col, refl_amt);
 
                 // Sun specular sheen: sharp highlight from the sun direction.
-                if wet_spec_str > 0.001 {
+                if wet_spec_str > 0.001 && wet_gloss_str > 0.001 {
                     let sun_dir = normalize(env.sun.xyz);
                     let sun_dot = max(dot(refl_dir, sun_dir), 0.0);
-                    let shine = pow(sun_dot, 48.0) * wet * wet_spec_str * env.sun.w;
-                    color = color + vec3<f32>(1.0, 0.95, 0.88) * shine;
+                    let sharp = pow(sun_dot, 48.0) * wet * wet_spec_str * wet_gloss_str * env.sun.w;
+                    let soft = pow(sun_dot, 12.0) * wet * wet_spec_str * wet_gloss_str * env.sun.w * 0.08;
+                    color = color + vec3<f32>(1.0, 0.95, 0.88) * (sharp + soft);
                 }
             }
 

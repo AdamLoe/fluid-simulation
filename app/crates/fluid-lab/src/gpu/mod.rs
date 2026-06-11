@@ -79,6 +79,7 @@ pub struct GpuContext {
     depth_view: wgpu::TextureView,
     thickness_view: wgpu::TextureView,
     whitewater_view: wgpu::TextureView,
+    wallfill_mask_view: wgpu::TextureView,
     nearest_z_view: wgpu::TextureView,
     smooth_z_ping_view: wgpu::TextureView,
     smooth_z_view: wgpu::TextureView,
@@ -224,6 +225,7 @@ impl GpuContext {
         let depth_view = create_depth(&device, width, height);
         let thickness_view = create_r16_target(&device, width, height, "water thickness");
         let whitewater_view = create_r16_target(&device, width, height, "water whitewater");
+        let wallfill_mask_view = create_r16_target(&device, width, height, "wallfill mask");
         let nearest_z_view = create_r16_target(&device, width, height, "water nearest z");
         let smooth_z_ping_view = create_r16_target(&device, width, height, "water smooth z ping");
         let smooth_z_view = create_r16_target(&device, width, height, "water smooth z");
@@ -275,11 +277,7 @@ impl GpuContext {
             tank_hi,
             &hero_init,
         );
-        let wallfill_renderer = wallfill::WallFillRenderer::new(
-            &device,
-            &wallocc,
-            &hero_init,
-        );
+        let wallfill_renderer = wallfill::WallFillRenderer::new(&device, &wallocc, &hero_init);
         let wireframe = renderer::WireframeRenderer::new(
             &device,
             format,
@@ -381,6 +379,7 @@ impl GpuContext {
             temporal_sys.stable_thickness(),
             temporal_sys.stable_whitewater(),
             temporal_sys.stable_smooth_z(),
+            &wallfill_mask_view,
             &scene_color_view,
             &scene_depth_view,
             &hero,
@@ -428,6 +427,7 @@ impl GpuContext {
             depth_view,
             thickness_view,
             whitewater_view,
+            wallfill_mask_view,
             nearest_z_view,
             smooth_z_ping_view,
             smooth_z_view,
@@ -707,6 +707,7 @@ impl GpuContext {
         self.depth_view = create_depth(&self.device, width, height);
         self.thickness_view = create_r16_target(&self.device, width, height, "water thickness");
         self.whitewater_view = create_r16_target(&self.device, width, height, "water whitewater");
+        self.wallfill_mask_view = create_r16_target(&self.device, width, height, "wallfill mask");
         self.nearest_z_view = create_r16_target(&self.device, width, height, "water nearest z");
         self.smooth_z_ping_view =
             create_r16_target(&self.device, width, height, "water smooth z ping");
@@ -734,6 +735,7 @@ impl GpuContext {
             self.temporal.stable_thickness(),
             self.temporal.stable_whitewater(),
             self.temporal.stable_smooth_z(),
+            &self.wallfill_mask_view,
             &self.scene_color_view,
             &self.scene_depth_view,
         );
@@ -844,7 +846,8 @@ impl GpuContext {
         self.skybox.set_params(&self.queue, &hero);
         self.caustics.set_hero_params(&self.queue, &hero);
         self.wetwall.set_params(&self.queue, &hero);
-        self.smoothing.update_radius(&self.queue, hero.smooth_radius);
+        self.smoothing
+            .update_radius(&self.queue, hero.smooth_radius);
         self.particles.splat_scale = hero.smooth_thickness_splat_scale;
     }
 
@@ -875,21 +878,20 @@ impl GpuContext {
             &self.queue,
             dt,
             &self.hero,
-            nx, ny, nz,
+            nx,
+            ny,
+            nz,
             tank_lo,
             tank_hi,
         );
     }
 
     /// Update the wall occupancy buffer (v1.21 gap-fill). Reads current `cell_type`
-    /// and writes per-column occupancy + waterline. Runs after `update_wetwall`,
+    /// and writes dense per-wall-cell occupancy. Runs after `update_wetwall`,
     /// before the render prepass. No-op when fill is disabled.
     pub fn update_wallocc(&mut self) {
-        self.wallocc.record_step(
-            &self.device,
-            &self.queue,
-            &self.hero,
-        );
+        self.wallocc
+            .record_step(&self.device, &self.queue, &self.hero);
     }
 
     pub fn set_particle_slow_color(&mut self, rgb: [f32; 3]) {
@@ -1127,7 +1129,11 @@ impl GpuContext {
     /// Opaque pass for the optical/simple particle modes: clear the swapchain +
     /// depth and draw the wireframe tank directly. (The Water mode draws into the
     /// offscreen scene prepass instead.)
-    fn record_opaque_into_view(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
+    fn record_opaque_into_view(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) {
         const CLEAR: wgpu::Color = wgpu::Color {
             r: 0.04,
             g: 0.05,
@@ -1188,6 +1194,12 @@ impl GpuContext {
                     self.config.height,
                     "water whitewater",
                 );
+                self.wallfill_mask_view = create_r16_target(
+                    &self.device,
+                    self.config.width,
+                    self.config.height,
+                    "wallfill mask",
+                );
                 self.nearest_z_view = create_r16_target(
                     &self.device,
                     self.config.width,
@@ -1206,11 +1218,8 @@ impl GpuContext {
                     self.config.height,
                     "water smooth z",
                 );
-                self.scene_color_view = create_scene_color_target(
-                    &self.device,
-                    self.config.width,
-                    self.config.height,
-                );
+                self.scene_color_view =
+                    create_scene_color_target(&self.device, self.config.width, self.config.height);
                 self.scene_depth_view = create_r16_target(
                     &self.device,
                     self.config.width,
@@ -1232,6 +1241,7 @@ impl GpuContext {
                     self.temporal.stable_thickness(),
                     self.temporal.stable_whitewater(),
                     self.temporal.stable_smooth_z(),
+                    &self.wallfill_mask_view,
                     &self.scene_color_view,
                     &self.scene_depth_view,
                 );
@@ -1271,7 +1281,8 @@ impl GpuContext {
         // can be rotated into world space before env_sample (which expects world).
         let eye_world_local = box_orient.inverse() * (eye_world - box_pos);
         let box_rot = glam::Mat3::from_quat(box_orient);
-        self.environment.set_eye_world(&self.queue, eye_world_local, box_rot);
+        self.environment
+            .set_eye_world(&self.queue, eye_world_local, box_rot);
         // Camera-only eye->world rotation for the world-fixed environment: the
         // reflected env + skybox follow the camera but NOT the tank's rotation.
         // Also pass box-local eye + box_rot + tank bounds for the flat-water snap.
@@ -1446,9 +1457,10 @@ impl GpuContext {
                 // v1.21 Wall-fill injection pass: runs AFTER particle thickness, BEFORE
                 // bilateral smoothing. Injects a flat glass-plane surface into the same
                 // three MRT targets (thickness Add, nearest_z Min, whitewater Add) wherever
-                // the occupancy buffer reports liquid against the wall. LoadOp::Load so the
-                // particle splatting is preserved; only gap-fill pixels are written.
-                if self.hero.flat_water_fill_enabled {
+                // the occupancy buffer reports liquid against the wall, and writes a
+                // separate wall-fill mask for composite-time color/reflection controls.
+                // It still runs when disabled so the mask target is cleared every frame.
+                {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("wallfill injection pass"),
                         color_attachments: &[
@@ -1476,6 +1488,15 @@ impl GpuContext {
                                 depth_slice: None,
                                 ops: wgpu::Operations {
                                     load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.wallfill_mask_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                                     store: wgpu::StoreOp::Store,
                                 },
                             }),
@@ -1559,7 +1580,10 @@ impl GpuContext {
                     let (st, sz, sw) = self.temporal.stable_views();
                     self.composite.rebind_temporal_views(
                         &self.device,
-                        st, sw, sz,
+                        st,
+                        sw,
+                        sz,
+                        &self.wallfill_mask_view,
                         &self.scene_color_view,
                         &self.scene_depth_view,
                     );
@@ -1596,7 +1620,8 @@ impl GpuContext {
                             occlusion_query_set: None,
                             multiview_mask: None,
                         });
-                        self.caustics.draw_generate(&self.queue, &mut pass, cam_reset);
+                        self.caustics
+                            .draw_generate(&self.queue, &mut pass, cam_reset);
                     }
                     {
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1812,11 +1837,7 @@ fn create_depth(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-fn create_scene_color_target(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-) -> wgpu::TextureView {
+fn create_scene_color_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("hero scene color"),
         size: wgpu::Extent3d {

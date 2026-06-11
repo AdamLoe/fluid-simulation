@@ -21,19 +21,21 @@ struct CompositeUniform {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct HeroUniform {
-    refr: [f32; 4],   // x = effective strength, y = thickness scale, z = max offset px, w = f0
+    refr: [f32; 4], // x = effective strength, y = thickness scale, z = max offset px, w = f0
     absorb: [f32; 4], // rgb = absorption color, w = absorption strength
-    tint: [f32; 4],   // rgb = base tint, w = transparency
-    misc: [f32; 4],   // x = deep darkening, y = invalid fallback, z = debug view, w = mode enabled
+    tint: [f32; 4], // rgb = base tint, w = transparency
+    misc: [f32; 4], // x = deep darkening, y = invalid fallback, z = debug view, w = mode enabled
     // --- Environment reflection (v1.15) ---
-    refl: [f32; 4],  // x = effective reflection strength, y = environment strength, z = environment brightness, w = skybox enabled
-    envc: [f32; 4],  // x = environment rotation, y = environment mode, z = roughness base, w = unused
+    refl: [f32; 4], // x = effective reflection strength, y = environment strength, z = environment brightness, w = skybox enabled
+    envc: [f32; 4], // x = environment rotation, y = environment mode, z = roughness base, w = unused
     rough: [f32; 4], // x = velocity scale, y = normal-variance scale, z = foam scale, w = unused
-    sun: [f32; 4],   // xyz = world sun direction, w = sun intensity
+    sun: [f32; 4],  // xyz = world sun direction, w = sun intensity
     micro: [f32; 4], // x = enabled, y = strength, z = scale, w = velocity scale
-    spec: [f32; 4],  // x = specular strength, yzw = unused
+    spec: [f32; 4], // x = specular strength, yzw = unused
     // --- Surface normal quality (v1.19 round-2) ---
-    norm: [f32; 4],  // x = normal_stencil (as f32), y = normal_smooth_strength, zw = unused
+    norm: [f32; 4], // x = normal_stencil (as f32), y = normal_smooth_strength, zw = unused
+    // --- Wall-fill-only composite controls ---
+    wallfill: [f32; 4], // x=color strength, y=reflection multiplier, z=roughness, w=absorption strength
 }
 
 /// Per-frame camera uniform for composite.wgsl.
@@ -45,14 +47,14 @@ struct HeroUniform {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct CamUniform {
-    eye_to_world:  [[f32; 4]; 4],
+    eye_to_world: [[f32; 4]; 4],
     box_eye_local: [f32; 4],
-    box_rot_col0:  [f32; 4],
-    box_rot_col1:  [f32; 4],
-    box_rot_col2:  [f32; 4],
-    tank_lo:       [f32; 4],
-    tank_hi:       [f32; 4],
-    flat:          [f32; 4], // x=strength, y=epsilon, z=depth_strength, w=unused
+    box_rot_col0: [f32; 4],
+    box_rot_col1: [f32; 4],
+    box_rot_col2: [f32; 4],
+    tank_lo: [f32; 4],
+    tank_hi: [f32; 4],
+    flat: [f32; 4], // x=strength, y=epsilon, z=depth_strength, w=unused
 }
 
 fn hero_uniform(hero: &HeroParams) -> HeroUniform {
@@ -132,6 +134,12 @@ fn hero_uniform(hero: &HeroParams) -> HeroUniform {
             0.0,
             0.0,
         ],
+        wallfill: [
+            hero.flat_water_fill_color_strength.clamp(0.0, 1.0),
+            hero.flat_water_fill_reflection_strength.max(0.0),
+            hero.flat_water_fill_roughness.clamp(0.0, 1.0),
+            hero.flat_water_fill_absorption_strength.clamp(0.0, 1.0),
+        ],
     }
 }
 
@@ -160,6 +168,7 @@ impl CompositeRenderer {
         thickness_view: &wgpu::TextureView,
         whitewater_view: &wgpu::TextureView,
         smoothed_z_view: &wgpu::TextureView,
+        wallfill_mask_view: &wgpu::TextureView,
         scene_color_view: &wgpu::TextureView,
         scene_depth_view: &wgpu::TextureView,
         hero: &HeroParams,
@@ -221,14 +230,14 @@ impl CompositeRenderer {
         let cam_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("composite camera uniform"),
             contents: bytemuck::bytes_of(&CamUniform {
-                eye_to_world:  glam::Mat4::IDENTITY.to_cols_array_2d(),
+                eye_to_world: glam::Mat4::IDENTITY.to_cols_array_2d(),
                 box_eye_local: [0.0; 4],
-                box_rot_col0:  [1.0, 0.0, 0.0, 0.0],
-                box_rot_col1:  [0.0, 1.0, 0.0, 0.0],
-                box_rot_col2:  [0.0, 0.0, 1.0, 0.0],
-                tank_lo:       [-1.0, -1.0, -1.0, 0.0],
-                tank_hi:       [ 1.0,  1.0,  1.0, 0.0],
-                flat:          [0.0; 4],
+                box_rot_col0: [1.0, 0.0, 0.0, 0.0],
+                box_rot_col1: [0.0, 1.0, 0.0, 0.0],
+                box_rot_col2: [0.0, 0.0, 1.0, 0.0],
+                tank_lo: [-1.0, -1.0, -1.0, 0.0],
+                tank_hi: [1.0, 1.0, 1.0, 0.0],
+                flat: [0.0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -324,6 +333,17 @@ impl CompositeRenderer {
                     },
                     count: None,
                 },
+                // wall-fill coverage mask.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let bind_group = create_bind_group(
@@ -333,6 +353,7 @@ impl CompositeRenderer {
             thickness_view,
             whitewater_view,
             smoothed_z_view,
+            wallfill_mask_view,
             &uniform_buf,
             &hero_buf,
             scene_color_view,
@@ -401,6 +422,7 @@ impl CompositeRenderer {
         thickness_view: &wgpu::TextureView,
         whitewater_view: &wgpu::TextureView,
         smoothed_z_view: &wgpu::TextureView,
+        wallfill_mask_view: &wgpu::TextureView,
         scene_color_view: &wgpu::TextureView,
         scene_depth_view: &wgpu::TextureView,
     ) {
@@ -411,6 +433,7 @@ impl CompositeRenderer {
             thickness_view,
             whitewater_view,
             smoothed_z_view,
+            wallfill_mask_view,
             &self.uniform_buf,
             &self.hero_buf,
             scene_color_view,
@@ -429,6 +452,7 @@ impl CompositeRenderer {
         thickness_view: &wgpu::TextureView,
         whitewater_view: &wgpu::TextureView,
         smoothed_z_view: &wgpu::TextureView,
+        wallfill_mask_view: &wgpu::TextureView,
         scene_color_view: &wgpu::TextureView,
         scene_depth_view: &wgpu::TextureView,
     ) {
@@ -439,6 +463,7 @@ impl CompositeRenderer {
             thickness_view,
             whitewater_view,
             smoothed_z_view,
+            wallfill_mask_view,
             &self.uniform_buf,
             &self.hero_buf,
             scene_color_view,
@@ -470,14 +495,19 @@ impl CompositeRenderer {
         hero: &crate::settings::HeroParams,
     ) {
         let cam = CamUniform {
-            eye_to_world:  eye_to_world.to_cols_array_2d(),
+            eye_to_world: eye_to_world.to_cols_array_2d(),
             box_eye_local: [eye_world_local.x, eye_world_local.y, eye_world_local.z, 0.0],
-            box_rot_col0:  [box_rot.x_axis.x, box_rot.x_axis.y, box_rot.x_axis.z, 0.0],
-            box_rot_col1:  [box_rot.y_axis.x, box_rot.y_axis.y, box_rot.y_axis.z, 0.0],
-            box_rot_col2:  [box_rot.z_axis.x, box_rot.z_axis.y, box_rot.z_axis.z, 0.0],
-            tank_lo:       [tank_lo[0], tank_lo[1], tank_lo[2], 0.0],
-            tank_hi:       [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
-            flat:          [hero.flat_water_strength.clamp(0.0, 1.0), hero.flat_water_epsilon.max(0.0), hero.flat_water_depth_strength.clamp(0.0, 1.0), 0.0],
+            box_rot_col0: [box_rot.x_axis.x, box_rot.x_axis.y, box_rot.x_axis.z, 0.0],
+            box_rot_col1: [box_rot.y_axis.x, box_rot.y_axis.y, box_rot.y_axis.z, 0.0],
+            box_rot_col2: [box_rot.z_axis.x, box_rot.z_axis.y, box_rot.z_axis.z, 0.0],
+            tank_lo: [tank_lo[0], tank_lo[1], tank_lo[2], 0.0],
+            tank_hi: [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
+            flat: [
+                hero.flat_water_strength.clamp(0.0, 1.0),
+                hero.flat_water_epsilon.max(0.0),
+                hero.flat_water_depth_strength.clamp(0.0, 1.0),
+                0.0,
+            ],
         };
         queue.write_buffer(&self.cam_buf, 0, bytemuck::bytes_of(&cam));
     }
@@ -556,6 +586,7 @@ fn create_bind_group(
     thickness_view: &wgpu::TextureView,
     whitewater_view: &wgpu::TextureView,
     smoothed_z_view: &wgpu::TextureView,
+    wallfill_mask_view: &wgpu::TextureView,
     uniform_buf: &wgpu::Buffer,
     hero_buf: &wgpu::Buffer,
     scene_color_view: &wgpu::TextureView,
@@ -601,6 +632,10 @@ fn create_bind_group(
             wgpu::BindGroupEntry {
                 binding: 8,
                 resource: cam_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 9,
+                resource: wgpu::BindingResource::TextureView(wallfill_mask_view),
             },
         ],
     })
