@@ -486,9 +486,22 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
             let fdir_eye = normalize(vec3<f32>(ndc.x * thf * aspect2, ndc.y * thf, -1.0));
             return vec4<f32>(env_sample(m3 * fdir_eye, env_ctrl, hero.sun), 1.0);
         }
-        // Caustics (debug_view=10): show scene_color after the caustics composite pass
-        // has additively painted into it (pass B runs before this composite pass).
-        return vec4<f32>(textureSample(scene_color_tex, thickness_sampler, in.uv).rgb, 1.0);
+        if dbg < 10.5 {
+            // Caustics (debug_view=10): show scene_color after the caustics composite pass
+            // has additively painted into it (pass B runs before this composite pass).
+            return vec4<f32>(textureSample(scene_color_tex, thickness_sampler, in.uv).rgb, 1.0);
+        }
+        if dbg < 11.5 {
+            // nearest_z (debug_view=11): smoothed front-surface eye distance (post flat-snap),
+            // the exact depth the composite reconstructs the normal from. Near=dark, far=white.
+            return vec4<f32>(vec3<f32>(clamp(front_z / 6.0, 0.0, 1.0)), 1.0);
+        }
+        if dbg < 12.5 {
+            // whitewater (debug_view=12): the speed-weighted thickness target.
+            return vec4<f32>(vec3<f32>(clamp(whitewater, 0.0, 1.0)), 1.0);
+        }
+        // wallfill_mask (debug_view=13): the screen-space wall-fill sheet coverage mask.
+        return vec4<f32>(vec3<f32>(wall_fill_mask), 1.0);
     }
 
     if !has_water {

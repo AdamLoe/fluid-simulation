@@ -1,4 +1,4 @@
-//! Wall-fill system (v1.21): dense per-wall-cell flat water sheet against glass.
+//! Wall-fill system: dense per-wall-cell flat water sheet against glass.
 //!
 //! Two sub-systems:
 //!
@@ -41,7 +41,7 @@ struct OccUniform {
     orig: [u32; 4],
     /// x=back(nx_ss*ny_ss), y=left(nz_ss*ny_ss), z=right(nz_ss*ny_ss), w=front(nx_ss*ny_ss)
     nc: [u32; 4],
-    /// x=nc_floor(nx_ss*nz_ss), yzw=unused
+    /// x=nc_floor(nx_ss*nz_ss), y=dispatch row stride in invocations, zw=unused
     nc_floor: [u32; 4],
     /// x=fill_enabled(0/1), y=fill_strength, z=fill_slab, w=waterline_softness
     fill: [f32; 4],
@@ -49,7 +49,19 @@ struct OccUniform {
     tank_lo: [f32; 4],
     /// tank world-space upper corner, w=unused
     tank_hi: [f32; 4],
+    /// x=particle_count, yzw=unused
+    psplat: [u32; 4],
+    /// x=splat band (cells), y=splat radius (texels), z=threshold lo, w=threshold hi
+    sparams: [f32; 4],
 }
+
+/// Particle-splat tuning (render-only). Tuned so the waterline crosses ~0.5
+/// coverage at the real particle boundary, giving a precise edge at atlas
+/// resolution instead of the 64-grid stair-step.
+const SPLAT_BAND_CELLS: f32 = 5.0;
+const SPLAT_RADIUS_TEXELS: f32 = 8.0;
+const SPLAT_THRESHOLD_LO: f32 = 0.18;
+const SPLAT_THRESHOLD_HI: f32 = 0.5;
 
 /// Per-frame camera uniform for the fill render pass.
 #[repr(C)]
@@ -84,12 +96,16 @@ struct FillUniform {
 }
 
 pub struct WallOccupancySystem {
-    /// Storage buffer: 1 f32 occupancy value per wall texel/cell.
+    /// Storage buffer: 1 f32 occupancy value per wall texel/cell (normalized output).
     pub occ_buf: wgpu::Buffer,
+    /// i32 atomic accumulation buffer for the particle splat (cleared each frame).
+    splat_buf: wgpu::Buffer,
     /// Uniform buffer (OccUniform).
     uniform_buf: wgpu::Buffer,
-    pipeline: wgpu::ComputePipeline,
+    splat_pipeline: wgpu::ComputePipeline,
+    normalize_pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
+    particle_count: u32,
     total_columns: u32,
     ss: u32,
     orig_nx: u32,
@@ -108,9 +124,12 @@ pub struct WallOccupancySystem {
 }
 
 impl WallOccupancySystem {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         cell_type_buf: &wgpu::Buffer,
+        particle_buf: &wgpu::Buffer,
+        particle_count: u32,
         nx: u32,
         ny: u32,
         nz: u32,
@@ -146,6 +165,13 @@ impl WallOccupancySystem {
             ],
             tank_lo: [tank_lo[0], tank_lo[1], tank_lo[2], 0.0],
             tank_hi: [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
+            psplat: [particle_count, 0, 0, 0],
+            sparams: [
+                SPLAT_BAND_CELLS,
+                SPLAT_RADIUS_TEXELS,
+                SPLAT_THRESHOLD_LO,
+                SPLAT_THRESHOLD_HI,
+            ],
         };
 
         let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -154,10 +180,18 @@ impl WallOccupancySystem {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // 1 f32 per wall texel/cell.
+        // 1 f32 per wall texel/cell (normalized output the render samples).
         let occ_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wallfill occ buffer"),
             size: (total_columns as u64) * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // i32 atomic accumulation buffer for the particle splat (cleared per frame).
+        let splat_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wallfill splat buffer"),
+            size: (total_columns.max(1) as u64) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -203,6 +237,28 @@ impl WallOccupancySystem {
                     },
                     count: None,
                 },
+                // binding 5: particles (read-only)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // binding 6: splat_buf (atomic read_write)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -222,6 +278,14 @@ impl WallOccupancySystem {
                     binding: 2,
                     resource: occ_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: particle_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: splat_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -231,20 +295,31 @@ impl WallOccupancySystem {
             immediate_size: 0,
         });
 
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("wallfill occupancy"),
+        let splat_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("wallfill splat"),
             layout: Some(&pl_layout),
             module: &shader,
-            entry_point: Some("cs_occupancy"),
+            entry_point: Some("cs_splat"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let normalize_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("wallfill normalize"),
+            layout: Some(&pl_layout),
+            module: &shader,
+            entry_point: Some("cs_normalize"),
             compilation_options: Default::default(),
             cache: None,
         });
 
         Self {
             occ_buf,
+            splat_buf,
             uniform_buf,
-            pipeline,
+            splat_pipeline,
+            normalize_pipeline,
             bind_group,
+            particle_count,
             total_columns,
             ss,
             orig_nx: nx,
@@ -265,12 +340,17 @@ impl WallOccupancySystem {
 
     /// Dispatch the occupancy compute pass.
     pub fn record_step(&self, device: &wgpu::Device, queue: &wgpu::Queue, hero: &HeroParams) {
+        let groups_total = ((self.total_columns + WG - 1) / WG).max(1);
+        let groups_x = groups_total.min(device.limits().max_compute_workgroups_per_dimension);
+        let groups_y = groups_total.div_ceil(groups_x);
+        let row_stride = groups_x * WG;
+
         // Update uniform with current fill params.
         let u = OccUniform {
             dims: [self.nx, self.ny, self.nz, self.total_columns],
             orig: [self.orig_nx, self.orig_ny, self.orig_nz, self.ss],
             nc: [self.nc_back, self.nc_left, self.nc_right, self.nc_front],
-            nc_floor: [self.nc_floor, 0, 0, 0],
+            nc_floor: [self.nc_floor, row_stride, 0, 0],
             fill: [
                 if hero.flat_water_fill_enabled {
                     1.0
@@ -283,6 +363,13 @@ impl WallOccupancySystem {
             ],
             tank_lo: [self.tank_lo[0], self.tank_lo[1], self.tank_lo[2], 0.0],
             tank_hi: [self.tank_hi[0], self.tank_hi[1], self.tank_hi[2], 0.0],
+            psplat: [self.particle_count, 0, 0, 0],
+            sparams: [
+                SPLAT_BAND_CELLS,
+                SPLAT_RADIUS_TEXELS,
+                SPLAT_THRESHOLD_LO,
+                SPLAT_THRESHOLD_HI,
+            ],
         };
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u));
 
@@ -290,18 +377,35 @@ impl WallOccupancySystem {
             return;
         }
 
+        // Particle-splat dispatch (one invocation per particle, tiled like the
+        // sim's particle-linear passes).
+        let pg = (self.particle_count + WG - 1) / WG;
+        let max_dim = device.limits().max_compute_workgroups_per_dimension;
+        let pgx = pg.min(max_dim).max(1);
+        let pgy = pg.div_ceil(pgx).max(1);
+
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("wallfill occupancy"),
+            label: Some("wallfill splat"),
         });
+        // Clear the i32 accumulation buffer before splatting this frame.
+        encoder.clear_buffer(&self.splat_buf, 0, None);
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("wallfill occupancy"),
+                label: Some("wallfill splat"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(&self.splat_pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
-            let groups = (self.total_columns + WG - 1) / WG;
-            pass.dispatch_workgroups(groups, 1, 1);
+            pass.dispatch_workgroups(pgx, pgy, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("wallfill normalize"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.normalize_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.dispatch_workgroups(groups_x, groups_y, 1);
         }
         queue.submit(std::iter::once(encoder.finish()));
     }

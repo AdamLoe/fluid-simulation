@@ -103,13 +103,13 @@ split into independent pipelines.
 
 ## Whitewater is persistent diffuse particles, not a speed mask
 
-**Decision** - Whitewater is a persistent, render-only GPU particle system (foam,
+**Decision** - Whitewater can use a persistent, render-only GPU particle system (foam,
 spray, bubbles) that is born at fast/breaking surfaces and wall impacts, advects, and
-decays over seconds (`gpu/diffuse.rs -> DiffuseSystem`, v1.13). It is the hero
-whitewater path; the original speed-weighted thickness mask in the composite remains
-only as a cheap fallback. Diffuse particles **do not** conserve mass, affect pressure,
-or feed back into the solver — they are render state, explicitly decoupled from the
-simulation's determinism contract.
+decays over seconds (`gpu/diffuse.rs -> DiffuseSystem`, v1.13). The original
+speed-weighted thickness mask in the composite remains the shipped fallback while
+diffuse particles default off to keep glass walls clean. Diffuse particles **do not**
+conserve mass, affect pressure, or feed back into the solver — they are render state,
+explicitly decoupled from the simulation's determinism contract.
 
 **Why** - A fast-water mask alone reads as a white *tint* that flashes only while
 water is moving; it cannot show foam that lingers a second or more after an impact and
@@ -118,10 +118,13 @@ fades. Persistent diffuse state is what makes churn read as foam (see the
 fixed-point P2G determinism invariant (`../architecture/simulation.md`).
 
 **Tradeoffs** - A fixed-capacity particle buffer (~12.6 MB) and two extra compute
-passes per frame; emission is bounded by an integer-atomic per-frame budget, and
-over-budget frames are reported (`stats_json.gpu.diffuse.clamped`) rather than silently
-dropping foam. Determinism of *which slot* a spawn lands in is not guaranteed (atomic
-ring cursor), which is acceptable because the system is render-only.
+passes per frame when enabled; emission is bounded by an integer-atomic per-frame
+budget, and over-budget frames are reported (`stats_json.gpu.diffuse.clamped`) rather
+than silently dropping foam. Wall impacts are intentionally biased toward brief spray
+and away from long-lived vertical-wall foam; diffuse particles near vertical glass are
+retired before they can read as wall decals, and persistent wall wetness is owned by the
+wet-wall material. Determinism of *which slot* a spawn lands in is not guaranteed
+(atomic ring cursor), which is acceptable because the system is render-only.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/diffuse.rs -> DiffuseSystem`;
 `crates/fluid-lab/src/gpu/shaders/diffuse_emit.wgsl`;
@@ -192,12 +195,13 @@ meniscus band at the waterline, a contact shadow at the floor/wall join — is d
 persistent supersampled per-wall-texel wetness field written each frame from the
 **current** cell-type classification (Liquid adjacent to Solid, sampled as fractional
 coverage on the supersampled wall axes) and decay-blended over time, then read by the
-wall material (`gpu/wetwall.rs` + `environment.wgsl`, v1.17+). The wall-fill sheet is
-likewise render-only: `gpu/wallfill.rs` writes a supersampled dense occupancy atlas from
-the current `cell_type`, injects the sheet into the screen-space water MRTs before
-smoothing, and writes a screen-space `wallfill_mask` that lets composite apply fill-only
-color, absorption, reflection, and roughness controls. These cues do **not** simulate
-thin-film drainage or per-droplet rivulets, and they never touch the sim buffers.
+wall material (`gpu/wetwall.rs` + `environment.wgsl`). The wall-fill sheet is likewise
+render-only: `gpu/wallfill.rs` writes a supersampled dense occupancy atlas from near-wall
+particle splats, injects the sheet into the screen-space water MRTs before smoothing on
+the rendered back/left glass faces, applies a local repair at their shared corner, and
+writes a screen-space `wallfill_mask` that lets composite apply fill-only color,
+absorption, reflection, and roughness controls. These cues do **not** simulate thin-film
+drainage or per-droplet rivulets, and they never touch the sim buffers.
 
 **Why** - A real thin-film/drainage simulation is its own physics project; the cell-type
 adjacency signal already marks every wall contact (the same signal that spawns spray), so a
@@ -205,13 +209,14 @@ decaying procedural wetness field gives believable lingering wet streaks for alm
 and keeps the sim's determinism contract untouched. Streaks are a cheap procedural cue.
 
 **Tradeoffs** - Wetness is render state only (clears on Reset, persists across frames); it
-cannot show flow direction or true rivulets. Supersampling and bilinear contact coverage
-reduce visible cell blocks, but the signal still originates from grid classification rather
-than individual droplets. Direct particle/spray→wetness coupling is registered
+cannot show flow direction or true rivulets. Supersampling and bilinear coverage reduce
+visible blocks, but wetness still originates from grid classification rather than
+individual droplets. Direct particle/spray→wetness coupling is registered
 (`wetness_spray_gain`) but stubbed at 0 — airborne spray re-wetting a wall above the
-waterline is a follow-up. The dense wall-fill mask fixes vertical merging from the old
-topmost-waterline column model, but it remains a screen-space visual sheet rather than
-additional simulated water mass. Defaults are intentionally subtle.
+waterline is a follow-up. The dense wall-fill mask is a screen-space visual sheet rather
+than additional simulated water mass, and it follows the open viewing-corner policy by
+not projecting hidden sheets onto the front/right faces. Defaults are intentionally
+subtle.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/wetwall.rs -> WetWallSystem`;
 `crates/fluid-lab/src/gpu/shaders/wetwall_update.wgsl`; the wall reads in
@@ -300,6 +305,22 @@ is legacy compatibility only and not part of the public settings surface.
 a lone particle from the front of a deep volume. Normalized screen-space thickness
 keeps one absorption setting meaningful across particle counts and stops particle size
 from acting as hidden opacity.
+
+**Refinement (thickness and whitewater are spatially smoothed)** - The thickness target,
+and the whitewater (foam) target, are each blurred by a plain separable Gaussian
+(`ThicknessSmoothRenderer`) before they drive composite colour. Left raw, the per-particle
+splat noise read directly as speckle: thickness as a "sandy" body that let the dark wall
+show through inter-splat gaps near the glass, and whitewater as a field of white foam
+speckle dots all over moving water — i.e. the *accumulation signals*, not the surface
+normal (which the bilateral depth blur already smooths), were the source of the "pixelly"
+and "gap against the glass" artifacts. The Gaussian makes both spatially coherent (a
+continuous sheet up to the wall; foam as soft regions) while keeping the models unchanged:
+opacity is still Beer-Lambert over normalized screen-space thickness, foam is still the
+speed-weighted whitewater mix — just denoised. This replaced an earlier bandage that
+suppressed particle thickness in a band near vertical glass, which was unnecessary once
+thickness was smoothed. **Limitation:** sparse *airborne* water (spray thrown by a violent
+slosh/crash) is still individual particles, so it renders as discrete soft billboards, not
+a smooth sheet — a known screen-space-particle limit, distinct from the speckle this fixed.
 
 **Tradeoffs** - Absorption-over-thickness stays the opacity model even now that
 refraction landed in v1.12: refraction samples an offscreen scene-color prepass and

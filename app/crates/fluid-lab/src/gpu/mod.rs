@@ -96,6 +96,8 @@ pub struct GpuContext {
     skybox: skybox::SkyboxRenderer,
     composite: composite::CompositeRenderer,
     smoothing: smoothing::WaterSmoothRenderer,
+    thickness_smoothing: smoothing::ThicknessSmoothRenderer,
+    whitewater_smoothing: smoothing::ThicknessSmoothRenderer,
     slice: slice::SliceRenderer,
     /// Persistent diffuse-water particles (foam/spray/bubbles) — render-only.
     diffuse: diffuse::DiffuseSystem,
@@ -270,6 +272,8 @@ impl GpuContext {
         let wallocc = wallfill::WallOccupancySystem::new(
             &device,
             fluid.cell_type_buffer(),
+            fluid.particle_buffer(),
+            fluid.particle_count(),
             grid_nx_init,
             grid_ny_init,
             grid_nz_init,
@@ -330,6 +334,21 @@ impl GpuContext {
             &nearest_z_view,
             &smooth_z_ping_view,
             &smooth_z_view,
+            hero.smooth_radius,
+        );
+        // Plain-Gaussian thickness + whitewater blurs sharing the depth pass's
+        // ping scratch. Whitewater is blurred so foam reads as coherent regions
+        // instead of per-particle speckle dots on moving water.
+        let thickness_smoothing = smoothing::ThicknessSmoothRenderer::new(
+            &device,
+            &thickness_view,
+            &smooth_z_ping_view,
+            hero.smooth_radius,
+        );
+        let whitewater_smoothing = smoothing::ThicknessSmoothRenderer::new(
+            &device,
+            &whitewater_view,
+            &smooth_z_ping_view,
             hero.smooth_radius,
         );
 
@@ -440,6 +459,8 @@ impl GpuContext {
             skybox,
             composite,
             smoothing,
+            thickness_smoothing,
+            whitewater_smoothing,
             slice,
             diffuse,
             caustics: caustics_sys,
@@ -579,6 +600,8 @@ impl GpuContext {
         let wallocc = wallfill::WallOccupancySystem::new(
             &self.device,
             fluid.cell_type_buffer(),
+            fluid.particle_buffer(),
+            fluid.particle_count(),
             grid_nx,
             grid_ny,
             grid_nz,
@@ -746,6 +769,16 @@ impl GpuContext {
             &self.smooth_z_ping_view,
             &self.smooth_z_view,
         );
+        self.thickness_smoothing.set_views(
+            &self.device,
+            &self.thickness_view,
+            &self.smooth_z_ping_view,
+        );
+        self.whitewater_smoothing.set_views(
+            &self.device,
+            &self.whitewater_view,
+            &self.smooth_z_ping_view,
+        );
         self.caustics.set_views(
             &self.device,
             self.temporal.stable_smooth_z(),
@@ -847,6 +880,10 @@ impl GpuContext {
         self.caustics.set_hero_params(&self.queue, &hero);
         self.wetwall.set_params(&self.queue, &hero);
         self.smoothing
+            .update_radius(&self.queue, hero.smooth_radius);
+        self.thickness_smoothing
+            .update_radius(&self.queue, hero.smooth_radius);
+        self.whitewater_smoothing
             .update_radius(&self.queue, hero.smooth_radius);
         self.particles.splat_scale = hero.smooth_thickness_splat_scale;
     }
@@ -1253,6 +1290,16 @@ impl GpuContext {
                     &self.smooth_z_ping_view,
                     &self.smooth_z_view,
                 );
+                self.thickness_smoothing.set_views(
+                    &self.device,
+                    &self.thickness_view,
+                    &self.smooth_z_ping_view,
+                );
+                self.whitewater_smoothing.set_views(
+                    &self.device,
+                    &self.whitewater_view,
+                    &self.smooth_z_ping_view,
+                );
                 self.caustics.set_views(
                     &self.device,
                     self.temporal.stable_smooth_z(),
@@ -1508,9 +1555,101 @@ impl GpuContext {
                     });
                     self.wallfill.draw(&mut pass);
                 }
+                // v1.22 Thickness smoothing: a plain separable Gaussian over the
+                // thickness target, run AFTER particle + wall-fill thickness writes
+                // and BEFORE depth smoothing (so it can reuse the depth pass's
+                // smooth_z_ping scratch). Raw thickness drives Beer-Lambert opacity
+                // in the composite, so its per-particle splat noise was the source of
+                // the speckled "sandy" body and the see-through gap where dark wall
+                // showed between splats near the glass. Each iteration blurs in place:
+                // X reads thickness -> writes ping; Y reads ping -> writes thickness.
+                let smooth_iters = self.hero.smooth_iterations.max(1);
+                for _ in 0..smooth_iters {
+                    {
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("thickness smooth x pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &self.smooth_z_ping_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        self.thickness_smoothing.draw_x(&mut pass);
+                    }
+                    {
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("thickness smooth y pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &self.thickness_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        self.thickness_smoothing.draw_y(&mut pass);
+                    }
+                }
+                // Whitewater/foam smoothing: same in-place plain Gaussian, reusing the
+                // shared ping scratch. The whitewater target is a per-particle
+                // speed-weighted accumulation; raw, it reads as a field of white foam
+                // speckle dots on moving water. Blurring it makes foam coherent regions.
+                for _ in 0..smooth_iters {
+                    {
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("whitewater smooth x pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &self.smooth_z_ping_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        self.whitewater_smoothing.draw_x(&mut pass);
+                    }
+                    {
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("whitewater smooth y pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &self.whitewater_view,
+                                resolve_target: None,
+                                depth_slice: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        self.whitewater_smoothing.draw_y(&mut pass);
+                    }
+                }
                 // Iterated bilateral depth smoothing. Iteration 0 reads nearest_z;
                 // iterations 1+ compound the result in smooth_z via a second X bind group.
-                let smooth_iters = self.hero.smooth_iterations.max(1);
                 for iter in 0..smooth_iters {
                     {
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

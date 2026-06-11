@@ -46,7 +46,7 @@ FluidApp::frame
            procedural skybox (world background) + environment (floor + back/left walls,
              reading the wetness field for darken/gloss/streak/meniscus/contact-shadow) + wireframe
          thickness + whitewater + nearest-Z MRT -> wall-fill sheet injection ->
-         separable depth smoothing ->
+         separable thickness + whitewater blur (plain Gaussian) + bilateral depth smoothing ->
          temporal history-blend of thickness / smooth-Z / whitewater into stabilized targets ->
          caustic generation (half-res) -> caustic composite (additive into scene_color) ->
          composite (opaque) samples scene_color (now caustic-lit) at a normal-driven refract UV,
@@ -71,7 +71,7 @@ frame, not a per-pass breakdown.
 | Wireframe tank | always on | `crates/fluid-lab/src/gpu/renderer.rs -> WireframeRenderer` (swapchain pipeline + dual-target scene pipeline) | inline WGSL in `renderer.rs` |
 | World skybox | Water mode, `render.hero.skybox_enabled` | `crates/fluid-lab/src/gpu/skybox.rs -> SkyboxRenderer` | `crates/fluid-lab/src/gpu/shaders/{env,skybox}.wgsl` |
 | Hero-water environment | Water mode only | `crates/fluid-lab/src/gpu/environment.rs -> EnvironmentRenderer` | `crates/fluid-lab/src/gpu/shaders/environment.wgsl` |
-| Screen-space water | `RenderMode::Water` (default) | `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer`; `crates/fluid-lab/src/gpu/smoothing.rs -> WaterSmoothRenderer`; `crates/fluid-lab/src/gpu/composite.rs -> CompositeRenderer` | `crates/fluid-lab/src/gpu/shaders/particles.wgsl`; `crates/fluid-lab/src/gpu/shaders/water_smooth.wgsl`; `crates/fluid-lab/src/gpu/shaders/composite.wgsl` |
+| Screen-space water | `RenderMode::Water` (default) | `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer`; `crates/fluid-lab/src/gpu/smoothing.rs -> WaterSmoothRenderer` (depth) + `ThicknessSmoothRenderer` (thickness); `crates/fluid-lab/src/gpu/composite.rs -> CompositeRenderer` | `crates/fluid-lab/src/gpu/shaders/particles.wgsl`; `crates/fluid-lab/src/gpu/shaders/{water_smooth,thickness_smooth}.wgsl`; `crates/fluid-lab/src/gpu/shaders/composite.wgsl` |
 | Diffuse water (foam/spray/bubbles) | Water mode, `render.diffuse.enabled` | `crates/fluid-lab/src/gpu/diffuse.rs -> DiffuseSystem` | `crates/fluid-lab/src/gpu/shaders/diffuse_{emit,update,render}.wgsl` |
 | Caustics (floor/back-wall light focusing) | Water mode, `render.hero.caustics.enabled` | `crates/fluid-lab/src/gpu/caustics.rs -> CausticsSystem` | `crates/fluid-lab/src/gpu/shaders/caustics_{generate,composite}.wgsl` |
 | Wet walls / meniscus / contact shadow | Water mode, `render.hero.wet_wall.enabled` | `crates/fluid-lab/src/gpu/wetwall.rs -> WetWallSystem` (write) + `EnvironmentRenderer` (read) | `crates/fluid-lab/src/gpu/shaders/wetwall_update.wgsl`; reads in `environment.wgsl` |
@@ -99,8 +99,20 @@ represented liquid volume per actual particle count and the same tapered kernel 
 fragment writes, so `render.particle_size` changes coverage and smoothness without
 becoming a hidden opacity control.
 
-`WaterSmoothRenderer` runs a narrow separable depth filter over nearest-Z using
-point `textureLoad` reads. `CompositeRenderer` then samples the thickness target and
+`WaterSmoothRenderer` runs a narrow separable **bilateral** filter over nearest-Z using
+point `textureLoad` reads (edge-preserving, so the reconstructed normal stays crisp).
+`ThicknessSmoothRenderer` (`crates/fluid-lab/src/gpu/smoothing.rs`,
+`shaders/thickness_smooth.wgsl`) separately runs a **plain separable Gaussian** — in two
+instances, over the **thickness** target and the **whitewater** target, in place. Both are
+per-particle accumulation signals that drive composite colour, so leaving them raw made the
+individual splats read as speckle: the thickness noise as a "sandy" body that let the dark
+wall show through inter-splat gaps near the glass, and the whitewater noise as a field of
+white foam speckle dots all over moving water. The Gaussian makes both spatially coherent
+(a continuous sheet up to the wall; foam as soft regions, not dots) without needing extra
+render targets — each blur reuses the depth pass's `smooth_z_ping` scratch in sequence and
+shares `render.hero.smooth_radius` / `smooth_iterations`. All three run after wall-fill
+injection and before temporal. `CompositeRenderer` then samples the (smoothed) thickness
+target and
 smoothed depth, reconstructs a screen-space normal, and **refracts**:
 it offsets the sample UV along the surface normal's xy (scaled by thickness, clamped
 to a pixel budget), taps `scene_color` at that refract UV for the bent background,
@@ -144,29 +156,34 @@ pipeline rebuild, no per-setting plumbing. `f0` is derived from `ior` (Schlick),
 stored independently. `render.hero.mode_enabled` is the master toggle (off forces both
 the refraction offset and the reflection strength to zero — the non-hero comparison).
 `render.hero.debug_view` routes an intermediate stage (scene color/depth, thickness,
-refraction UV offset, Fresnel, absorption, water-only, reflection, env-only) to the
-swapchain; the authoritative list is `settings/mod.rs -> enum_options`. The reflected
+refraction UV offset, Fresnel, absorption, water-only, reflection, env-only, caustics, and
+the wall-diagnosis views nearest-Z / whitewater / wallfill-mask) to the swapchain; the
+authoritative list is `settings/mod.rs -> enum_options`. The reflected
 environment and the world skybox share one procedural function (`shaders/env.wgsl ->
 env_sample`), so they stay coherent; `environment_mode` selects Sky/Room/Studio.
 
 **Diffuse water (foam / spray / bubbles).** In Water mode, `DiffuseSystem`
 (`crates/fluid-lab/src/gpu/diffuse.rs`) maintains a persistent, **render-only** GPU
-particle set that replaces the old speed-mask whitewater tint with diffuse state
-that is *born* at fast/breaking surfaces and wall impacts, advects/ages over
-seconds, and *decays*. It conserves no mass and never writes the sim buffers (see
-`../decisions/rendering.md`). Three GPU passes, all readback-free:
+particle set that can replace the speed-mask whitewater tint with diffuse state. It is
+available through `render.diffuse.enabled` but defaults off so glass-adjacent wall
+rendering starts smooth. When enabled, diffuse state is *born* at fast/breaking surfaces
+and wall impacts, advects/ages over seconds, and *decays*. It conserves no mass and
+never writes the sim buffers (see `../decisions/rendering.md`). Three GPU passes, all
+readback-free:
 
 - **emit** (`diffuse_emit.wgsl`) — one invocation per grid cell; reads cell types +
   MAC face velocities, picks the strongest of surface-speed / wall-impact / fast-
   interior signals, and stochastically spawns one particle (foam/spray/bubble) into
-  a ring buffer. Spawning is deterministic per `(cell, frame, seed)` via an integer
-  hash (no wall-clock RNG) and bounded by an integer-atomic per-frame budget (no
-  float atomics, consistent with `scatter.wgsl`).
+  a ring buffer. Surface-speed emits foam/spray; wall impacts emit short-lived spray
+  rather than long-lived foam decals on vertical glass. Spawning is deterministic per
+  `(cell, frame, seed)` via an integer hash (no wall-clock RNG) and bounded by an
+  integer-atomic per-frame budget (no float atomics, consistent with `scatter.wgsl`).
 - **update** (`diffuse_update.wgsl`) — one invocation per active slot; age/lifetime
   kill, type-specific motion (foam couples to the flow while on the liquid surface
   but falls ballistically once stranded in an air cell so it can't hang in midair;
-  spray is ballistic with drag; bubbles rise by buoyancy), surface type transitions,
-  and an integer-atomic alive-per-type recount.
+  foam that hugs vertical glass above the floor is retired quickly so the wet-wall
+  material owns that cue; spray is ballistic with drag; bubbles rise by buoyancy),
+  surface type transitions, and an integer-atomic alive-per-type recount.
 - **render** (`diffuse_render.wgsl`) — instanced premultiplied-alpha billboards over
   the composite, depth-tested against the shared scene depth (depth-write off),
   carrying the frame's `render_end` timestamp so `gpu.render_ms` still spans it.
@@ -202,9 +219,11 @@ fractional **current** `cell_type` coverage from the adjacent interior layer (Li
 adjacent to a Solid wall, bilinear over the wall axes) and decay-blends
 `wetness = max(new_contact, prev * pow(decay, dt*60))` — framerate-corrected so streaks
 linger in seconds, not frames. The wall material in `environment.wgsl` reads the field
-to darken/streak wet regions, blend environment reflections, scale sun sheen by wall
-gloss/specular, draw a thin Fresnel meniscus band at the waterline, and add a contact
-shadow at the floor/wall join. This is a procedural **render-only** cue, not simulated
+through a blur-aware wetness sampler and a soft material-response threshold to suppress
+isolated contact speckles, darken/streak wet regions, blend environment reflections,
+scale sun sheen by wall gloss/specular, draw a thin Fresnel meniscus band from the same
+smoothed wetness gradient, and add a contact shadow at the floor/wall join. This is a
+procedural **render-only** cue, not simulated
 thin-film drainage (`../decisions/rendering.md`); particle→wetness coupling
 (`wetness_spray_gain`) is registered but stubbed at 0. Wetness persists across frames and
 clears on Reset (`WetWallSystem` rebuilt with a fresh zeroed buffer in `recreate_fluid`,
@@ -215,19 +234,26 @@ allocation-time supersampled dimensions and keeps using them until Reset, so cha
 Reset-class setting cannot desynchronize the uniform from the allocated buffer mid-run.
 
 **Dense wall fill.** `WallOccupancySystem` (`crates/fluid-lab/src/gpu/wallfill.rs`)
-maintains a dense, current-frame wall occupancy buffer from `cell_type` for the back,
-left, right, front, and floor faces. The atlas is supersampled by
-`render.hero.flat_water.fill_supersample` per wall axis (default 8, selectable to 32),
-so vertical faces store `nx*ss` by `ny*ss` or `nz*ss` by `ny*ss` fractional coverage
-texels instead of one hard texel per sim cell. The render pass runs after particle
-thickness/nearest-Z writes and before bilateral smoothing, intersects each visible tank
-plane per pixel, bilinearly samples the dense atlas in both wall axes, smooths the
-coverage curve by `waterline_softness`, and injects a subtle flat sheet into the same MRT
-targets (`thickness` Add, `nearest_z` Min, `whitewater` Add zero). It also writes a
+maintains a dense, current-frame wall occupancy buffer from particle splats near the
+tank walls, using the supersampled atlas dimensions allocated from
+`render.hero.flat_water.fill_supersample`. The render pass runs after particle
+thickness/nearest-Z writes and before smoothing, intersects the **rendered** back and
+left wall planes per pixel, bilinearly samples the dense atlas in both wall axes, smooths
+the coverage curve by `waterline_softness`, and injects a subtle flat sheet into the
+same MRT targets (`thickness` Add, `nearest_z` Min, `whitewater` Add zero). It applies a
+local repair at the shared back-left edge by sampling a few supersampled texels inward
+from both visible faces, so still water fills the rendered corner without globally
+inflating wall coverage. The right and front planes remain open viewing faces like the
+environment prepass; the fill pass does not inject hidden sheets there because those
+projected planes create camera/box-rotation-dependent mask seams. The pass also writes a
 full-resolution `wallfill_mask` target, cleared every frame, so `composite.wgsl` can tune
 fill-only color, absorption, reflection, and roughness without changing normal water.
-Because occupancy is stored by wall row instead of as one topmost waterline per column, a
-dry gap between lower and upper water patches remains dry. `fill_strength` scales the
+Rounded billboard kernels no longer draw visible blobs on the wall because the thickness
+target is Gaussian-smoothed before composite (see **Screen-space water** above), so the
+fill sheet and the smoothed particle thickness together form a continuous contact band —
+the core particle splats are no longer suppressed near the glass.
+Because occupancy is stored by wall texel instead of as one topmost waterline per column,
+a dry gap between lower and upper water patches remains dry. `fill_strength` scales the
 injected slab, `fill_slab` controls optical body thickness, and `waterline_softness`
 controls the final coverage easing rather than supersampling more texels.
 

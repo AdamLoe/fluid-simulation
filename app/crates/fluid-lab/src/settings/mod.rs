@@ -865,9 +865,9 @@ impl Default for Registry {
                 panel_group: PanelGroup::Default,
                 default: Value::U32(0),
                 value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 10 },
+                validation: Validation::U32Range { min: 0, max: 13 },
                 tooltip: Some("Routes an intermediate hero-water buffer to the screen for debugging."),
-                technical_tooltip: Some("Live enum. 0 = normal composite; other values blit a single stage (scene color/depth, thickness, refraction offset, Fresnel, absorption, water-only, caustics) to the swapchain."),
+                technical_tooltip: Some("Live enum. 0 = normal composite; other values blit a single stage (scene color/depth, thickness, refraction offset, Fresnel, absorption, water-only, caustics, nearest_z, whitewater, wallfill_mask) to the swapchain."),
                 apply: ApplyClass::Live,
             },
             Setting {
@@ -1495,8 +1495,8 @@ impl Default for Registry {
                 label: "Wall darkening",
                 category: Category::Water,
                 panel_group: PanelGroup::Advanced,
-                default: Value::F32(0.18),
-                value: Value::F32(0.18),
+                default: Value::F32(0.05),
+                value: Value::F32(0.05),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
                 tooltip: Some("How much wet walls darken (water-soaked look)."),
                 technical_tooltip: Some("Live. Wet texels darken by mix(1.0, 1.0-darkening_strength, wetness) in the WALL FS branch."),
@@ -1507,8 +1507,8 @@ impl Default for Registry {
                 label: "Wall gloss",
                 category: Category::Water,
                 panel_group: PanelGroup::Advanced,
-                default: Value::F32(0.25),
-                value: Value::F32(0.25),
+                default: Value::F32(0.08),
+                value: Value::F32(0.08),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
                 tooltip: Some("Specular gloss added to wet wall regions."),
                 technical_tooltip: Some("Live. Adds a Blinn-Phong-ish specular highlight scaled by wetness*gloss_strength in the WALL branch."),
@@ -1519,8 +1519,8 @@ impl Default for Registry {
                 label: "Vertical streaks",
                 category: Category::Water,
                 panel_group: PanelGroup::Advanced,
-                default: Value::F32(0.12),
-                value: Value::F32(0.12),
+                default: Value::F32(0.0),
+                value: Value::F32(0.0),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
                 tooltip: Some("Subtle vertical drip-streak texture on wet walls."),
                 technical_tooltip: Some("Live procedural: a vertical sinusoidal streak at world-x/z frequency modulates wetness darkening."),
@@ -1627,8 +1627,8 @@ impl Default for Registry {
                 label: "Wall wet reflectivity",
                 category: Category::Water,
                 panel_group: PanelGroup::Advanced,
-                default: Value::F32(0.55),
-                value: Value::F32(0.55),
+                default: Value::F32(0.12),
+                value: Value::F32(0.12),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
                 tooltip: Some("How strongly wet wall areas reflect the environment/skybox. Makes wet patches visibly shiny and mirror-like rather than just darker."),
                 technical_tooltip: Some("Live. Blends env_sample(reflect(view,face_normal)) into the wall color scaled by wetness*reflectivity*fresnel. Visible even on the near-black wall because it adds light rather than subtracting it."),
@@ -1639,8 +1639,8 @@ impl Default for Registry {
                 label: "Wall wet specular",
                 category: Category::Water,
                 panel_group: PanelGroup::Advanced,
-                default: Value::F32(0.6),
-                value: Value::F32(0.6),
+                default: Value::F32(0.12),
+                value: Value::F32(0.12),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
                 tooltip: Some("Sun specular sheen on wet wall areas. Adds a bright glint where the sun hits a wet surface."),
                 technical_tooltip: Some("Live. Adds sharp and subtle broad sun highlights scaled by wetness*specular*wall_gloss. R = reflect(view, face_normal) in world space."),
@@ -1663,10 +1663,10 @@ impl Default for Registry {
                 label: "Wall wetness blur",
                 category: Category::Water,
                 panel_group: PanelGroup::Advanced,
-                default: Value::F32(2.0),
-                value: Value::F32(2.0),
-                validation: Validation::F32Range { min: 0.0, max: 4.0 },
-                tooltip: Some("Read-side blur radius in supersampled texels. Smooths blocky wetness patterns. 0=off, 2=default smoothing, 4=wider."),
+                default: Value::F32(12.0),
+                value: Value::F32(12.0),
+                validation: Validation::F32Range { min: 0.0, max: 12.0 },
+                tooltip: Some("Read-side blur radius in supersampled texels. Smooths blocky wetness patterns. 0=off, 12=default smoothing."),
                 technical_tooltip: Some("Live. Applied in environment.wgsl wetness readers as a triangular weighted filter over up to 2*floor(radius)+1 texels per axis, then sampled with smooth interpolation. Stored in render2.w of WetWallUniform."),
                 apply: ApplyClass::Live,
             },
@@ -1725,8 +1725,8 @@ impl Default for Registry {
                 label: "Wall fill strength",
                 category: Category::Water,
                 panel_group: PanelGroup::Advanced,
-                default: Value::F32(0.45),
-                value: Value::F32(0.45),
+                default: Value::F32(1.0),
+                value: Value::F32(1.0),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
                 tooltip: Some("Overall weight/opacity of the injected flat wall sheet (0=off, 1=full). Scales the final slab contribution after wall-UV coverage smoothing."),
                 technical_tooltip: Some("Live. Multiplies fill_slab so the sheet can be dialled down without disabling the pass; edge smoothing comes from continuous wall-UV atlas sampling. Routes into FillUniform.fill.y."),
@@ -1737,8 +1737,8 @@ impl Default for Registry {
                 label: "Wall fill slab thickness",
                 category: Category::Water,
                 panel_group: PanelGroup::Advanced,
-                default: Value::F32(0.018),
-                value: Value::F32(0.018),
+                default: Value::F32(0.08),
+                value: Value::F32(0.08),
                 validation: Validation::F32Range { min: 0.0, max: 0.3 },
                 tooltip: Some("Thickness slab (box-local units) contributed by the fill pass to the water thickness target. Gives the sheet enough body to be visible in the composite without double-counting particle thickness."),
                 technical_tooltip: Some("Live. Written into target 0 (thickness) of the MRT with Add blend, so it supplements particle thickness. Routes into FillUniform.fill.z."),
@@ -1749,11 +1749,11 @@ impl Default for Registry {
                 label: "Wall fill resolution",
                 category: Category::Water,
                 panel_group: PanelGroup::Advanced,
-                default: Value::U32(8),
-                value: Value::U32(8),
+                default: Value::U32(16),
+                value: Value::U32(16),
                 validation: Validation::U32Range { min: 1, max: 32 },
                 tooltip: Some("Supersample factor for the wall-fill occupancy atlas. Higher values reduce the visible sim-cell grid in the fill sheet; values above 16 can be expensive."),
-                technical_tooltip: Some("Reset-class. WallOccupancySystem allocates per-face atlases at nx*ss by ny*ss or nz*ss by ny*ss and writes fractional liquid coverage from cell_type. Buffer is rebuilt on Reset. Exposed max is 32; default stays 8."),
+                technical_tooltip: Some("Reset-class. WallOccupancySystem allocates per-face atlases at nx*ss by ny*ss or nz*ss by ny*ss and writes fractional coverage from near-wall particle splats. Buffer is rebuilt on Reset. Exposed max is 32; default 16."),
                 apply: ApplyClass::Reset,
             },
             Setting {
@@ -1809,8 +1809,8 @@ impl Default for Registry {
                 label: "Waterline softness",
                 category: Category::Water,
                 panel_group: PanelGroup::Advanced,
-                default: Value::F32(0.04),
-                value: Value::F32(0.04),
+                default: Value::F32(0.14),
+                value: Value::F32(0.14),
                 validation: Validation::F32Range { min: 0.0, max: 0.2 },
                 tooltip: Some("Softens wall-fill wet/dry transitions after continuous wall-UV atlas sampling. Larger values make the sheet edge less stair-stepped."),
                 technical_tooltip: Some("Live. wallfill.wgsl fs_fill samples the supersampled occupancy atlas bilinearly in both wall axes and smooths coverage instead of snapping y to one occupied row. Routes into FillUniform.fill.w."),
@@ -2514,9 +2514,9 @@ impl Registry {
             wet_wall_contact_gain: self.f32_or("render.hero.wet_wall.wetness_contact_gain", 1.0),
             wet_wall_spray_gain: self.f32_or("render.hero.wet_wall.wetness_spray_gain", 0.0),
             wet_wall_darkening_strength: self
-                .f32_or("render.hero.wet_wall.darkening_strength", 0.18),
-            wet_wall_gloss_strength: self.f32_or("render.hero.wet_wall.gloss_strength", 0.25),
-            wet_wall_streak_strength: self.f32_or("render.hero.wet_wall.streak_strength", 0.12),
+                .f32_or("render.hero.wet_wall.darkening_strength", 0.05),
+            wet_wall_gloss_strength: self.f32_or("render.hero.wet_wall.gloss_strength", 0.08),
+            wet_wall_streak_strength: self.f32_or("render.hero.wet_wall.streak_strength", 0.0),
             wet_wall_meniscus_enabled: self.u32_or("render.hero.wet_wall.meniscus_enabled", 1) != 0,
             wet_wall_meniscus_width: self.f32_or("render.hero.wet_wall.meniscus_width", 0.04),
             wet_wall_meniscus_strength: self.f32_or("render.hero.wet_wall.meniscus_strength", 0.15),
@@ -2553,19 +2553,19 @@ impl Registry {
             normal_stencil: self.u32_or("render.hero.normal_stencil", 2),
             normal_smooth_strength: self.f32_or("render.hero.normal_smooth_strength", 0.5),
             // --- Wet wall round-2 reflectivity + supersample (v1.19 polish) ---
-            wet_wall_reflectivity: self.f32_or("render.hero.wet_wall.reflectivity", 0.55),
-            wet_wall_specular: self.f32_or("render.hero.wet_wall.specular", 0.6),
+            wet_wall_reflectivity: self.f32_or("render.hero.wet_wall.reflectivity", 0.12),
+            wet_wall_specular: self.f32_or("render.hero.wet_wall.specular", 0.12),
             wet_wall_supersample: self.u32_or("render.hero.wet_wall.supersample", 8),
             // --- Wet wall round-3: blur + flat-water (v1.20) ---
-            wet_wall_blur: self.f32_or("render.hero.wet_wall.blur", 2.0),
+            wet_wall_blur: self.f32_or("render.hero.wet_wall.blur", 12.0),
             flat_water_strength: self.f32_or("render.hero.flat_water.strength", 0.8),
             flat_water_epsilon: self.f32_or("render.hero.flat_water.epsilon", 0.04),
             flat_water_depth_strength: self.f32_or("render.hero.flat_water.depth_strength", 0.8),
             // --- Gap-filled flat water sheet (v1.21) ---
             flat_water_fill_enabled: self.u32_or("render.hero.flat_water.fill_enabled", 1) != 0,
-            flat_water_fill_strength: self.f32_or("render.hero.flat_water.fill_strength", 0.45),
-            flat_water_fill_slab: self.f32_or("render.hero.flat_water.fill_slab", 0.018),
-            flat_water_fill_supersample: self.u32_or("render.hero.flat_water.fill_supersample", 8),
+            flat_water_fill_strength: self.f32_or("render.hero.flat_water.fill_strength", 1.0),
+            flat_water_fill_slab: self.f32_or("render.hero.flat_water.fill_slab", 0.08),
+            flat_water_fill_supersample: self.u32_or("render.hero.flat_water.fill_supersample", 16),
             flat_water_fill_color_strength: self
                 .f32_or("render.hero.flat_water.fill_color_strength", 0.35),
             flat_water_fill_reflection_strength: self
@@ -2574,7 +2574,7 @@ impl Registry {
             flat_water_fill_absorption_strength: self
                 .f32_or("render.hero.flat_water.fill_absorption_strength", 0.45),
             flat_water_waterline_softness: self
-                .f32_or("render.hero.flat_water.waterline_softness", 0.04),
+                .f32_or("render.hero.flat_water.waterline_softness", 0.14),
         }
     }
 
@@ -2727,6 +2727,9 @@ fn enum_options(id: &str) -> Option<&'static [&'static str]> {
             "Reflection",
             "Env only",
             "Caustics",
+            "Nearest Z",
+            "Whitewater",
+            "Wallfill mask",
         ]),
         _ => None,
     }
@@ -3042,7 +3045,7 @@ mod tests {
         assert!(json.contains(r#""options":["Disabled","Enabled"]"#));
         assert!(json.contains(r#""options":["Sky","Room","Studio"]"#));
         assert!(json.contains(
-            r#""options":["Off","Scene color","Scene depth","Thickness","Refraction UV offset","Fresnel","Absorption","Final water only","Reflection","Env only","Caustics"]"#
+            r#""options":["Off","Scene color","Scene depth","Thickness","Refraction UV offset","Fresnel","Absorption","Final water only","Reflection","Env only","Caustics","Nearest Z","Whitewater","Wallfill mask"]"#
         ));
 
         // hero_params() reads the registry defaults and derives nothing nonsensical.
@@ -3091,12 +3094,12 @@ mod tests {
         );
         // v1.19 round-2 wet wall reflectivity + supersample defaults
         assert!(
-            (hero.wet_wall_reflectivity - 0.55).abs() < 1e-5,
-            "wet_wall_reflectivity default 0.55"
+            (hero.wet_wall_reflectivity - 0.12).abs() < 1e-5,
+            "wet_wall_reflectivity default 0.12"
         );
         assert!(
-            (hero.wet_wall_specular - 0.6).abs() < 1e-5,
-            "wet_wall_specular default 0.6"
+            (hero.wet_wall_specular - 0.12).abs() < 1e-5,
+            "wet_wall_specular default 0.12"
         );
         assert_eq!(
             hero.wet_wall_supersample, 8,
@@ -3104,8 +3107,8 @@ mod tests {
         );
         // v1.20 round-3 wet wall blur + flat-water defaults
         assert!(
-            (hero.wet_wall_blur - 2.0).abs() < 1e-5,
-            "wet_wall_blur default 2.0"
+            (hero.wet_wall_blur - 12.0).abs() < 1e-5,
+            "wet_wall_blur default 12.0"
         );
         assert!(
             (hero.flat_water_strength - 0.8).abs() < 1e-5,
@@ -3125,16 +3128,16 @@ mod tests {
             "flat_water_fill_enabled defaults ON"
         );
         assert!(
-            (hero.flat_water_fill_strength - 0.45).abs() < 1e-5,
-            "flat_water_fill_strength default 0.45"
+            (hero.flat_water_fill_strength - 1.0).abs() < 1e-5,
+            "flat_water_fill_strength default 1.0"
         );
         assert!(
-            (hero.flat_water_fill_slab - 0.018).abs() < 1e-5,
-            "flat_water_fill_slab default 0.018"
+            (hero.flat_water_fill_slab - 0.08).abs() < 1e-5,
+            "flat_water_fill_slab default 0.08"
         );
         assert_eq!(
-            hero.flat_water_fill_supersample, 8,
-            "flat_water_fill_supersample default 8"
+            hero.flat_water_fill_supersample, 16,
+            "flat_water_fill_supersample default 16"
         );
         assert!(
             (hero.flat_water_fill_color_strength - 0.35).abs() < 1e-5,
@@ -3153,8 +3156,8 @@ mod tests {
             "flat_water_fill_absorption_strength default 0.45"
         );
         assert!(
-            (hero.flat_water_waterline_softness - 0.04).abs() < 1e-5,
-            "flat_water_waterline_softness default 0.04"
+            (hero.flat_water_waterline_softness - 0.14).abs() < 1e-5,
+            "flat_water_waterline_softness default 0.14"
         );
     }
 

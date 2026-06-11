@@ -177,8 +177,8 @@ auto-apply with no reset; controls that resize GPU buffers, such as
   and the reflection strength to zero (the non-hero comparison baseline).
 - `render.hero.debug_view` — enum routing an intermediate composite stage to the
   swapchain (scene color/depth, thickness, refraction UV offset, Fresnel, absorption,
-  water-only, reflection, env-only). Authoritative list:
-  `settings/mod.rs -> enum_options`.
+  water-only, reflection, env-only, caustics, and the wall-diagnosis views nearest-Z /
+  whitewater / wallfill-mask). Authoritative list: `settings/mod.rs -> enum_options`.
 - Refraction: `ior` (drives Schlick `f0` — `f0` is never an independent setting),
   `refraction_strength`, `refraction_thickness_scale`, `refraction_max_offset_px`,
   `invalid_refraction_fallback` (enum).
@@ -208,17 +208,18 @@ auto-apply with no reset; controls that resize GPU buffers, such as
   `darkening_strength`, `gloss_strength`, `streak_strength`, `meniscus_enabled`,
   `meniscus_width`, `meniscus_strength`, `meniscus_fresnel_boost`,
   `contact_shadow_enabled`, `contact_shadow_strength`, `contact_shadow_radius`,
-  `debug_view`, `reflectivity`, `specular`, `blur` (Live), and `supersample`
-  (Reset-class, rebuilds the wetness buffer; default 8, selectable to 32).
+  `debug_view`, `reflectivity`, `specular`, `blur` (Live; default 12 supersampled
+  texels), and `supersample` (Reset-class, rebuilds the wetness
+  buffer; default 8, selectable to 32).
 - Flat wall fill (`render.hero.flat_water.*`, Advanced): `strength`, `epsilon`,
   `depth_strength`, `fill_enabled`, `fill_strength`, `fill_slab`, `fill_supersample`
-  (Reset-class, rebuilds the wall occupancy atlas; default 8, selectable to 32),
+  (Reset-class, rebuilds the wall occupancy atlas; default 16, selectable to 32),
   `fill_color_strength`, `fill_reflection_strength`, `fill_roughness`,
   `fill_absorption_strength`, and `waterline_softness`. Most fill controls are Live:
   strength scales the injected slab,
   slab changes optical body thickness, softness eases the continuously sampled wall-atlas
-  coverage to anti-alias wet/dry edges, and the color/reflection controls apply only
-  where the wall-fill mask is present in composite.
+  coverage to anti-alias wet/dry edges and the rendered back-left corner repair, and the
+  color/reflection controls apply only where the wall-fill mask is present in composite.
 - Temporal stabilization (`render.hero.temporal.*`, Advanced, off by default): `enabled`,
   the per-target toggles `thickness_history` / `normal_history` (gates the `smooth_z`
   blend the normal derives from) / `caustic_history` / `foam_history`, `history_alpha`
@@ -248,7 +249,9 @@ wall-impact `*_threshold`/`*_gain` emission signals, per-type lifetimes, shared
 `random_seed` (Advanced). `max_particles` is an active cap within a fixed GPU buffer
 capacity, so it applies Live without a reset (see `rendering.md`). The
 authoritative row list is `settings/mod.rs -> Registry::default` (ids prefixed
-`render.diffuse.`).
+`render.diffuse.`). Diffuse particles default off so the speed-mask whitewater fallback
+remains the shipped look; when enabled, defaults keep wall-impact gain, particle radius,
+and alpha subtle so particles read as spray/froth instead of wall decals.
 
 ## Gotchas
 

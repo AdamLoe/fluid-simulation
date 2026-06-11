@@ -96,9 +96,9 @@ impl WetWallSystem {
             params: [0.97, 1.0 / 60.0, 1.0, 1.0], // decay, dt, contact_gain, enabled
             tank_lo: [tank_lo[0], tank_lo[1], tank_lo[2], 0.0],
             tank_hi: [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
-            render0: [0.18, 0.25, 0.12, 1.0], // darkening, gloss, streak, meniscus_en
+            render0: [0.05, 0.08, 0.0, 1.0], // darkening, gloss, streak, meniscus_en
             render1: [0.04, 0.15, 0.12, 1.0], // meniscus_width, strength, fresnel, shadow_en
-            render2: [0.15, 0.08, 0.0, 1.0],  // shadow_strength, shadow_radius, debug, blur_radius
+            render2: [0.15, 0.08, 0.0, 12.0], // shadow_strength, shadow_radius, debug, blur_radius
         };
         let uniform_buf = {
             use wgpu::util::DeviceExt;

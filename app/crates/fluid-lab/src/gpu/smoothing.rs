@@ -188,6 +188,174 @@ impl WaterSmoothRenderer {
     }
 }
 
+/// Plain separable Gaussian blur for a screen-space scalar R16 target (not
+/// bilateral). Used for **both** the thickness target and the whitewater/foam
+/// target — both are per-particle accumulation signals that, left raw, show the
+/// individual splats as speckle (a sandy water body for thickness; a field of
+/// white foam dots for whitewater). Unlike the depth bilateral filter there is no
+/// edge-stop term: blurring across the silhouette is desirable (soft edges,
+/// filled inter-splat holes) and the composite still gates visible water on the
+/// smoothed depth. The X pass reads the source target and writes the shared
+/// scratch (`ping`) target; the Y pass reads `ping` and writes back into the
+/// source target in place. It reuses the depth pass's `smooth_z_ping` scratch
+/// (each instance runs to completion before the next reuses it), so no extra
+/// render target is allocated.
+pub struct ThicknessSmoothRenderer {
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    uniform_x: wgpu::Buffer,
+    uniform_y: wgpu::Buffer,
+    /// X pass: reads the thickness target.
+    bind_x: wgpu::BindGroup,
+    /// Y pass: reads the shared `ping` scratch target.
+    bind_y: wgpu::BindGroup,
+}
+
+impl ThicknessSmoothRenderer {
+    pub fn new(
+        device: &wgpu::Device,
+        thickness_view: &wgpu::TextureView,
+        ping_view: &wgpu::TextureView,
+        radius: u32,
+    ) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("thickness smooth shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/thickness_smooth.wgsl").into()),
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("thickness smooth bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let (r, sigma) = radius_sigma(radius);
+        let uniform_x = create_uniform(device, [1.0, 0.0, r, sigma], "thickness smooth x uniform");
+        let uniform_y = create_uniform(device, [0.0, 1.0, r, sigma], "thickness smooth y uniform");
+        let bind_x = create_bind_group(
+            device,
+            &bind_group_layout,
+            thickness_view,
+            &uniform_x,
+            "thickness smooth x bind group",
+        );
+        let bind_y = create_bind_group(
+            device,
+            &bind_group_layout,
+            ping_view,
+            &uniform_y,
+            "thickness smooth y bind group",
+        );
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("thickness smooth layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("thickness smooth pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R16Float,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            bind_group_layout,
+            uniform_x,
+            uniform_y,
+            bind_x,
+            bind_y,
+        }
+    }
+
+    pub fn set_views(
+        &mut self,
+        device: &wgpu::Device,
+        thickness_view: &wgpu::TextureView,
+        ping_view: &wgpu::TextureView,
+    ) {
+        self.bind_x = create_bind_group(
+            device,
+            &self.bind_group_layout,
+            thickness_view,
+            &self.uniform_x,
+            "thickness smooth x bind group",
+        );
+        self.bind_y = create_bind_group(
+            device,
+            &self.bind_group_layout,
+            ping_view,
+            &self.uniform_y,
+            "thickness smooth y bind group",
+        );
+    }
+
+    /// Match the kernel to the (shared) `render.hero.smooth_radius` Live setting.
+    pub fn update_radius(&self, queue: &wgpu::Queue, radius: u32) {
+        let (r, sigma) = radius_sigma(radius);
+        let ux = SmoothUniform { axis_radius: [1.0, 0.0, r, sigma] };
+        let uy = SmoothUniform { axis_radius: [0.0, 1.0, r, sigma] };
+        queue.write_buffer(&self.uniform_x, 0, bytemuck::bytes_of(&ux));
+        queue.write_buffer(&self.uniform_y, 0, bytemuck::bytes_of(&uy));
+    }
+
+    /// X pass: reads the thickness target, writes the shared `ping` scratch.
+    pub fn draw_x(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.draw(pass, &self.bind_x);
+    }
+
+    /// Y pass: reads `ping`, writes back into the thickness target.
+    pub fn draw_y(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.draw(pass, &self.bind_y);
+    }
+
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, bind_group: &wgpu::BindGroup) {
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
 /// Derive radius (f32) and sigma_spatial from an integer radius setting.
 /// sigma_spatial scales with radius so the Gaussian is never truncated too
 /// aggressively: sigma = radius / 2.0 (so the kernel edge is ~2.7 sigma;

@@ -111,7 +111,10 @@ memory.** `GpuContext::buffer_memory_bytes()` forwards `GpuFluid::buffer_memory_
 so `stats_json.gpu_buffer_mb` is the simulation-buffer budget. Rendering also owns the
 shared depth texture and four persistent swapchain-sized `R16Float` water targets:
 thickness, speed-weighted whitewater, nearest-Z, and smoothed-Z, plus a transient ping
-target for the separable smoothing pass. The hero-water Water mode adds two more
+target shared by **all** the separable smoothing passes — the bilateral depth blur
+(`WaterSmoothRenderer`) plus the plain-Gaussian thickness and whitewater blurs (two
+`ThicknessSmoothRenderer` instances, each blurring its target in place in sequence, so
+they allocate no extra target). The hero-water Water mode adds two more
 swapchain-sized prepass targets: `scene_color` (`Rgba16Float`, ~8 bytes/px) and
 `scene_depth` (`R16Float`). At 1280×800 the five R16 water targets are ~10 MB and the
 two scene targets ~12 MB. There is still no extracted-surface vertex allocation.
@@ -138,11 +141,14 @@ The hero-water finishing systems own three more render-memory allocations, all G
   storage buffer with dense current-frame wall occupancy, supersampled by
   `render.hero.flat_water.fill_supersample`: back/front `(nx*ss)·(ny*ss)` each,
   left/right `(nz*ss)·(ny*ss)` each, plus floor `(nx*ss)·(nz*ss)`. At default 64³ and
-  `ss=8` this is ~1.84M entries × 4 B ≈ 7.0 MB; at selectable max `ss=32`,
-  ~29.4M entries ≈ 112 MB. It is recomputed from `cell_type` every frame while wall fill
-  is enabled and is rebound when `recreate_fluid` creates fresh sim buffers. The wall-fill
-  render pass also clears/writes one swapchain-sized `R16Float` `wallfill_mask` target
-  each frame; the composite samples it for fill-only optical controls.
+  `ss=16` this is ~7.34M entries × 4 B ≈ 28 MB; at selectable max `ss=32`,
+  ~29.4M entries ≈ 112 MB. It is recomputed from near-wall particle splats every frame
+  while wall fill is enabled, using a 2D workgroup split when the flattened pass would exceed WebGPU's
+  per-dimension dispatch ceiling, and is rebound when `recreate_fluid` creates fresh sim
+  buffers. The wall-fill render pass samples the back and left atlas faces only, matching
+  the rendered glass faces in `rendering.md`, and also clears/writes one
+  swapchain-sized `R16Float` `wallfill_mask` target each frame; the composite samples it
+  for fill-only optical controls.
 - **Temporal** (`gpu/temporal.rs -> TemporalSystem`) — true **full-res** `R16Float`
   ping-pong (two stabilized textures) per enabled target: `thickness` + `smooth_z`
   (default-on) ≈ **8 MB**, plus `whitewater` ≈ **4 MB** when `foam_history` is on, at

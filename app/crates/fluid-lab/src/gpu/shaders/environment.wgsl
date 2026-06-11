@@ -107,19 +107,7 @@ fn floor_texel(i: i32, k: i32, nx: u32, nz: u32, back_count: u32, left_count: u3
     return select(0.0, wetness[back_count + left_count + idx], idx < floor_count);
 }
 
-// Map a world position on the back wall (z≈lo.z) to its wetness-buffer index.
-// Uses bicubic-smooth interpolation + an optional triangular weighted filter for smoother look.
-fn back_wall_wetness(p: vec3<f32>) -> f32 {
-    let nx = ww.dims.x;
-    let ny = ww.dims.y;
-    let lo = ww.tank_lo.xyz;
-    let hi = ww.tank_hi.xyz;
-    let span_x = hi.x - lo.x;
-    let span_y = hi.y - lo.y;
-    let fi = clamp((p.x - lo.x) / span_x, 0.0, 1.0) * f32(nx - 1u);
-    let fj = clamp((p.y - lo.y) / span_y, 0.0, 1.0) * f32(ny - 1u);
-    let back_count = ww.face_counts.x;
-    let blur_r = i32(clamp(ww.render2.w, 0.0, 4.0));
+fn back_wall_wetness_sample(fi: f32, fj: f32, nx: u32, ny: u32, back_count: u32, blur_r: i32) -> f32 {
     if blur_r <= 0 {
         let i0 = u32(fi);
         let i1 = min(i0 + 1u, nx - 1u);
@@ -133,11 +121,7 @@ fn back_wall_wetness(p: vec3<f32>) -> f32 {
         let w11 = select(0.0, wetness[j1 * nx + i1], (j1 * nx + i1) < back_count);
         return mix(mix(w00, w10, tx), mix(w01, w11, tx), ty);
     }
-    // Triangular filter over [-blur_r, blur_r] in each axis around the nearest texel.
-    // Round to nearest center (not truncate) so the kernel is symmetric about fi/fj.
-    // Weight each tap by its bilinear closeness to fi/fj so sub-texel smoothness is
-    // preserved within the blur: taps near the fractional position count more than
-    // taps at the far edge of the kernel, preventing blocky step artifacts.
+
     let ci = i32(floor(fi + 0.5));
     let cj = i32(floor(fj + 0.5));
     let fi_off = fi - f32(ci);
@@ -157,11 +141,62 @@ fn back_wall_wetness(p: vec3<f32>) -> f32 {
     return sum / cnt;
 }
 
+fn left_wall_wetness_sample(fk: f32, fj: f32, nz: u32, ny: u32, back_count: u32, left_count: u32, blur_r: i32) -> f32 {
+    if blur_r <= 0 {
+        let k0 = u32(fk);
+        let k1 = min(k0 + 1u, nz - 1u);
+        let j0 = u32(fj);
+        let j1 = min(j0 + 1u, ny - 1u);
+        let tk = wet_smooth(fract(fk));
+        let tj = wet_smooth(fract(fj));
+        let idx00 = j0 * nz + k0;
+        let idx10 = j0 * nz + k1;
+        let idx01 = j1 * nz + k0;
+        let idx11 = j1 * nz + k1;
+        let w00 = select(0.0, wetness[back_count + idx00], idx00 < left_count);
+        let w10 = select(0.0, wetness[back_count + idx10], idx10 < left_count);
+        let w01 = select(0.0, wetness[back_count + idx01], idx01 < left_count);
+        let w11 = select(0.0, wetness[back_count + idx11], idx11 < left_count);
+        return mix(mix(w00, w10, tk), mix(w01, w11, tk), tj);
+    }
+
+    let ck = i32(floor(fk + 0.5));
+    let cj = i32(floor(fj + 0.5));
+    let fk_off = fk - f32(ck);
+    let fj_off = fj - f32(cj);
+    var sum = 0.0;
+    var cnt = 0.0;
+    for (var dj = -blur_r; dj <= blur_r; dj++) {
+        let wj = wet_filter_weight(f32(dj) - fj_off, blur_r);
+        for (var dk = -blur_r; dk <= blur_r; dk++) {
+            let wk = wet_filter_weight(f32(dk) - fk_off, blur_r);
+            let w = wk * wj;
+            sum += left_texel(ck + dk, cj + dj, nz, ny, back_count, left_count) * w;
+            cnt += w;
+        }
+    }
+    if cnt <= 0.0 { return 0.0; }
+    return sum / cnt;
+}
+
+// Map a world position on the back wall (z≈lo.z) to its wetness-buffer index.
+// Uses bicubic-smooth interpolation + an optional triangular weighted filter for smoother look.
+fn back_wall_wetness(p: vec3<f32>) -> f32 {
+    let nx = ww.dims.x;
+    let ny = ww.dims.y;
+    let lo = ww.tank_lo.xyz;
+    let hi = ww.tank_hi.xyz;
+    let span_x = hi.x - lo.x;
+    let span_y = hi.y - lo.y;
+    let fi = clamp((p.x - lo.x) / span_x, 0.0, 1.0) * f32(nx - 1u);
+    let fj = clamp((p.y - lo.y) / span_y, 0.0, 1.0) * f32(ny - 1u);
+    let back_count = ww.face_counts.x;
+    let blur_r = i32(clamp(ww.render2.w, 0.0, 12.0));
+    return back_wall_wetness_sample(fi, fj, nx, ny, back_count, blur_r);
+}
+
 // Wetness for the back wall at a given world position.
-// Returns bilinear-sampled wetness at rows j and j+1 for the meniscus gradient.
-// Note: the blur (render.hero.wet_wall.blur) affects the main wetness readers only
-// (darkening/gloss/reflection). The _pair helpers used for the meniscus edge-detection
-// intentionally read raw bilinear texels — blur has no effect on the meniscus highlight.
+// Returns smoothed wetness at rows j and j+1 for the meniscus gradient.
 fn back_wall_wetness_pair(p: vec3<f32>) -> vec2<f32> {
     let nx = ww.dims.x;
     let ny = ww.dims.y;
@@ -171,20 +206,12 @@ fn back_wall_wetness_pair(p: vec3<f32>) -> vec2<f32> {
     let span_y = hi.y - lo.y;
     let fi = clamp((p.x - lo.x) / span_x, 0.0, 1.0) * f32(nx - 1u);
     let fj_raw = clamp((p.y - lo.y) / span_y, 0.0, 1.0) * f32(ny - 1u);
-    let i0  = u32(fi);
-    let i1  = min(i0 + 1u, nx - 1u);
-    let tx  = fract(fi);
-    let j0  = u32(fj_raw);
-    let j1  = min(j0 + 1u, ny - 1u);
     let back_count = ww.face_counts.x;
-    // Row j0 (below): bilinear in x
-    let w00 = select(0.0, wetness[j0 * nx + i0], (j0 * nx + i0) < back_count);
-    let w01 = select(0.0, wetness[j0 * nx + i1], (j0 * nx + i1) < back_count);
-    let w0 = mix(w00, w01, tx);
-    // Row j1 (above): bilinear in x
-    let w10 = select(0.0, wetness[j1 * nx + i0], (j1 * nx + i0) < back_count);
-    let w11 = select(0.0, wetness[j1 * nx + i1], (j1 * nx + i1) < back_count);
-    let w1 = mix(w10, w11, tx);
+    let blur_r = i32(clamp(ww.render2.w, 0.0, 12.0));
+    let j0 = i32(floor(fj_raw));
+    let j1 = min(j0 + 1, i32(ny - 1u));
+    let w0 = back_wall_wetness_sample(fi, f32(j0), nx, ny, back_count, blur_r);
+    let w1 = back_wall_wetness_sample(fi, f32(j1), nx, ny, back_count, blur_r);
     return vec2<f32>(w0, w1);
 }
 
@@ -201,7 +228,7 @@ fn left_wall_wetness(p: vec3<f32>) -> f32 {
     let fj = clamp((p.y - lo.y) / span_y, 0.0, 1.0) * f32(ny - 1u);
     let back_count = ww.face_counts.x;
     let left_count = ww.face_counts.z; // nz*ny
-    let blur_r = i32(clamp(ww.render2.w, 0.0, 4.0));
+    let blur_r = i32(clamp(ww.render2.w, 0.0, 12.0));
     if blur_r <= 0 {
         let k0 = u32(fk);
         let k1 = min(k0 + 1u, nz - 1u);
@@ -248,21 +275,13 @@ fn left_wall_wetness_pair(p: vec3<f32>) -> vec2<f32> {
     let span_y = hi.y - lo.y;
     let fk = clamp((p.z - lo.z) / span_z, 0.0, 1.0) * f32(nz - 1u);
     let fj_raw = clamp((p.y - lo.y) / span_y, 0.0, 1.0) * f32(ny - 1u);
-    let k0  = u32(fk);
-    let k1  = min(k0 + 1u, nz - 1u);
-    let tk  = fract(fk);
-    let j0  = u32(fj_raw);
-    let j1  = min(j0 + 1u, ny - 1u);
     let back_count = ww.face_counts.x;
     let left_count = ww.face_counts.z;
-    // Row j0 (below): bilinear in k
-    let w00 = select(0.0, wetness[back_count + j0 * nz + k0], (j0 * nz + k0) < left_count);
-    let w01 = select(0.0, wetness[back_count + j0 * nz + k1], (j0 * nz + k1) < left_count);
-    let w0 = mix(w00, w01, tk);
-    // Row j1 (above): bilinear in k
-    let w10 = select(0.0, wetness[back_count + j1 * nz + k0], (j1 * nz + k0) < left_count);
-    let w11 = select(0.0, wetness[back_count + j1 * nz + k1], (j1 * nz + k1) < left_count);
-    let w1 = mix(w10, w11, tk);
+    let blur_r = i32(clamp(ww.render2.w, 0.0, 12.0));
+    let j0 = i32(floor(fj_raw));
+    let j1 = min(j0 + 1, i32(ny - 1u));
+    let w0 = left_wall_wetness_sample(fk, f32(j0), nz, ny, back_count, left_count, blur_r);
+    let w1 = left_wall_wetness_sample(fk, f32(j1), nz, ny, back_count, left_count, blur_r);
     return vec2<f32>(w0, w1);
 }
 
@@ -280,7 +299,7 @@ fn floor_wetness(p: vec3<f32>) -> f32 {
     let back_count = ww.face_counts.x;
     let left_count = ww.face_counts.z;
     let floor_count = nx * nz;
-    let blur_r = i32(clamp(ww.render2.w, 0.0, 4.0));
+    let blur_r = i32(clamp(ww.render2.w, 0.0, 12.0));
     if blur_r <= 0 {
         let i0 = u32(fi);
         let i1 = min(i0 + 1u, nx - 1u);
@@ -405,6 +424,14 @@ fn fs(in: VsOut) -> FsOut {
                 wet      = left_wall_wetness(p);
                 wet_pair = left_wall_wetness_pair(p);
             }
+            // Render response is intentionally softer than raw wetness. The wetness
+            // buffer is contact-driven, so tiny isolated contacts can otherwise read
+            // as visible wall pixels even after blur.
+            let wet_visual = smoothstep(0.18, 0.75, wet);
+            let wet_pair_visual = vec2<f32>(
+                smoothstep(0.18, 0.75, wet_pair.x),
+                smoothstep(0.18, 0.75, wet_pair.y),
+            );
 
             // Streak: subtle vertical procedural modulation on wetness.
             var streak_mod = 1.0;
@@ -412,11 +439,11 @@ fn fs(in: VsOut) -> FsOut {
                 let freq = 18.0;
                 let streak_phase = select(p.x, p.z, is_back) * freq;
                 let streak = 0.5 + 0.5 * sin(streak_phase);
-                streak_mod = 1.0 + streak_str * (streak - 0.5) * wet;
+                streak_mod = 1.0 + streak_str * (streak - 0.5) * wet_visual;
             }
 
             // Darkening: wet walls absorb more light (keeps meniscus context).
-            let darkening = 1.0 - wet * dark_str * streak_mod;
+            let darkening = 1.0 - wet_visual * dark_str * streak_mod;
             color = color * darkening;
 
             // ── Wet reflectivity: mirror the environment/skybox on wet areas ──
@@ -425,7 +452,7 @@ fn fs(in: VsOut) -> FsOut {
             let wet_reflectivity = env.wet_refl.x;
             let wet_spec_str     = env.wet_refl.y;
             let wet_gloss_str    = clamp(gloss_str, 0.0, 1.0);
-            if wet > 0.001 && (wet_reflectivity > 0.001 || (wet_spec_str > 0.001 && wet_gloss_str > 0.001)) {
+            if wet_visual > 0.001 && (wet_reflectivity > 0.001 || (wet_spec_str > 0.001 && wet_gloss_str > 0.001)) {
                 // Per-face constant outward normal in BOX-LOCAL space.
                 let face_normal_local = select(vec3<f32>(1.0, 0.0, 0.0),
                                                vec3<f32>(0.0, 0.0, 1.0), is_back);
@@ -450,15 +477,15 @@ fn fs(in: VsOut) -> FsOut {
                 // even when viewed head-on (not just at grazing angles).
                 let ndotv = clamp(-dot(face_normal_local, view_dir), 0.0, 1.0);
                 let fresnel = 0.15 + 0.85 * pow(1.0 - ndotv, 5.0);
-                let refl_amt = clamp(wet * wet_reflectivity * fresnel, 0.0, 1.0);
+                let refl_amt = clamp(wet_visual * wet_reflectivity * fresnel, 0.0, 1.0);
                 color = mix(color, reflected_col, refl_amt);
 
                 // Sun specular sheen: sharp highlight from the sun direction.
                 if wet_spec_str > 0.001 && wet_gloss_str > 0.001 {
                     let sun_dir = normalize(env.sun.xyz);
                     let sun_dot = max(dot(refl_dir, sun_dir), 0.0);
-                    let sharp = pow(sun_dot, 48.0) * wet * wet_spec_str * wet_gloss_str * env.sun.w;
-                    let soft = pow(sun_dot, 12.0) * wet * wet_spec_str * wet_gloss_str * env.sun.w * 0.08;
+                    let sharp = pow(sun_dot, 48.0) * wet_visual * wet_spec_str * wet_gloss_str * env.sun.w;
+                    let soft = pow(sun_dot, 12.0) * wet_visual * wet_spec_str * wet_gloss_str * env.sun.w * 0.08;
                     color = color + vec3<f32>(1.0, 0.95, 0.88) * (sharp + soft);
                 }
             }
@@ -466,8 +493,8 @@ fn fs(in: VsOut) -> FsOut {
             // Meniscus: highlight band at the wet/dry waterline.
             if meniscus_en && men_str > 0.001 {
                 // Wetness gradient between lower and upper texel rows.
-                let w0 = wet_pair.x; // wetness at/below this fragment
-                let w1 = wet_pair.y; // wetness one row above
+                let w0 = wet_pair_visual.x; // wetness at/below this fragment
+                let w1 = wet_pair_visual.y; // wetness one row above
                 // dW/dy approximation: positive where w0 > w1 (waterline just
                 // above us), i.e. we are in the transitional band.
                 let dwdy = w0 - w1;
