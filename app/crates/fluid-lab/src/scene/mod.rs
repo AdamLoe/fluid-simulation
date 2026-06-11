@@ -10,6 +10,8 @@
 use crate::settings::Registry;
 use glam::{UVec3, Vec3};
 
+const DEFAULT_DROP_HEIGHT: f32 = 0.72;
+
 /// Selectable scripted scenarios. The integer values are the wire format of the
 /// `scene.preset` registry setting (a small enum exposed as a dropdown in the
 /// config panel). Adding a variant = add a match arm here + a label in
@@ -94,7 +96,7 @@ impl SceneConfig {
             grid_resolution: res,
             particle_count: settings.particle_count(),
             initial_liquid: InitialLiquidConfig {
-                blocks: preset_blocks(preset),
+                blocks: preset_blocks(preset, settings.drop_height()),
             },
         }
     }
@@ -113,15 +115,15 @@ impl SceneConfig {
             grid_resolution: res,
             particle_count: settings.particle_count(),
             initial_liquid: InitialLiquidConfig {
-                blocks: preset_blocks(ScenePreset::FallingBlob),
+                blocks: preset_blocks(ScenePreset::FallingBlob, settings.drop_height()),
             },
         }
     }
 }
 
 /// The deterministic liquid layout for each preset (normalized [0,1]^3, y up).
-fn preset_blocks(preset: ScenePreset) -> Vec<LiquidBlock> {
-    match preset {
+fn preset_blocks(preset: ScenePreset, drop_height: f32) -> Vec<LiquidBlock> {
+    let blocks = match preset {
         // Centered blob in the upper-middle — falls straight down and splashes.
         ScenePreset::FallingBlob => vec![LiquidBlock::new([0.2, 0.55, 0.2], [0.8, 0.9, 0.8])],
         // Tall slab pinned against the -X wall, filling the full depth/height of
@@ -132,5 +134,74 @@ fn preset_blocks(preset: ScenePreset) -> Vec<LiquidBlock> {
             LiquidBlock::new([0.1, 0.45, 0.3], [0.34, 0.92, 0.7]),
             LiquidBlock::new([0.66, 0.45, 0.3], [0.9, 0.92, 0.7]),
         ],
+    };
+
+    if preset == ScenePreset::DamBreak {
+        blocks
+    } else {
+        let delta = drop_height.clamp(0.0, 1.0) - DEFAULT_DROP_HEIGHT;
+        blocks
+            .into_iter()
+            .map(|block| shift_block_y(block, delta))
+            .collect()
+    }
+}
+
+fn shift_block_y(mut block: LiquidBlock, delta: f32) -> LiquidBlock {
+    let shift = delta.clamp(-block.min.y, 1.0 - block.max.y);
+    block.min.y += shift;
+    block.max.y += shift;
+    block
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scene_for(preset: ScenePreset, drop_height: f32) -> SceneConfig {
+        let mut settings = Registry::default();
+        settings.set_value_f64("scene.preset", preset as u32 as f64);
+        settings.set_value_f64("scene.drop_height", drop_height as f64);
+        SceneConfig::from_settings(&settings)
+    }
+
+    #[test]
+    fn default_drop_height_preserves_suspended_presets() {
+        let falling = scene_for(ScenePreset::FallingBlob, DEFAULT_DROP_HEIGHT);
+        let block = falling.initial_liquid.blocks[0];
+        assert!((block.min.y - 0.55).abs() < 1.0e-6);
+        assert!((block.max.y - 0.9).abs() < 1.0e-6);
+
+        let double = scene_for(ScenePreset::DoubleSplash, DEFAULT_DROP_HEIGHT);
+        for block in double.initial_liquid.blocks {
+            assert!((block.min.y - 0.45).abs() < 1.0e-6);
+            assert!((block.max.y - 0.92).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn low_and_high_drop_height_clamp_suspended_blocks_inside_tank() {
+        let low = scene_for(ScenePreset::FallingBlob, 0.0)
+            .initial_liquid
+            .blocks[0];
+        assert!((low.min.y - 0.0).abs() < 1.0e-6);
+        assert!((low.max.y - 0.35).abs() < 1.0e-6);
+
+        let high = scene_for(ScenePreset::FallingBlob, 1.0)
+            .initial_liquid
+            .blocks[0];
+        assert!((high.min.y - 0.65).abs() < 1.0e-6);
+        assert!((high.max.y - 1.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn dam_break_ignores_drop_height() {
+        let low = scene_for(ScenePreset::DamBreak, 0.0).initial_liquid.blocks[0];
+        let high = scene_for(ScenePreset::DamBreak, 1.0).initial_liquid.blocks[0];
+
+        assert!((low.min.y - 0.05).abs() < 1.0e-6);
+        assert!((low.max.y - 0.95).abs() < 1.0e-6);
+        assert!((high.min.y - low.min.y).abs() < 1.0e-6);
+        assert!((high.max.y - low.max.y).abs() < 1.0e-6);
     }
 }

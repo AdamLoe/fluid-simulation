@@ -39,20 +39,21 @@ set_setting, stats_json`.
 
 **Applies to** — `architecture/settings.md`.
 
-## Help copy and panel tiers are schema metadata
+## Help copy and functional tabs are schema metadata
 
 **Decision** — Functional help (`tooltip`), technical help (`technical_tooltip`), and
-top-level panel tier (`panel_group`) are explicit registry metadata. The panel may
-render rows with no help, functional help only, or functional plus technical help, and
-it groups controls by `default`, `advanced`, and `dev` without parsing tooltip text.
+product-facing settings tabs are explicit registry metadata. The panel may render rows
+with no help, functional help only, or functional plus technical help, and it groups
+controls by registry-owned functional tabs instead of JavaScript-only buckets.
 
 **Why** — A single long help string makes every row heavier and hides technical detail
 inside prose conventions. Explicit optional fields let obvious rows stay quiet,
-technical rows remain inspectable, and the default panel stay compact while expert
-controls are still reachable.
+technical rows remain inspectable, and the Rust registry remain the source of truth for
+where controls belong.
 
 **Code anchors** — `crates/fluid-lab/src/settings/mod.rs → Setting`,
-`Registry::config_json`; `web/panels.js → buildConfigPanel`, `appendHelpIcons`.
+`settings_tab`, `Registry::config_json`; `web/panels.js → buildConfigPanel`,
+`appendHelpIcons`.
 
 **Applies to** — `architecture/settings.md`, `architecture/web-shell.md`.
 
@@ -86,9 +87,9 @@ minimum-honest fallback and **never fabricates per-pass numbers**.
 
 **Applies to** — `architecture/profiler.md`.
 
-## GPU profiling is coarse by default; detailed mode is a Reset-class dev toggle
+## GPU profiling is coarse by default; detailed mode is Reset-class diagnostics
 
-**Decision** — `GpuTimers` defaults to coarse mode: three monolithic pass groups (prep / pressure / finish) per substep, with frame totals summed correctly across all substeps that ran. Detailed mode (one begin/end pair per fine section + per-CG-iteration timing) is off by default and toggled via `dev.detailed_gpu_profiling` (Reset-class, default 0).
+**Decision** — `GpuTimers` defaults to coarse mode: three monolithic pass groups (prep / pressure / finish) per substep, with frame totals summed correctly across all substeps that ran. Detailed mode (one begin/end pair per fine section + per-CG-iteration timing) is off by default and toggled via `dev.detailed_gpu_profiling` (Reset-class, default 0), rendered as Diagnostics rather than user-facing dev chrome.
 
 **Why** — Detailed mode sizes the `QuerySet` from `max_substeps × pressure_iters` (capped at 8192 slots) and adds some GPU overhead from the extra timestamp writes. The coarse default gives honest aggregate timings — each substep owns its own query slots so frame totals are correct aggregates — without the query-set bloat or the overhead cost. Detailed mode is a power-user / profiling-session tool, not always-on instrumentation.
 

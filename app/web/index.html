@@ -43,6 +43,15 @@
       #stage {
         position: absolute;
         inset: 0;
+        display: flex;
+        overflow: hidden;
+      }
+
+      #viewport {
+        position: relative;
+        flex: 1 1 auto;
+        min-width: 0;
+        min-height: 0;
         overflow: hidden;
       }
 
@@ -155,12 +164,11 @@
         height: 18px;
       }
 
-      .workspace {
-        position: absolute;
-        top: 68px;
-        right: 12px;
-        bottom: 108px;
-        width: min(360px, calc(100vw - 24px));
+      .settings-panel {
+        position: relative;
+        flex: 0 0 clamp(320px, 30vw, 420px);
+        margin: 12px 12px 12px 0;
+        min-width: 0;
         display: flex;
         flex-direction: column;
         border: 1px solid #2a3142;
@@ -173,45 +181,27 @@
         z-index: 20;
       }
 
-      .workspace[hidden] {
+      .settings-panel[hidden] {
         display: none;
       }
 
-      .workspace-header {
+      .settings-header {
         display: flex;
         flex-direction: column;
-        gap: 8px;
         padding: 10px 12px 8px;
         background: var(--panel-header);
         border-bottom: 1px solid #2a3142;
       }
 
-      .workspace-header-row {
+      .settings-tabs {
         display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        gap: 10px;
-      }
-
-      .workspace-title {
-        color: var(--text-strong);
-        font-size: 13px;
-        font-weight: 700;
-      }
-
-      .workspace-subtitle {
-        color: var(--text-muted);
-        font-size: 11px;
-      }
-
-      .workspace-tabs {
-        display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
+        flex-wrap: wrap;
         gap: 6px;
       }
 
       .tab-btn {
-        min-width: 0;
+        flex: 1 1 96px;
+        min-width: 92px;
         border: 1px solid #2a3142;
         border-radius: 6px;
         background: rgba(15, 18, 25, 0.78);
@@ -231,7 +221,7 @@
         background: rgba(26, 44, 62, 0.82);
       }
 
-      .workspace-body {
+      .settings-body {
         flex: 1;
         overflow-y: auto;
         overflow-x: hidden;
@@ -240,15 +230,15 @@
         scrollbar-color: #2a3142 transparent;
       }
 
-      .workspace-body::-webkit-scrollbar {
+      .settings-body::-webkit-scrollbar {
         width: 5px;
       }
 
-      .workspace-body::-webkit-scrollbar-track {
+      .settings-body::-webkit-scrollbar-track {
         background: transparent;
       }
 
-      .workspace-body::-webkit-scrollbar-thumb {
+      .settings-body::-webkit-scrollbar-thumb {
         background: #2a3142;
         border-radius: 3px;
       }
@@ -553,9 +543,17 @@
       .launcher-group {
         display: flex;
         flex-wrap: wrap;
+        align-items: center;
         justify-content: center;
         gap: 8px;
         min-width: 0;
+      }
+
+      .launcher-label {
+        color: var(--text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
       }
 
       .mode-chip {
@@ -577,10 +575,6 @@
         color: var(--success);
         border-color: rgba(74, 222, 128, 0.85);
         background: rgba(24, 48, 32, 0.88);
-      }
-
-      #manual-pointer-group[hidden] {
-        display: none;
       }
 
       #unsupported {
@@ -625,15 +619,22 @@
           justify-content: flex-end;
         }
 
-        .workspace {
-          top: 116px;
-          bottom: 132px;
-          width: min(420px, calc(100vw - 20px));
-          right: 10px;
+        #stage {
+          display: block;
         }
 
-        .workspace-tabs {
-          grid-template-columns: repeat(3, minmax(0, 1fr));
+        #viewport {
+          position: absolute;
+          inset: 0;
+        }
+
+        .settings-panel {
+          position: absolute;
+          top: 116px;
+          right: 10px;
+          bottom: 132px;
+          width: min(420px, calc(100vw - 20px));
+          margin: 0;
         }
       }
 
@@ -651,16 +652,12 @@
           justify-content: flex-end;
         }
 
-        .workspace {
+        .settings-panel {
           top: 126px;
           right: 10px;
           left: 10px;
           width: auto;
           bottom: 146px;
-        }
-
-        .workspace-tabs {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
         .launcher-shell {
@@ -681,65 +678,63 @@
   <body>
     <div id="app">
       <div id="stage">
-        <canvas id="gpu-canvas"></canvas>
+        <main id="viewport" aria-label="Simulation viewport">
+          <canvas id="gpu-canvas"></canvas>
 
-        <header id="toolbar" aria-label="Fluid Lab controls">
-          <div class="toolbar-cluster">
-            <div class="toolbar-brand">
-              <strong>Fluid Lab</strong>
-              <span id="app-version" class="toolbar-version" aria-live="polite"></span>
+          <header id="toolbar" aria-label="Fluid Lab controls">
+            <div class="toolbar-cluster">
+              <div class="toolbar-brand">
+                <strong>Fluid Lab</strong>
+                <span id="app-version" class="toolbar-version" aria-live="polite"></span>
+              </div>
+            </div>
+            <div class="toolbar-actions" role="toolbar" aria-label="Global controls">
+              <button id="btn-pause" class="icon-btn" type="button" aria-label="Pause simulation" title="Pause simulation">
+                <svg id="icon-pause" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 5h3v14H8zM13 5h3v14h-3z" fill="currentColor"></path>
+                </svg>
+                <span class="visually-hidden">Pause</span>
+              </button>
+              <button id="btn-reset" class="icon-btn" type="button" aria-label="Reset simulation" title="Reset simulation">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M20 11a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+                  <path d="M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+                <span class="visually-hidden">Reset</span>
+              </button>
+              <button id="btn-config" class="icon-btn" type="button" aria-label="Toggle settings" title="Toggle settings">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3.5l1.8 1 .6 2.1 2.1.9 1.9-1.1 1.7 3-1.5 1.6.1 2.3 1.5 1.5-1.7 3-2-.5-2 1-1 1.8h-3.4l-1-1.8-2-.9-2 .4-1.7-3 1.5-1.6-.1-2.2-1.5-1.6 1.7-3 1.9 1 2.1-.8.7-2.1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"></path>
+                  <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+                </svg>
+                <span class="visually-hidden">Settings</span>
+              </button>
+            </div>
+          </header>
+
+          <div id="launcher" aria-label="Interaction controls">
+            <div class="launcher-shell">
+              <div id="product-mode-group" class="launcher-group" role="group" aria-label="Mode">
+                <span class="launcher-label">Mode:</span>
+                <button id="product-auto-rotate" class="mode-chip" type="button">Auto rotate</button>
+                <button id="product-waves" class="mode-chip" type="button">Waves</button>
+                <button id="product-manual" class="mode-chip" type="button">Manual</button>
+              </div>
+              <div id="control-target-group" class="launcher-group" role="group" aria-label="Control">
+                <span class="launcher-label">Control:</span>
+                <button id="control-camera" class="mode-chip" type="button">Camera</button>
+                <button id="control-cube" class="mode-chip" type="button">Cube</button>
+              </div>
             </div>
           </div>
-          <div class="toolbar-actions" role="toolbar" aria-label="Global controls">
-            <button id="btn-pause" class="icon-btn" type="button" aria-label="Pause simulation" title="Pause simulation">
-              <svg id="icon-pause" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M8 5h3v14H8zM13 5h3v14h-3z" fill="currentColor"></path>
-              </svg>
-              <span class="visually-hidden">Pause</span>
-            </button>
-            <button id="btn-reset" class="icon-btn" type="button" aria-label="Reset simulation" title="Reset simulation">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M20 11a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
-                <path d="M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
-              </svg>
-              <span class="visually-hidden">Reset</span>
-            </button>
-            <button id="btn-config" class="icon-btn" type="button" aria-label="Toggle workspace" title="Toggle workspace">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 3.5l1.8 1 .6 2.1 2.1.9 1.9-1.1 1.7 3-1.5 1.6.1 2.3 1.5 1.5-1.7 3-2-.5-2 1-1 1.8h-3.4l-1-1.8-2-.9-2 .4-1.7-3 1.5-1.6-.1-2.2-1.5-1.6 1.7-3 1.9 1 2.1-.8.7-2.1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"></path>
-                <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
-              </svg>
-              <span class="visually-hidden">Workspace</span>
-            </button>
-          </div>
-        </header>
+        </main>
 
-        <aside id="workspace" class="workspace" aria-label="Workspace" hidden>
-          <div class="workspace-header">
-            <div class="workspace-header-row">
-              <div class="workspace-title">Workspace</div>
-              <div id="workspace-tab-label" class="workspace-subtitle">General</div>
-            </div>
-            <div id="workspace-tabs" class="workspace-tabs" role="tablist" aria-label="Workspace sections"></div>
+        <aside id="settings-panel" class="settings-panel" aria-label="Settings" hidden>
+          <div class="settings-header">
+            <div id="settings-tabs" class="settings-tabs" role="tablist" aria-label="Settings sections"></div>
           </div>
-          <div id="workspace-body" class="workspace-body"></div>
+          <div id="settings-body" class="settings-body"></div>
         </aside>
-
-        <div id="launcher" aria-label="Interaction modes">
-          <div class="launcher-shell">
-            <div id="product-mode-group" class="launcher-group" role="tablist" aria-label="Product mode">
-              <button id="product-auto-rotate" class="mode-chip" type="button">Auto Rotate</button>
-              <button id="product-waves" class="mode-chip" type="button">Waves</button>
-              <button id="product-manual" class="mode-chip" type="button">Manual</button>
-            </div>
-            <div id="manual-pointer-group" class="launcher-group" role="tablist" aria-label="Manual pointer mode" hidden>
-              <button id="mode-camera" class="mode-chip" type="button">Camera</button>
-              <button id="mode-rotate" class="mode-chip" type="button">Rotate</button>
-              <button id="mode-rotate-roll" class="mode-chip" type="button">Rotate Roll</button>
-              <button id="mode-slosh" class="mode-chip" type="button">Slosh</button>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
 

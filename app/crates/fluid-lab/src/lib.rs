@@ -433,7 +433,15 @@ impl FluidApp {
         let inv = self.box_orient.inverse();
         let (right, up) = (inv * right, inv * up);
         let eye_world = self.camera.eye();
-        if let Err(e) = self.gpu.render(&view_proj, right, up, &eye_to_world, eye_world, self.box_pos, self.box_orient) {
+        if let Err(e) = self.gpu.render(
+            &view_proj,
+            right,
+            up,
+            &eye_to_world,
+            eye_world,
+            self.box_pos,
+            self.box_orient,
+        ) {
             // Recoverable surface errors (resize/lost); log and continue.
             warn(&format!("[fluid-lab] render error: {e}"));
         }
@@ -590,6 +598,16 @@ impl FluidApp {
     #[wasm_bindgen]
     pub fn camera_orbit(&mut self, dx: f32, dy: f32) {
         self.camera.orbit(dx, dy);
+    }
+
+    #[wasm_bindgen]
+    pub fn camera_twist(&mut self, dx: f32, dy: f32) {
+        self.camera.twist(dx, dy);
+    }
+
+    #[wasm_bindgen]
+    pub fn camera_pan(&mut self, dx: f32, dy: f32) {
+        self.camera.pan(dx, dy);
     }
 
     #[wasm_bindgen]

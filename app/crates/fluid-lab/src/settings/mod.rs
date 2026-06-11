@@ -2,7 +2,7 @@
 //!
 //! Per `decisions.md` (configuration flows through a schema-driven registry) and
 //! the observability split, this file is the authoritative source for each setting's
-//! id, label, semantic category, panel group, type, default, validation, optional
+//! id, label, semantic category, functional tab, type, default, validation, optional
 //! help copy, and apply class.
 
 /// When a changed setting can take effect. The colored dot (🟢/🟡/🔴) is a 1.2
@@ -38,7 +38,7 @@ pub enum Category {
     Camera,
     Render,
     Water,
-    Dev,
+    Diagnostics,
 }
 
 impl Category {
@@ -53,26 +53,82 @@ impl Category {
             Category::Camera => "Camera",
             Category::Render => "Render",
             Category::Water => "Water",
-            Category::Dev => "Dev",
+            Category::Diagnostics => "Diagnostics",
         }
     }
 }
 
-/// Which top-level panel tier a setting renders in. `category` remains the
-/// semantic section inside the tier.
+/// Product-facing settings tab. The web shell groups rows by this registry-owned
+/// metadata instead of rebuilding a taxonomy in JavaScript.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PanelGroup {
-    Default,
-    Advanced,
-    Dev,
+pub enum SettingsTab {
+    Scenario,
+    Simulation,
+    Modes,
+    CameraView,
+    WaterSurface,
+    WaterColor,
+    Environment,
+    SunReflection,
+    WallFill,
+    WetWall,
+    Caustics,
+    Temporal,
+    DiffuseWater,
 }
 
-impl PanelGroup {
+impl SettingsTab {
     pub fn as_str(self) -> &'static str {
         match self {
-            PanelGroup::Default => "default",
-            PanelGroup::Advanced => "advanced",
-            PanelGroup::Dev => "dev",
+            SettingsTab::Scenario => "scenario",
+            SettingsTab::Simulation => "simulation",
+            SettingsTab::Modes => "modes",
+            SettingsTab::CameraView => "camera-view",
+            SettingsTab::WaterSurface => "water-surface",
+            SettingsTab::WaterColor => "water-color",
+            SettingsTab::Environment => "environment",
+            SettingsTab::SunReflection => "sun-reflection",
+            SettingsTab::WallFill => "wall-fill",
+            SettingsTab::WetWall => "wet-wall",
+            SettingsTab::Caustics => "caustics",
+            SettingsTab::Temporal => "temporal",
+            SettingsTab::DiffuseWater => "diffuse-water",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsTab::Scenario => "Scenario",
+            SettingsTab::Simulation => "Simulation",
+            SettingsTab::Modes => "Modes",
+            SettingsTab::CameraView => "Camera & View",
+            SettingsTab::WaterSurface => "Water Surface",
+            SettingsTab::WaterColor => "Water Color",
+            SettingsTab::Environment => "Environment",
+            SettingsTab::SunReflection => "Sun & Reflection",
+            SettingsTab::WallFill => "Wall Fill",
+            SettingsTab::WetWall => "Wet Wall",
+            SettingsTab::Caustics => "Caustics",
+            SettingsTab::Temporal => "Temporal",
+            SettingsTab::DiffuseWater => "Diffuse Water",
+        }
+    }
+
+    pub fn order(self) -> u32 {
+        match self {
+            SettingsTab::Scenario => 10,
+            SettingsTab::Simulation => 20,
+            SettingsTab::Modes => 30,
+            SettingsTab::CameraView => 40,
+            SettingsTab::WaterSurface => 50,
+            SettingsTab::WaterColor => 60,
+            SettingsTab::Environment => 70,
+            SettingsTab::SunReflection => 80,
+            SettingsTab::WallFill => 90,
+            SettingsTab::WetWall => 100,
+            SettingsTab::Caustics => 110,
+            SettingsTab::Temporal => 120,
+            SettingsTab::DiffuseWater => 130,
         }
     }
 }
@@ -98,7 +154,6 @@ pub struct Setting {
     pub id: &'static str,
     pub label: &'static str,
     pub category: Category,
-    pub panel_group: PanelGroup,
     pub default: Value,
     pub value: Value,
     pub validation: Validation,
@@ -371,7 +426,6 @@ impl Default for Registry {
                 id: "scene.preset",
                 label: "Scenario",
                 category: Category::Scene,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 2 },
@@ -380,10 +434,20 @@ impl Default for Registry {
                 apply: ApplyClass::Reset,
             },
             Setting {
+                id: "scene.drop_height",
+                label: "Drop height",
+                category: Category::Scene,
+                default: Value::F32(0.72),
+                value: Value::F32(0.72),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Sets where suspended scenarios start vertically; Falling Blob and Double Splash shift on reset. Dam Break stays floor-anchored, so this has limited effect there."),
+                technical_tooltip: Some("Reset-class normalized height. Suspended blocks are shifted by height delta and clamped inside [0,1] while preserving size; Dam Break keeps its floor-anchored column."),
+                apply: ApplyClass::Reset,
+            },
+            Setting {
                 id: "grid.res_x",
                 label: "Grid resolution X",
                 category: Category::Grid,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(64),
                 value: Value::U32(64),
                 validation: Validation::U32Range { min: 16, max: 128 },
@@ -395,7 +459,6 @@ impl Default for Registry {
                 id: "grid.res_y",
                 label: "Grid resolution Y",
                 category: Category::Grid,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(64),
                 value: Value::U32(64),
                 validation: Validation::U32Range { min: 16, max: 128 },
@@ -407,7 +470,6 @@ impl Default for Registry {
                 id: "grid.res_z",
                 label: "Grid resolution Z",
                 category: Category::Grid,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(64),
                 value: Value::U32(64),
                 validation: Validation::U32Range { min: 16, max: 128 },
@@ -419,7 +481,6 @@ impl Default for Registry {
                 id: "particles.count",
                 label: "Particle count",
                 category: Category::Particles,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(254_144),
                 value: Value::U32(254_144),
                 validation: Validation::U32Range {
@@ -434,7 +495,6 @@ impl Default for Registry {
                 id: "physics.gravity",
                 label: "Gravity",
                 category: Category::Physics,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(-9.81),
                 value: Value::F32(-9.81),
                 validation: Validation::F32Range {
@@ -449,7 +509,6 @@ impl Default for Registry {
                 id: "physics.fixed_dt",
                 label: "Fixed timestep",
                 category: Category::Physics,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(1.0 / 120.0),
                 value: Value::F32(1.0 / 120.0),
                 validation: Validation::F32Range {
@@ -464,7 +523,6 @@ impl Default for Registry {
                 id: "physics.flip_blend",
                 label: "FLIP blend",
                 category: Category::Physics,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.9),
                 value: Value::F32(0.9),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -476,7 +534,6 @@ impl Default for Registry {
                 id: "physics.max_substeps",
                 label: "Max substeps",
                 category: Category::Physics,
-                panel_group: PanelGroup::Dev,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 1, max: 16 },
@@ -488,7 +545,6 @@ impl Default for Registry {
                 id: "physics.wall_friction",
                 label: "Wall friction",
                 category: Category::Physics,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.0),
                 value: Value::F32(0.0),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -500,7 +556,6 @@ impl Default for Registry {
                 id: "physics.rest_density",
                 label: "Rest particles/cell",
                 category: Category::Physics,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(8.0),
                 value: Value::F32(8.0),
                 validation: Validation::F32Range { min: 1.0, max: 32.0 },
@@ -512,7 +567,6 @@ impl Default for Registry {
                 id: "physics.volume_stiffness",
                 label: "Volume stiffness",
                 category: Category::Physics,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.45),
                 value: Value::F32(0.45),
                 validation: Validation::F32Range { min: 0.0, max: 4.0 },
@@ -524,7 +578,6 @@ impl Default for Registry {
                 id: "physics.drift_clamp",
                 label: "Drift clamp",
                 category: Category::Physics,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.5),
                 value: Value::F32(0.5),
                 validation: Validation::F32Range { min: 0.05, max: 2.0 },
@@ -536,7 +589,6 @@ impl Default for Registry {
                 id: "physics.cfl",
                 label: "Splash speed (CFL)",
                 category: Category::Physics,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(2.0),
                 value: Value::F32(2.0),
                 validation: Validation::F32Range { min: 1.0, max: 6.0 },
@@ -548,7 +600,6 @@ impl Default for Registry {
                 id: "interaction.auto_roll_enabled",
                 label: "Auto-roll enabled",
                 category: Category::Interaction,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -560,7 +611,6 @@ impl Default for Registry {
                 id: "interaction.auto_roll_strength",
                 label: "Auto-roll strength",
                 category: Category::Interaction,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.45),
                 value: Value::F32(0.45),
                 validation: Validation::F32Range { min: 0.0, max: 1.2 },
@@ -572,7 +622,6 @@ impl Default for Registry {
                 id: "interaction.auto_roll_cadence",
                 label: "Auto-roll cadence",
                 category: Category::Interaction,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(2.5),
                 value: Value::F32(2.5),
                 validation: Validation::F32Range { min: 0.5, max: 8.0 },
@@ -584,7 +633,6 @@ impl Default for Registry {
                 id: "interaction.wave_enabled",
                 label: "Wave maker enabled",
                 category: Category::Interaction,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -596,7 +644,6 @@ impl Default for Registry {
                 id: "interaction.wave_strength",
                 label: "Wave strength",
                 category: Category::Interaction,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.5),
                 value: Value::F32(0.5),
                 validation: Validation::F32Range { min: 0.0, max: 3.0 },
@@ -608,7 +655,6 @@ impl Default for Registry {
                 id: "interaction.wave_frequency",
                 label: "Wave frequency",
                 category: Category::Interaction,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.75),
                 value: Value::F32(0.75),
                 validation: Validation::F32Range { min: 0.05, max: 4.0 },
@@ -620,7 +666,6 @@ impl Default for Registry {
                 id: "classify.liquid_threshold",
                 label: "Liquid threshold",
                 category: Category::Solver,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 1, max: 8 },
@@ -632,7 +677,6 @@ impl Default for Registry {
                 id: "classify.surface_dilation",
                 label: "Surface dilation",
                 category: Category::Solver,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -644,7 +688,6 @@ impl Default for Registry {
                 id: "solver.pressure_iterations",
                 label: "Pressure iterations",
                 category: Category::Solver,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(30),
                 value: Value::U32(30),
                 validation: Validation::U32Range { min: 1, max: 200 },
@@ -656,7 +699,6 @@ impl Default for Registry {
                 id: "render.particle_size",
                 label: "Particle size",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.45),
                 value: Value::F32(0.45),
                 validation: Validation::F32Range { min: 0.2, max: 5.0 },
@@ -668,7 +710,6 @@ impl Default for Registry {
                 id: "render.speed_scale",
                 label: "Speed\u{2192}white",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(4.0),
                 value: Value::F32(4.0),
                 validation: Validation::F32Range { min: 0.5, max: 20.0 },
@@ -680,7 +721,6 @@ impl Default for Registry {
                 id: "render.particle_view",
                 label: "Water view",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 2 },
@@ -692,7 +732,6 @@ impl Default for Registry {
                 id: "render.fps_target",
                 label: "FPS target",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(60),
                 value: Value::U32(60),
                 validation: Validation::U32Range { min: 0, max: 240 },
@@ -704,7 +743,6 @@ impl Default for Registry {
                 id: "camera.rot_x",
                 label: "Camera pitch",
                 category: Category::Camera,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(-0.2),
                 value: Value::F32(-0.2),
                 validation: Validation::F32Range { min: -3.14159, max: 3.14159 },
@@ -716,7 +754,6 @@ impl Default for Registry {
                 id: "camera.rot_y",
                 label: "Camera yaw",
                 category: Category::Camera,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.6),
                 value: Value::F32(0.6),
                 validation: Validation::F32Range { min: -3.14159, max: 3.14159 },
@@ -728,7 +765,6 @@ impl Default for Registry {
                 id: "camera.rot_z",
                 label: "Camera roll",
                 category: Category::Camera,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.0),
                 value: Value::F32(0.0),
                 validation: Validation::F32Range { min: -3.14159, max: 3.14159 },
@@ -740,7 +776,6 @@ impl Default for Registry {
                 id: "camera.distance",
                 label: "Camera distance",
                 category: Category::Camera,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(6.0),
                 value: Value::F32(6.0),
                 validation: Validation::F32Range { min: 2.0, max: 40.0 },
@@ -752,7 +787,6 @@ impl Default for Registry {
                 id: "render.particle_slow_color",
                 label: "Slow particle color",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0x194C_CC),
                 value: Value::U32(0x194C_CC),
                 validation: Validation::U32Range { min: 0, max: 0x00FF_FFFF },
@@ -764,7 +798,6 @@ impl Default for Registry {
                 id: "render.particle_fast_color",
                 label: "Fast particle color",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0xB2EB_FF),
                 value: Value::U32(0xB2EB_FF),
                 validation: Validation::U32Range { min: 0, max: 0x00FF_FFFF },
@@ -776,7 +809,6 @@ impl Default for Registry {
                 id: "render.water_optical_density",
                 label: "Water absorption",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.25),
                 value: Value::F32(1.25),
                 validation: Validation::F32Range { min: 0.0, max: 8.0 },
@@ -788,7 +820,6 @@ impl Default for Registry {
                 id: "render.particle_edge",
                 label: "Particle edge",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.6),
                 value: Value::F32(0.6),
                 validation: Validation::F32Range { min: 0.0, max: 0.99 },
@@ -800,7 +831,6 @@ impl Default for Registry {
                 id: "render.particle_shading",
                 label: "Surface lighting",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.25),
                 value: Value::F32(0.25),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -812,7 +842,6 @@ impl Default for Registry {
                 id: "render.whitewater_strength",
                 label: "Whitewater",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.65),
                 value: Value::F32(0.65),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -824,7 +853,6 @@ impl Default for Registry {
                 id: "render.whitewater_threshold",
                 label: "Whitewater speed",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.38),
                 value: Value::F32(0.38),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -836,7 +864,6 @@ impl Default for Registry {
                 id: "render.whitewater_softness",
                 label: "Whitewater softness",
                 category: Category::Render,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.22),
                 value: Value::F32(0.22),
                 validation: Validation::F32Range { min: 0.01, max: 1.0 },
@@ -850,7 +877,6 @@ impl Default for Registry {
                 id: "render.hero.mode_enabled",
                 label: "Hero water",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -862,7 +888,6 @@ impl Default for Registry {
                 id: "render.hero.debug_view",
                 label: "Debug view",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 13 },
@@ -874,7 +899,6 @@ impl Default for Registry {
                 id: "render.hero.ior",
                 label: "Index of refraction",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.33),
                 value: Value::F32(1.33),
                 validation: Validation::F32Range { min: 1.0, max: 2.0 },
@@ -886,7 +910,6 @@ impl Default for Registry {
                 id: "render.hero.refraction_strength",
                 label: "Refraction strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.6),
                 value: Value::F32(0.6),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
@@ -898,7 +921,6 @@ impl Default for Registry {
                 id: "render.hero.refraction_thickness_scale",
                 label: "Refraction thickness",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.0),
                 value: Value::F32(1.0),
                 validation: Validation::F32Range { min: 0.0, max: 4.0 },
@@ -910,7 +932,6 @@ impl Default for Registry {
                 id: "render.hero.refraction_max_offset_px",
                 label: "Max bend (px)",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(48),
                 value: Value::U32(48),
                 validation: Validation::U32Range { min: 0, max: 256 },
@@ -922,7 +943,6 @@ impl Default for Registry {
                 id: "render.hero.invalid_refraction_fallback",
                 label: "Invalid sample",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -934,7 +954,6 @@ impl Default for Registry {
                 id: "render.hero.absorption_color",
                 label: "Absorption color",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0x3366_80),
                 value: Value::U32(0x3366_80),
                 validation: Validation::U32Range { min: 0, max: 0x00FF_FFFF },
@@ -946,7 +965,6 @@ impl Default for Registry {
                 id: "render.hero.absorption_strength",
                 label: "Absorption strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.5),
                 value: Value::F32(1.5),
                 validation: Validation::F32Range { min: 0.0, max: 8.0 },
@@ -958,7 +976,6 @@ impl Default for Registry {
                 id: "render.hero.base_tint",
                 label: "Water tint",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0x194C_CC),
                 value: Value::U32(0x194C_CC),
                 validation: Validation::U32Range { min: 0, max: 0x00FF_FFFF },
@@ -970,7 +987,6 @@ impl Default for Registry {
                 id: "render.hero.transparency",
                 label: "Transparency",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.4),
                 value: Value::F32(0.4),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -982,7 +998,6 @@ impl Default for Registry {
                 id: "render.hero.deep_water_darkening",
                 label: "Deep darkening",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.5),
                 value: Value::F32(1.5),
                 validation: Validation::F32Range { min: 0.0, max: 6.0 },
@@ -994,7 +1009,6 @@ impl Default for Registry {
                 id: "render.hero.floor_pattern_scale",
                 label: "Floor pattern scale",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(8.0),
                 value: Value::F32(8.0),
                 validation: Validation::F32Range { min: 1.0, max: 32.0 },
@@ -1006,7 +1020,6 @@ impl Default for Registry {
                 id: "render.hero.floor_pattern_strength",
                 label: "Floor pattern strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.5),
                 value: Value::F32(0.5),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1018,7 +1031,6 @@ impl Default for Registry {
                 id: "render.hero.backdrop_strength",
                 label: "Backdrop strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.6),
                 value: Value::F32(0.6),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1030,7 +1042,6 @@ impl Default for Registry {
                 id: "render.hero.wall_visibility",
                 label: "Wall visibility",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.3),
                 value: Value::F32(0.3),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1044,7 +1055,6 @@ impl Default for Registry {
                 id: "render.hero.reflection_strength",
                 label: "Reflection strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.8),
                 value: Value::F32(0.8),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
@@ -1056,7 +1066,6 @@ impl Default for Registry {
                 id: "render.hero.environment_strength",
                 label: "Environment strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.0),
                 value: Value::F32(1.0),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
@@ -1068,7 +1077,6 @@ impl Default for Registry {
                 id: "render.hero.environment_mode",
                 label: "Environment mode",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 2 },
@@ -1080,7 +1088,6 @@ impl Default for Registry {
                 id: "render.hero.environment_rotation",
                 label: "Environment rotation",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.0),
                 value: Value::F32(0.0),
                 validation: Validation::F32Range { min: -3.1416, max: 3.1416 },
@@ -1092,7 +1099,6 @@ impl Default for Registry {
                 id: "render.hero.environment_brightness",
                 label: "Environment brightness",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.0),
                 value: Value::F32(1.0),
                 validation: Validation::F32Range { min: 0.0, max: 3.0 },
@@ -1104,7 +1110,6 @@ impl Default for Registry {
                 id: "render.hero.skybox_enabled",
                 label: "World skybox",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1116,7 +1121,6 @@ impl Default for Registry {
                 id: "render.hero.roughness_base",
                 label: "Roughness base",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.12),
                 value: Value::F32(0.12),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1128,7 +1132,6 @@ impl Default for Registry {
                 id: "render.hero.roughness_velocity_scale",
                 label: "Roughness from speed",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.6),
                 value: Value::F32(0.6),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
@@ -1140,7 +1143,6 @@ impl Default for Registry {
                 id: "render.hero.roughness_normal_variance_scale",
                 label: "Roughness from chop",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.5),
                 value: Value::F32(0.5),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
@@ -1152,7 +1154,6 @@ impl Default for Registry {
                 id: "render.hero.roughness_foam_scale",
                 label: "Roughness from foam",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.8),
                 value: Value::F32(0.8),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
@@ -1164,7 +1165,6 @@ impl Default for Registry {
                 id: "render.hero.specular_strength",
                 label: "Sun specular",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.0),
                 value: Value::F32(1.0),
                 validation: Validation::F32Range { min: 0.0, max: 4.0 },
@@ -1176,7 +1176,6 @@ impl Default for Registry {
                 id: "render.hero.sun_dir_x",
                 label: "Sun direction X",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.4),
                 value: Value::F32(0.4),
                 validation: Validation::F32Range { min: -1.0, max: 1.0 },
@@ -1188,7 +1187,6 @@ impl Default for Registry {
                 id: "render.hero.sun_dir_y",
                 label: "Sun direction Y",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.7),
                 value: Value::F32(0.7),
                 validation: Validation::F32Range { min: -1.0, max: 1.0 },
@@ -1200,7 +1198,6 @@ impl Default for Registry {
                 id: "render.hero.sun_dir_z",
                 label: "Sun direction Z",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.5),
                 value: Value::F32(0.5),
                 validation: Validation::F32Range { min: -1.0, max: 1.0 },
@@ -1212,7 +1209,6 @@ impl Default for Registry {
                 id: "render.hero.sun_intensity",
                 label: "Sun intensity",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.2),
                 value: Value::F32(1.2),
                 validation: Validation::F32Range { min: 0.0, max: 4.0 },
@@ -1224,7 +1220,6 @@ impl Default for Registry {
                 id: "render.hero.micro_normal_enabled",
                 label: "Micro-normals",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1236,7 +1231,6 @@ impl Default for Registry {
                 id: "render.hero.micro_normal_strength",
                 label: "Micro-normal strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.15),
                 value: Value::F32(0.15),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1248,7 +1242,6 @@ impl Default for Registry {
                 id: "render.hero.micro_normal_scale",
                 label: "Micro-normal scale",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(60.0),
                 value: Value::F32(60.0),
                 validation: Validation::F32Range { min: 1.0, max: 256.0 },
@@ -1260,7 +1253,6 @@ impl Default for Registry {
                 id: "render.hero.micro_normal_velocity_scale",
                 label: "Micro-normal from speed",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(1.0),
                 value: Value::F32(1.0),
                 validation: Validation::F32Range { min: 0.0, max: 4.0 },
@@ -1274,7 +1266,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.enabled",
                 label: "Caustics",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1286,7 +1277,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.mode",
                 label: "Caustics mode",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 0 },
@@ -1298,7 +1288,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.resolution_scale",
                 label: "Caustics resolution",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(2),
                 value: Value::U32(2),
                 validation: Validation::U32Range { min: 1, max: 4 },
@@ -1310,7 +1299,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.intensity",
                 label: "Caustics intensity",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(1.0),
                 value: Value::F32(1.0),
                 validation: Validation::F32Range { min: 0.0, max: 5.0 },
@@ -1322,7 +1310,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.focus_strength",
                 label: "Caustics focus",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(2.0),
                 value: Value::F32(2.0),
                 validation: Validation::F32Range { min: 0.0, max: 8.0 },
@@ -1334,7 +1321,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.thickness_scale",
                 label: "Caustics thickness gate",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(3.0),
                 value: Value::F32(3.0),
                 validation: Validation::F32Range { min: 0.0, max: 16.0 },
@@ -1346,7 +1332,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.floor_enabled",
                 label: "Caustics on floor",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1358,7 +1343,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.back_wall_enabled",
                 label: "Caustics on back wall",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1370,7 +1354,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.side_walls_enabled",
                 label: "Caustics on side walls",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1382,7 +1365,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.blur_radius",
                 label: "Caustics blur",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(2.0),
                 value: Value::F32(2.0),
                 validation: Validation::F32Range { min: 0.0, max: 8.0 },
@@ -1394,7 +1376,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.temporal_enabled",
                 label: "Caustics temporal blend",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1406,7 +1387,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.temporal_alpha",
                 label: "Caustics temporal alpha",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.15),
                 value: Value::F32(0.15),
                 validation: Validation::F32Range { min: 0.01, max: 1.0 },
@@ -1418,7 +1398,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.motion_scale",
                 label: "Caustics motion",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.5),
                 value: Value::F32(0.5),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
@@ -1430,7 +1409,6 @@ impl Default for Registry {
                 id: "render.hero.caustics.max_intensity",
                 label: "Caustics max brightness",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(2.5),
                 value: Value::F32(2.5),
                 validation: Validation::F32Range { min: 0.0, max: 8.0 },
@@ -1446,7 +1424,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.enabled",
                 label: "Wet walls",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1458,7 +1435,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.wetness_decay",
                 label: "Wetness decay",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.97),
                 value: Value::F32(0.97),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1470,7 +1446,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.wetness_contact_gain",
                 label: "Contact gain",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(1.0),
                 value: Value::F32(1.0),
                 validation: Validation::F32Range { min: 0.0, max: 4.0 },
@@ -1482,7 +1457,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.wetness_spray_gain",
                 label: "Spray wetness gain",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.0),
                 value: Value::F32(0.0),
                 validation: Validation::F32Range { min: 0.0, max: 4.0 },
@@ -1494,7 +1468,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.darkening_strength",
                 label: "Wall darkening",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.05),
                 value: Value::F32(0.05),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1506,7 +1479,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.gloss_strength",
                 label: "Wall gloss",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.08),
                 value: Value::F32(0.08),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1518,7 +1490,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.streak_strength",
                 label: "Vertical streaks",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.0),
                 value: Value::F32(0.0),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1530,7 +1501,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.meniscus_enabled",
                 label: "Meniscus",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1542,7 +1512,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.meniscus_width",
                 label: "Meniscus width",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.04),
                 value: Value::F32(0.04),
                 validation: Validation::F32Range { min: 0.001, max: 0.5 },
@@ -1554,7 +1523,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.meniscus_strength",
                 label: "Meniscus strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.15),
                 value: Value::F32(0.15),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1566,7 +1534,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.meniscus_fresnel_boost",
                 label: "Meniscus Fresnel",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.12),
                 value: Value::F32(0.12),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1578,7 +1545,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.contact_shadow_enabled",
                 label: "Contact shadow",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1590,7 +1556,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.contact_shadow_strength",
                 label: "Contact shadow strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.15),
                 value: Value::F32(0.15),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1602,7 +1567,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.contact_shadow_radius",
                 label: "Contact shadow radius",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.08),
                 value: Value::F32(0.08),
                 validation: Validation::F32Range { min: 0.01, max: 0.5 },
@@ -1614,7 +1578,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.debug_view",
                 label: "Wet wall debug",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 2 },
@@ -1626,7 +1589,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.reflectivity",
                 label: "Wall wet reflectivity",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.12),
                 value: Value::F32(0.12),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1638,7 +1600,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.specular",
                 label: "Wall wet specular",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.12),
                 value: Value::F32(0.12),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
@@ -1650,7 +1611,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.supersample",
                 label: "Wall wetness resolution",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(8),
                 value: Value::U32(8),
                 validation: Validation::U32Range { min: 1, max: 32 },
@@ -1662,7 +1622,6 @@ impl Default for Registry {
                 id: "render.hero.wet_wall.blur",
                 label: "Wall wetness blur",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(12.0),
                 value: Value::F32(12.0),
                 validation: Validation::F32Range { min: 0.0, max: 12.0 },
@@ -1675,7 +1634,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.strength",
                 label: "Flat water strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.8),
                 value: Value::F32(0.8),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1687,7 +1645,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.epsilon",
                 label: "Flat water epsilon",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.04),
                 value: Value::F32(0.04),
                 validation: Validation::F32Range { min: 0.0, max: 0.2 },
@@ -1699,7 +1656,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.depth_strength",
                 label: "Flat water depth strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(1.0),
                 value: Value::F32(1.0),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1712,7 +1668,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.fill_enabled",
                 label: "Wall fill enabled",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1724,7 +1679,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.fill_strength",
                 label: "Wall fill strength",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(1.0),
                 value: Value::F32(1.0),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1736,7 +1690,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.fill_slab",
                 label: "Wall fill slab thickness",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.08),
                 value: Value::F32(0.08),
                 validation: Validation::F32Range { min: 0.0, max: 0.3 },
@@ -1748,7 +1701,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.fill_supersample",
                 label: "Wall fill resolution",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(16),
                 value: Value::U32(16),
                 validation: Validation::U32Range { min: 1, max: 32 },
@@ -1760,7 +1712,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.fill_color_strength",
                 label: "Wall fill color",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.35),
                 value: Value::F32(0.35),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1772,7 +1723,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.fill_reflection_strength",
                 label: "Wall fill reflection",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.65),
                 value: Value::F32(0.65),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
@@ -1784,7 +1734,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.fill_roughness",
                 label: "Wall fill roughness",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.22),
                 value: Value::F32(0.22),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1796,7 +1745,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.fill_absorption_strength",
                 label: "Wall fill absorption",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.45),
                 value: Value::F32(0.45),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1808,7 +1756,6 @@ impl Default for Registry {
                 id: "render.hero.flat_water.waterline_softness",
                 label: "Waterline softness",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.14),
                 value: Value::F32(0.14),
                 validation: Validation::F32Range { min: 0.0, max: 0.2 },
@@ -1822,7 +1769,6 @@ impl Default for Registry {
                 id: "render.hero.temporal.enabled",
                 label: "Temporal stabilization",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1834,7 +1780,6 @@ impl Default for Registry {
                 id: "render.hero.temporal.thickness_history",
                 label: "Thickness history",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1846,7 +1791,6 @@ impl Default for Registry {
                 id: "render.hero.temporal.normal_history",
                 label: "Depth/normal history",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1858,7 +1802,6 @@ impl Default for Registry {
                 id: "render.hero.temporal.caustic_history",
                 label: "Caustics history",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1870,7 +1813,6 @@ impl Default for Registry {
                 id: "render.hero.temporal.foam_history",
                 label: "Foam/whitewater history",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1882,7 +1824,6 @@ impl Default for Registry {
                 id: "render.hero.temporal.history_alpha",
                 label: "History alpha",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.15),
                 value: Value::F32(0.15),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1894,7 +1835,6 @@ impl Default for Registry {
                 id: "render.hero.temporal.camera_motion_reset_threshold",
                 label: "Camera reset threshold",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.02),
                 value: Value::F32(0.02),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -1906,7 +1846,6 @@ impl Default for Registry {
                 id: "render.hero.temporal.depth_reject_threshold",
                 label: "Depth reject threshold",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.1),
                 value: Value::F32(0.1),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
@@ -1918,7 +1857,6 @@ impl Default for Registry {
                 id: "render.hero.temporal.normal_reject_threshold",
                 label: "Normal reject threshold",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.3),
                 value: Value::F32(0.3),
                 validation: Validation::F32Range { min: 0.0, max: 2.0 },
@@ -1930,7 +1868,6 @@ impl Default for Registry {
                 id: "render.hero.temporal.jitter_enabled",
                 label: "TAA jitter (reserved)",
                 category: Category::Water,
-                panel_group: PanelGroup::Dev,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -1947,7 +1884,6 @@ impl Default for Registry {
                 id: "render.hero.smooth_iterations",
                 label: "Smooth iterations",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(2),
                 value: Value::U32(2),
                 validation: Validation::U32Range { min: 1, max: 4 },
@@ -1959,7 +1895,6 @@ impl Default for Registry {
                 id: "render.hero.smooth_radius",
                 label: "Smooth radius",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(5),
                 value: Value::U32(5),
                 validation: Validation::U32Range { min: 3, max: 8 },
@@ -1971,7 +1906,6 @@ impl Default for Registry {
                 id: "render.hero.smooth_thickness_splat_scale",
                 label: "Splat scale",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(1.8),
                 value: Value::F32(1.8),
                 validation: Validation::F32Range { min: 0.5, max: 4.0 },
@@ -1983,7 +1917,6 @@ impl Default for Registry {
                 id: "render.hero.normal_stencil",
                 label: "Normal stencil width",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(2),
                 value: Value::U32(2),
                 validation: Validation::U32Range { min: 1, max: 3 },
@@ -1995,7 +1928,6 @@ impl Default for Registry {
                 id: "render.hero.normal_smooth_strength",
                 label: "Normal smooth blend",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::F32(0.5),
                 value: Value::F32(0.5),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -2010,7 +1942,6 @@ impl Default for Registry {
                 id: "render.diffuse.enabled",
                 label: "Foam & spray",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(1),
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -2022,7 +1953,6 @@ impl Default for Registry {
                 id: "render.diffuse.max_particles",
                 label: "Max foam particles",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(96_000),
                 value: Value::U32(96_000),
                 validation: Validation::U32Range { min: 1_024, max: 262_144 },
@@ -2034,7 +1964,6 @@ impl Default for Registry {
                 id: "render.diffuse.emit_rate",
                 label: "Emission rate",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.3),
                 value: Value::F32(1.3),
                 validation: Validation::F32Range { min: 0.0, max: 8.0 },
@@ -2046,7 +1975,6 @@ impl Default for Registry {
                 id: "render.diffuse.emit_budget_per_frame",
                 label: "Emission budget/frame",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(2_500),
                 value: Value::U32(2_500),
                 validation: Validation::U32Range { min: 0, max: 40_000 },
@@ -2058,7 +1986,6 @@ impl Default for Registry {
                 id: "render.diffuse.surface_speed_threshold",
                 label: "Surface speed onset",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(2.0),
                 value: Value::F32(2.0),
                 validation: Validation::F32Range { min: 0.0, max: 10.0 },
@@ -2070,7 +1997,6 @@ impl Default for Registry {
                 id: "render.diffuse.surface_speed_gain",
                 label: "Surface speed gain",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.8),
                 value: Value::F32(0.8),
                 validation: Validation::F32Range { min: 0.0, max: 4.0 },
@@ -2082,7 +2008,6 @@ impl Default for Registry {
                 id: "render.diffuse.wall_impact_threshold",
                 label: "Wall impact onset",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(2.5),
                 value: Value::F32(2.5),
                 validation: Validation::F32Range { min: 0.0, max: 10.0 },
@@ -2094,7 +2019,6 @@ impl Default for Registry {
                 id: "render.diffuse.wall_impact_gain",
                 label: "Wall impact gain",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.6),
                 value: Value::F32(0.6),
                 validation: Validation::F32Range { min: 0.0, max: 4.0 },
@@ -2106,7 +2030,6 @@ impl Default for Registry {
                 id: "render.diffuse.foam_lifetime",
                 label: "Foam lifetime",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(2.5),
                 value: Value::F32(2.5),
                 validation: Validation::F32Range { min: 0.1, max: 8.0 },
@@ -2118,7 +2041,6 @@ impl Default for Registry {
                 id: "render.diffuse.spray_lifetime",
                 label: "Spray lifetime",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.2),
                 value: Value::F32(1.2),
                 validation: Validation::F32Range { min: 0.1, max: 6.0 },
@@ -2130,7 +2052,6 @@ impl Default for Registry {
                 id: "render.diffuse.bubble_lifetime",
                 label: "Bubble lifetime",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(3.5),
                 value: Value::F32(3.5),
                 validation: Validation::F32Range { min: 0.1, max: 10.0 },
@@ -2142,7 +2063,6 @@ impl Default for Registry {
                 id: "render.diffuse.radius",
                 label: "Particle radius",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.008),
                 value: Value::F32(0.008),
                 validation: Validation::F32Range { min: 0.002, max: 0.06 },
@@ -2154,7 +2074,6 @@ impl Default for Registry {
                 id: "render.diffuse.alpha",
                 label: "Foam opacity",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(0.4),
                 value: Value::F32(0.4),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
@@ -2166,7 +2085,6 @@ impl Default for Registry {
                 id: "render.diffuse.bubble_buoyancy",
                 label: "Bubble buoyancy",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(6.0),
                 value: Value::F32(6.0),
                 validation: Validation::F32Range { min: 0.0, max: 30.0 },
@@ -2178,7 +2096,6 @@ impl Default for Registry {
                 id: "render.diffuse.spray_drag",
                 label: "Spray drag",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::F32(1.5),
                 value: Value::F32(1.5),
                 validation: Validation::F32Range { min: 0.0, max: 10.0 },
@@ -2190,7 +2107,6 @@ impl Default for Registry {
                 id: "render.diffuse.debug_view",
                 label: "Foam debug view",
                 category: Category::Water,
-                panel_group: PanelGroup::Default,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -2202,7 +2118,6 @@ impl Default for Registry {
                 id: "render.diffuse.random_seed",
                 label: "Foam random seed",
                 category: Category::Water,
-                panel_group: PanelGroup::Advanced,
                 default: Value::U32(1337),
                 value: Value::U32(1337),
                 validation: Validation::U32Range { min: 0, max: 65_535 },
@@ -2212,9 +2127,8 @@ impl Default for Registry {
             },
             Setting {
                 id: "dev.detailed_gpu_profiling",
-                label: "Detailed GPU profiling (dev)",
-                category: Category::Dev,
-                panel_group: PanelGroup::Dev,
+                label: "Detailed GPU profiling",
+                category: Category::Diagnostics,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -2253,6 +2167,11 @@ impl Registry {
 
     pub fn scene_preset(&self) -> u32 {
         self.get("scene.preset").map(|s| s.as_u32()).unwrap_or(0)
+    }
+    pub fn drop_height(&self) -> f32 {
+        self.get("scene.drop_height")
+            .map(|s| s.as_f32())
+            .unwrap_or(0.72)
     }
     pub fn grid_res_x(&self) -> u32 {
         self.get("grid.res_x").map(|s| s.as_u32()).unwrap_or(64)
@@ -2639,7 +2558,7 @@ impl Registry {
     }
 
     /// Serialize all settings to a JSON array string.
-    /// Shape: [{"id":...,"label":...,"category":...,"panel_group":...,
+    /// Shape: [{"id":...,"label":...,"category":...,"tab":...,"tab_label":...,
     ///          "type":...,"value":<num>,"default":<num>,"min":<num>,
     ///          "max":<num>,"apply":...}, ...]
     /// Optional help fields are emitted only when present.
@@ -2656,10 +2575,10 @@ impl Registry {
                 r#","category":{}"#,
                 json_quote(s.category.as_str())
             ));
-            out.push_str(&format!(
-                r#","panel_group":{}"#,
-                json_quote(s.panel_group.as_str())
-            ));
+            let tab = settings_tab(s);
+            out.push_str(&format!(r#","tab":{}"#, json_quote(tab.as_str())));
+            out.push_str(&format!(r#","tab_label":{}"#, json_quote(tab.label())));
+            out.push_str(&format!(r#","tab_order":{}"#, tab.order()));
             out.push_str(&format!(r#","type":{}"#, json_quote(s.type_str())));
             out.push_str(&format!(r#","value":{}"#, fmt_f64(s.value_as_f64())));
             out.push_str(&format!(r#","default":{}"#, fmt_f64(s.default_as_f64())));
@@ -2694,6 +2613,100 @@ impl Registry {
         out.push(']');
         out
     }
+}
+
+fn settings_tab(setting: &Setting) -> SettingsTab {
+    let id = setting.id;
+    if id.starts_with("scene.") || id.starts_with("grid.") || id == "particles.count" {
+        return SettingsTab::Scenario;
+    }
+    if id.starts_with("interaction.") {
+        return SettingsTab::Modes;
+    }
+    if id.starts_with("camera.") || id == "render.particle_view" || id == "render.fps_target" {
+        return SettingsTab::CameraView;
+    }
+    if id.starts_with("render.diffuse.") {
+        return SettingsTab::DiffuseWater;
+    }
+    if id.starts_with("render.hero.flat_water.") {
+        return SettingsTab::WallFill;
+    }
+    if id.starts_with("render.hero.wet_wall.") {
+        return SettingsTab::WetWall;
+    }
+    if id.starts_with("render.hero.caustics.") {
+        return SettingsTab::Caustics;
+    }
+    if id.starts_with("render.hero.temporal.") {
+        return SettingsTab::Temporal;
+    }
+    if matches!(
+        id,
+        "render.hero.floor_pattern_scale"
+            | "render.hero.floor_pattern_strength"
+            | "render.hero.backdrop_strength"
+            | "render.hero.wall_visibility"
+            | "render.hero.environment_strength"
+            | "render.hero.environment_mode"
+            | "render.hero.environment_rotation"
+            | "render.hero.environment_brightness"
+            | "render.hero.skybox_enabled"
+    ) {
+        return SettingsTab::Environment;
+    }
+    if matches!(
+        id,
+        "render.hero.reflection_strength"
+            | "render.hero.roughness_base"
+            | "render.hero.roughness_velocity_scale"
+            | "render.hero.roughness_normal_variance_scale"
+            | "render.hero.roughness_foam_scale"
+            | "render.hero.specular_strength"
+            | "render.hero.sun_dir_x"
+            | "render.hero.sun_dir_y"
+            | "render.hero.sun_dir_z"
+            | "render.hero.sun_intensity"
+            | "render.hero.micro_normal_enabled"
+            | "render.hero.micro_normal_strength"
+            | "render.hero.micro_normal_scale"
+            | "render.hero.micro_normal_velocity_scale"
+    ) {
+        return SettingsTab::SunReflection;
+    }
+    if matches!(
+        id,
+        "render.speed_scale"
+            | "render.particle_slow_color"
+            | "render.particle_fast_color"
+            | "render.water_optical_density"
+            | "render.whitewater_strength"
+            | "render.whitewater_threshold"
+            | "render.whitewater_softness"
+            | "render.hero.absorption_color"
+            | "render.hero.absorption_strength"
+            | "render.hero.base_tint"
+            | "render.hero.transparency"
+            | "render.hero.deep_water_darkening"
+    ) {
+        return SettingsTab::WaterColor;
+    }
+    if id.starts_with("render.hero.")
+        || matches!(
+            id,
+            "render.particle_size" | "render.particle_edge" | "render.particle_shading"
+        )
+    {
+        return SettingsTab::WaterSurface;
+    }
+    if id.starts_with("physics.")
+        || id.starts_with("classify.")
+        || id.starts_with("solver.")
+        || id == "dev.detailed_gpu_profiling"
+    {
+        return SettingsTab::Simulation;
+    }
+    SettingsTab::Simulation
 }
 
 /// Option labels for enum-valued settings (index = stored u32 value). Returns
@@ -2798,15 +2811,13 @@ mod tests {
 
     fn test_setting(
         id: &'static str,
-        panel_group: PanelGroup,
         tooltip: Option<&'static str>,
         technical_tooltip: Option<&'static str>,
     ) -> Setting {
         Setting {
             id,
             label: "Test setting",
-            category: Category::Dev,
-            panel_group,
+            category: Category::Diagnostics,
             default: Value::U32(1),
             value: Value::U32(1),
             validation: Validation::U32Range { min: 0, max: 2 },
@@ -2825,14 +2836,10 @@ mod tests {
 
     #[test]
     fn config_json_omits_help_fields_when_absent() {
-        let json = json_for(test_setting(
-            "test.no_help",
-            PanelGroup::Default,
-            None,
-            None,
-        ));
+        let json = json_for(test_setting("test.no_help", None, None));
 
-        assert!(json.contains(r#""panel_group":"default""#));
+        assert!(json.contains(r#""tab":"simulation""#));
+        assert!(json.contains(r#""tab_label":"Simulation""#));
         assert!(!json.contains(r#""tooltip""#));
         assert!(!json.contains(r#""technical_tooltip""#));
     }
@@ -2841,12 +2848,11 @@ mod tests {
     fn config_json_emits_functional_help_without_technical_help() {
         let json = json_for(test_setting(
             "test.functional_help",
-            PanelGroup::Advanced,
             Some("Functional help"),
             None,
         ));
 
-        assert!(json.contains(r#""panel_group":"advanced""#));
+        assert!(json.contains(r#""tab_order":20"#));
         assert!(json.contains(r#""tooltip":"Functional help""#));
         assert!(!json.contains(r#""technical_tooltip""#));
     }
@@ -2855,12 +2861,11 @@ mod tests {
     fn config_json_emits_two_help_fields() {
         let json = json_for(test_setting(
             "test.two_help_fields",
-            PanelGroup::Dev,
             Some("Functional help"),
             Some("Technical help"),
         ));
 
-        assert!(json.contains(r#""panel_group":"dev""#));
+        assert!(json.contains(r#""category":"Diagnostics""#));
         assert!(json.contains(r#""tooltip":"Functional help""#));
         assert!(json.contains(r#""technical_tooltip":"Technical help""#));
     }
@@ -2881,11 +2886,11 @@ mod tests {
         for id in ids {
             let setting = registry.get(id).expect("missing interaction setting");
             assert_eq!(setting.category, Category::Interaction);
-            assert_eq!(setting.panel_group, PanelGroup::Default);
             assert_eq!(setting.apply, ApplyClass::Live);
             assert!(json.contains(&format!(r#""id":"{id}""#)));
         }
 
+        assert!(json.contains(r#""tab":"modes""#));
         assert!(!registry.auto_roll_enabled());
         assert!(!registry.wave_enabled());
         assert!((registry.auto_roll_strength() - 0.45).abs() < f32::EPSILON);
@@ -2903,10 +2908,8 @@ mod tests {
             .expect("missing particle view setting");
 
         assert_eq!(setting.category, Category::Render);
-        assert_eq!(setting.panel_group, PanelGroup::Default);
         assert_eq!(setting.apply, ApplyClass::Live);
         assert_eq!(view.category, Category::Render);
-        assert_eq!(view.panel_group, PanelGroup::Default);
         assert_eq!(view.apply, ApplyClass::Live);
         assert!(matches!(
             setting.validation,

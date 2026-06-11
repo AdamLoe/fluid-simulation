@@ -52,6 +52,22 @@ impl OrbitCamera {
         self.pitch -= dy * SENS;
     }
 
+    /// Alternate drag: twist around the view direction, with vertical drag still
+    /// pitching so right-drag has two-axis feedback.
+    pub fn twist(&mut self, dx: f32, dy: f32) {
+        const SENS: f32 = 0.005;
+        self.roll += dx * SENS;
+        self.pitch -= dy * SENS;
+    }
+
+    /// Move the orbit target in the camera screen plane.
+    pub fn pan(&mut self, dx: f32, dy: f32) {
+        let (right, up) = self.billboard_basis();
+        let scale = (self.distance * 0.0015).clamp(0.003, 0.06);
+        self.target -= right * (dx * scale);
+        self.target += up * (dy * scale);
+    }
+
     /// Positive delta zooms out, negative zooms in (matches wheel deltaY).
     pub fn zoom(&mut self, delta: f32) {
         let factor = (1.0 + delta * 0.001).clamp(0.5, 2.0);

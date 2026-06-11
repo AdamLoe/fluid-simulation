@@ -1,4 +1,4 @@
-// panels.js - Right-side workspace tabs for Fluid Lab.
+// panels.js - Right-side settings tabs for Fluid Lab.
 // Pure ES module, vanilla DOM, no dependencies, no build step.
 //
 // NOTE on reset/reload-class settings: calling app.set_setting() updates the stored
@@ -12,21 +12,13 @@ const HIDDEN_SETTING_IDS = new Set([
   "interaction.auto_roll_enabled",
   "interaction.wave_enabled",
 ]);
-const TAB_ORDER = ["render", "water", "general", "physics", "modes", "profiler"];
-const TAB_META = {
-  render:   { label: "Render" },
-  water:    { label: "Water" },
-  general:  { label: "General" },
-  physics:  { label: "Physics" },
-  modes:    { label: "Modes" },
-  profiler: { label: "Profiler" },
-};
-const TAB_CATEGORY_ALLOWLIST = {
-  render: new Set(["Render", "Camera"]),
-  water: new Set(["Water"]),
-  general: new Set(["Scene", "Grid", "Particles"]),
-  physics: new Set(["Physics", "Solver"]),
-  modes: new Set(["Interaction"]),
+const DEFAULT_TAB = "scenario";
+const PROFILER_TAB = { id: "profiler", label: "Profiler", order: 1000, profiler: true };
+const TAB_ALIASES = {
+  general: "scenario",
+  render: "camera-view",
+  water: "water-surface",
+  physics: "simulation",
 };
 const MODE_SECTION_ORDER = [
   {
@@ -40,6 +32,22 @@ const MODE_SECTION_ORDER = [
     ids: ["interaction.wave_strength", "interaction.wave_frequency"],
   },
 ];
+
+function deriveTabs(settings) {
+  const byId = new Map();
+  for (const s of settings) {
+    if (HIDDEN_SETTING_IDS.has(s.id)) continue;
+    if (!s.tab || !s.tab_label) continue;
+    if (!byId.has(s.tab)) {
+      byId.set(s.tab, {
+        id: s.tab,
+        label: s.tab_label,
+        order: typeof s.tab_order === "number" ? s.tab_order : 500,
+      });
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.order - b.order).concat(PROFILER_TAB);
+}
 
 function safeConfigJson(app) {
   try {
@@ -161,29 +169,15 @@ const APPLY_BADGE = {
   reload: { text: "reload to apply", cls: "badge-reload" },
 };
 
-const PANEL_GROUPS = [
-  { id: "default", label: "Default", collapsed: false },
-  { id: "advanced", label: "Advanced", collapsed: true },
-  { id: "dev", label: "Dev", collapsed: true },
-];
-const PRESENTATION_CATEGORIES = new Set(["Render", "Camera"]);
-
 function filteredSettingsForTab(settings, tabId) {
-  if (tabId === "modes") {
-    return settings.filter(
-      (s) => s.category === "Interaction" && !HIDDEN_SETTING_IDS.has(s.id)
-    );
-  }
-  const allow = TAB_CATEGORY_ALLOWLIST[tabId];
-  if (!allow) return settings;
-  return settings.filter((s) => allow.has(s.category));
+  return settings.filter((s) => s.tab === tabId && !HIDDEN_SETTING_IDS.has(s.id));
 }
 
-function buildConfigPanel(container, app, tabId) {
+function buildConfigPanel(container, app, tabId, allSettings = safeConfigJson(app)) {
   hideTip();
   container.innerHTML = "";
 
-  const settings = filteredSettingsForTab(safeConfigJson(app), tabId);
+  const settings = filteredSettingsForTab(allSettings, tabId);
   if (!settings.length) {
     container.innerHTML = '<p class="panel-empty">No settings returned.</p>';
     return;
@@ -195,24 +189,8 @@ function buildConfigPanel(container, app, tabId) {
   }
 
   const rowEls = {};
-  const byGroup = splitByPanelGroup(settings);
-  const defaultSettings = byGroup.default || [];
-  const defaultCore = defaultSettings.filter((s) => !PRESENTATION_CATEGORIES.has(s.category));
-  const defaultPresentation = defaultSettings.filter((s) => PRESENTATION_CATEGORIES.has(s.category));
-
-  appendCategorySections(container, defaultCore, rowEls, app);
-
-  const expertDrawers = document.createElement("div");
-  expertDrawers.className = "cfg-expert-drawers";
-  for (const group of PANEL_GROUPS.filter((g) => g.collapsed)) {
-    appendCollapsedGroup(expertDrawers, group, byGroup[group.id], rowEls, app);
-  }
-  if (expertDrawers.children.length > 0) {
-    container.appendChild(expertDrawers);
-  }
-
-  appendCategorySections(container, defaultPresentation, rowEls, app);
-  appendResetDefaultsAction(container, app, tabId);
+  appendCategorySections(container, settings, rowEls, app);
+  appendResetDefaultsAction(container, app, tabId, settings);
 }
 
 function buildModesPanel(container, app, settings) {
@@ -235,7 +213,7 @@ function buildModesPanel(container, app, settings) {
 
     for (const id of sectionMeta.ids) {
       const setting = settingsById.get(id);
-      if (setting && setting.panel_group === "default") {
+      if (setting) {
         orderedDefault.push(setting);
         const row = buildSettingRow(setting, app);
         rowEls[setting.id] = row.el;
@@ -249,76 +227,31 @@ function buildModesPanel(container, app, settings) {
   }
 
   const leftover = settings.filter((s) => !orderedDefault.includes(s));
-  const byGroup = splitByPanelGroup(leftover);
-
-  const expertDrawers = document.createElement("div");
-  expertDrawers.className = "cfg-expert-drawers";
-  for (const group of PANEL_GROUPS.filter((g) => g.collapsed)) {
-    appendCollapsedGroup(expertDrawers, group, byGroup[group.id], rowEls, app);
-  }
-  if (expertDrawers.children.length > 0) {
-    container.appendChild(expertDrawers);
+  if (leftover.length) {
+    appendCategorySections(container, leftover, rowEls, app);
   }
 
-  appendResetDefaultsAction(container, app, "modes");
+  appendResetDefaultsAction(container, app, "modes", settings);
 }
 
-function splitByPanelGroup(settings) {
-  const byGroup = {};
-  for (const group of PANEL_GROUPS) byGroup[group.id] = [];
-  for (const s of settings) {
-    const group = PANEL_GROUPS.some((g) => g.id === s.panel_group) ? s.panel_group : "default";
-    byGroup[group].push(s);
-  }
-  return byGroup;
-}
-
-function appendResetDefaultsAction(container, app, tabId) {
+function appendResetDefaultsAction(container, app, tabId, tabSettings) {
   const actions = document.createElement("div");
   actions.className = "cfg-actions";
 
   const resetBtn = document.createElement("button");
   resetBtn.className = "panel-btn";
   resetBtn.textContent = "Reset to Defaults";
-  resetBtn.title = "Restore all settings to their compiled defaults";
+  resetBtn.title = "Restore this tab to compiled defaults";
   resetBtn.addEventListener("click", () => {
-    const current = safeConfigJson(app);
-    for (const s of current) {
+    for (const s of tabSettings) {
       app.set_setting(s.id, s.default);
     }
-    localStorage.removeItem(LS_KEY);
+    persistCurrentSettings(app);
     buildConfigPanel(container, app, tabId);
   });
 
   actions.appendChild(resetBtn);
   container.appendChild(actions);
-}
-
-function appendCollapsedGroup(parent, group, groupSettings, rowEls, app) {
-  if (!groupSettings || !groupSettings.length) return;
-
-  const details = document.createElement("details");
-  details.className = "cfg-group cfg-group-" + group.id;
-
-  const summary = document.createElement("summary");
-  summary.className = "cfg-group-heading";
-
-  const title = document.createElement("span");
-  title.textContent = group.label;
-  const count = document.createElement("span");
-  count.className = "cfg-group-count";
-  count.textContent = groupSettings.length + " controls";
-
-  summary.appendChild(title);
-  summary.appendChild(count);
-  details.appendChild(summary);
-
-  const body = document.createElement("div");
-  body.className = "cfg-group-body";
-  appendCategorySections(body, groupSettings, rowEls, app);
-  details.appendChild(body);
-
-  parent.appendChild(details);
 }
 
 function appendCategorySections(parent, settings, rowEls, app) {
@@ -793,15 +726,14 @@ function buildProfilerPanel(container, app) {
 }
 
 export function initPanels(app) {
-  const workspace = document.getElementById("workspace");
-  const workspaceBody = document.getElementById("workspace-body");
-  const tabsRoot = document.getElementById("workspace-tabs");
-  const tabLabel = document.getElementById("workspace-tab-label");
+  const settingsPanel = document.getElementById("settings-panel");
+  const settingsBody = document.getElementById("settings-body");
+  const tabsRoot = document.getElementById("settings-tabs");
   const btnConfig = document.getElementById("btn-config");
   const toolbarReset = document.getElementById("btn-reset");
 
-  if (!workspace || !workspaceBody || !tabsRoot || !tabLabel || !btnConfig) {
-    console.warn("[panels] Workspace DOM elements not found - skipping initPanels.");
+  if (!settingsPanel || !settingsBody || !tabsRoot || !btnConfig) {
+    console.warn("[panels] Settings DOM elements not found - skipping initPanels.");
     return null;
   }
 
@@ -823,16 +755,23 @@ export function initPanels(app) {
     if (needsRebuild) app.reset();
   }
 
+  const tabs = deriveTabs(safeConfigJson(app));
+  const tabMeta = new Map(tabs.map((tab) => [tab.id, tab]));
   let isOpen = false;
-  let activeTab = "general";
+  let activeTab = tabMeta.has(DEFAULT_TAB) ? DEFAULT_TAB : tabs[0]?.id ?? "profiler";
+
+  function normalizeTab(tab) {
+    const normalized = TAB_ALIASES[tab] || tab;
+    return tabMeta.has(normalized) ? normalized : activeTab;
+  }
 
   function renderActiveTab() {
+    const currentSettings = safeConfigJson(app);
     if (activeTab === "profiler") {
-      buildProfilerPanel(workspaceBody, app);
+      buildProfilerPanel(settingsBody, app);
     } else {
-      buildConfigPanel(workspaceBody, app, activeTab);
+      buildConfigPanel(settingsBody, app, activeTab, currentSettings);
     }
-    tabLabel.textContent = TAB_META[activeTab].label;
     for (const btn of tabsRoot.querySelectorAll(".tab-btn")) {
       const selected = btn.dataset.tab === activeTab;
       btn.classList.toggle("tab-active", selected);
@@ -841,50 +780,49 @@ export function initPanels(app) {
     }
   }
 
-  function setWorkspaceOpen(nextOpen) {
+  function setSettingsOpen(nextOpen) {
     isOpen = nextOpen;
-    workspace.hidden = !isOpen;
+    settingsPanel.hidden = !isOpen;
     btnConfig.classList.toggle("btn-active", isOpen);
     btnConfig.setAttribute("aria-expanded", isOpen ? "true" : "false");
     if (isOpen) renderActiveTab();
   }
 
-  function openWorkspace(tab = "general") {
-    activeTab = TAB_META[tab] ? tab : "general";
-    setWorkspaceOpen(true);
+  function openSettings(tab = DEFAULT_TAB) {
+    activeTab = normalizeTab(tab);
+    setSettingsOpen(true);
   }
 
-  function closeWorkspace() {
-    setWorkspaceOpen(false);
+  function closeSettings() {
+    setSettingsOpen(false);
   }
 
-  function toggleWorkspace() {
+  function toggleSettings() {
     if (isOpen) {
-      closeWorkspace();
+      closeSettings();
     } else {
-      openWorkspace("general");
+      openSettings(DEFAULT_TAB);
     }
   }
 
   function setActiveTab(tab) {
-    if (!TAB_META[tab]) return;
-    activeTab = tab;
+    activeTab = normalizeTab(tab);
     if (isOpen) renderActiveTab();
   }
 
-  for (const tabId of TAB_ORDER) {
+  for (const tab of tabs) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "tab-btn";
-    btn.dataset.tab = tabId;
-    btn.textContent = TAB_META[tabId].label;
+    btn.dataset.tab = tab.id;
+    btn.textContent = tab.label;
     btn.setAttribute("role", "tab");
-    btn.setAttribute("aria-controls", "workspace-body");
-    btn.addEventListener("click", () => setActiveTab(tabId));
+    btn.setAttribute("aria-controls", "settings-body");
+    btn.addEventListener("click", () => setActiveTab(tab.id));
     tabsRoot.appendChild(btn);
   }
 
-  btnConfig.addEventListener("click", toggleWorkspace);
+  btnConfig.addEventListener("click", toggleSettings);
 
   if (toolbarReset) {
     toolbarReset.addEventListener("click", () => {
@@ -892,19 +830,22 @@ export function initPanels(app) {
     });
   }
 
-  setWorkspaceOpen(false);
+  setSettingsOpen(false);
   renderActiveTab();
 
   window.setInterval(() => {
     if (isOpen && activeTab === "profiler") {
-      buildProfilerPanel(workspaceBody, app);
+      buildProfilerPanel(settingsBody, app);
     }
   }, 250);
 
   return {
-    openWorkspace,
-    closeWorkspace,
-    toggleWorkspace,
+    openSettings,
+    closeSettings,
+    toggleSettings,
+    openWorkspace: openSettings,
+    closeWorkspace: closeSettings,
+    toggleWorkspace: toggleSettings,
     setActiveTab,
     rerender() {
       if (isOpen) renderActiveTab();

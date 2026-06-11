@@ -16,7 +16,7 @@ The app shell owns the WASM/JS boundary, the per-frame dispatch loop, the fixed-
 - **Frame entry point** — `app/crates/fluid-lab/src/lib.rs → FluidApp::frame`. Receives raw browser rAF delta (ms), hands it to the timestep controller, calls `gpu.step(n)`, then renders.
 - **Fixed-timestep accumulator** — `app/crates/fluid-lab/src/timestep.rs → TimestepController`. Pure Rust, unit-tested natively.
 - **Orbit camera** — `app/crates/fluid-lab/src/camera.rs → OrbitCamera`. Quaternion-based yaw/pitch; no up-vector clamp.
-- **Tank transform** — `box_orient: glam::Quat` + `box_pos: glam::Vec3` fields on `FluidApp`; mutated by the pointer-mode methods.
+- **Tank transform** — `box_orient: glam::Quat` + `box_pos: glam::Vec3` fields on `FluidApp`; mutated by cube pointer methods.
 - **Interaction scheduler** — `app/crates/fluid-lab/src/lib.rs → InteractionState`; deterministic app-side auto-roll and wave-maker timing owned by `FluidApp`, not by JavaScript.
 - **JS↔WASM bridge** — `app/crates/fluid-lab/src/lib.rs → FluidApp::config_json`, `FluidApp::set_setting`, `FluidApp::stats_json`.
 - **Scene config** — `app/crates/fluid-lab/src/scene/mod.rs → SceneConfig`, `InitialLiquidConfig`, `LiquidBlock`, `ScenePreset`.
@@ -48,23 +48,32 @@ Each call records a `TimestepFrameStats` snapshot (`substeps`, `accumulated_befo
 
 When the sim is paused, `FluidApp::frame` calls `timestep.reset()` each frame so no stale time bursts on resume. Scheduled interaction time does not advance while paused; single-step while paused advances the sim tick but does not run auto-roll or wave-maker scheduling. `reset()` zeroes both the accumulator and `last` (so paused frames report 0 substeps / 0 dropped; cumulative `dropped_time` is preserved). On hard reset (`FluidApp::reset`) the controller is fully reconstructed from the registry.
 
-## Camera and pointer modes
+## Camera and pointer methods
 
 `app/crates/fluid-lab/src/camera.rs → OrbitCamera` uses a quaternion orientation (yaw about world-Y, then pitch about local-X, then roll about local-Z) so pitch is unclamped — the camera can orbit fully over the top without a `look_at` pole degeneracy. `OrbitCamera::billboard_basis` returns the camera-facing right/up pair used by both particle billboards and all box-relative pointer operations. `OrbitCamera::set_distance` clamps to `[2, 40]`; `create()` and `reset()` restore pitch/yaw/roll/distance from the `camera.rot_x/rot_y/rot_z` and `camera.distance` registry settings (all Live-class), so the camera sliders define the default view.
 
-The five wasm-exported pointer modes on `FluidApp` (`move_box` is exported but the web UI binds only four interaction modes — camera/rotate/rotateRoll/slosh; see `web-shell.md`):
+The web shell chooses Camera or Cube control, then dispatches by mouse button (see
+`web-shell.md`). WASM exports the small camera operations and the cube transform
+operations separately:
 
 | Method | Effect |
 |---|---|
 | `camera_orbit(dx,dy)` | Orbit camera around tank |
+| `camera_twist(dx,dy)` | Roll/twist the camera around its view direction, with vertical drag still pitching |
+| `camera_pan(dx,dy)` | Move the orbit target in the camera screen plane |
 | `rotate_box(dx,dy)` | Spin tank about camera up + tip about camera right |
 | `rotate_box_roll(dx,dy)` | Roll tank about camera view-fwd + tip about camera right |
 | `move_box(dx,dy)` | Translate tank in camera screen plane |
-| `slosh_box(dx,dy)` | Translate tank + apply opposite local-frame impulse to fluid |
+| `slosh_box(dx,dy)` | Translate tank + apply opposite local-frame impulse to fluid; exported for scripts, not bound by the current bottom Control UI |
 
 ## Scene config
 
 `app/crates/fluid-lab/src/scene/mod.rs → SceneConfig::from_settings` builds the scene from the registry at construction and again on every `reset()` call. Liquid geometry is described as one or more `LiquidBlock` AABBs in normalized tank space [0,1]^3; the blocks stay normalized and are mapped to world space via the per-axis tank origin+extent (see "Rectangular tank" below) — no hardcoded 2.0/-1.0. The named presets are the variants of `app/crates/fluid-lab/src/scene/mod.rs → ScenePreset` (`FallingBlob`, `DamBreak`, `DoubleSplash`); the preset integer is the wire value of the `scene.preset` registry setting. `SceneConfig::default_tank` is the historical alias that always returns `FallingBlob`, used by callers that want the canonical look independent of the dropdown.
+
+`scene.drop_height` is a Reset-class scene parameter consumed by `SceneConfig::from_settings`.
+For suspended presets, the authored liquid blocks are shifted vertically by the height
+delta and clamped inside `[0,1]` while preserving block size. Dam Break remains
+floor-anchored, so the setting has limited effect there.
 
 `SceneConfig.grid_resolution` is a `UVec3` built from the `grid.res_x/res_y/res_z` registry settings (all Reset-class), feeding the per-axis cell counts.
 
@@ -109,7 +118,7 @@ Particle placement within each block uses a deterministic seeded jitter (`app/cr
 
 - The JS↔WASM bridge surface changes (new exported methods, new `set_setting` ids, changed JSON schemas for `config_json`/`stats_json`).
 - The timestep constants (`MAX_RENDER_DT_S`, `fixed_dt`, `max_substeps`) are made configurable, their defaults change, or the drop-excess policy changes (currently: zero accumulator when capped).
-- A new pointer mode is added or an existing mode's semantics change.
+- A pointer method or web-shell pointer mapping changes.
 - Scheduled interaction behavior or `interaction.*` settings change.
 - A new `ScenePreset` variant is added or the normalized-space block definitions change.
 - The tank stops being a uniform-`h` rectangular box (e.g. per-axis cell sizes), or the centered-origin placement changes.

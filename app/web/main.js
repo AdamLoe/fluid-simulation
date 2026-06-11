@@ -23,12 +23,10 @@ const PRODUCT_MODES = {
   },
 };
 
-const POINTER_MODE_ORDER = ["camera", "rotate", "rotateRoll", "slosh"];
-const POINTER_MODE_CURSOR = {
+const CONTROL_TARGET_ORDER = ["camera", "cube"];
+const CONTROL_TARGET_CURSOR = {
   camera: "grab",
-  rotate: "ew-resize",
-  rotateRoll: "ns-resize",
-  slosh: "move",
+  cube: "move",
 };
 
 function showUnsupported(detail) {
@@ -75,7 +73,6 @@ async function main() {
   const pauseBtn = document.getElementById("btn-pause");
   const resetBtn = document.getElementById("btn-reset");
   const versionEl = document.getElementById("app-version");
-  const manualPointerGroup = document.getElementById("manual-pointer-group");
 
   if (!("gpu" in navigator)) {
     showUnsupported("navigator.gpu is missing - WebGPU is not supported in this browser.");
@@ -105,8 +102,9 @@ async function main() {
   if (params.get("slicemode") !== null) app.set_slice_mode(parseInt(params.get("slicemode"), 10));
 
   let productMode = "autoRotate";
-  let manualPointerMode = "camera";
+  let controlTarget = "camera";
   let dragging = false;
+  let dragButton = 0;
   let lastX = 0;
   let lastY = 0;
 
@@ -115,32 +113,24 @@ async function main() {
     waves: document.getElementById("product-waves"),
     manual: document.getElementById("product-manual"),
   };
-  const pointerModeBtns = {
-    camera: document.getElementById("mode-camera"),
-    rotate: document.getElementById("mode-rotate"),
-    rotateRoll: document.getElementById("mode-rotate-roll"),
-    slosh: document.getElementById("mode-slosh"),
+  const controlTargetBtns = {
+    camera: document.getElementById("control-camera"),
+    cube: document.getElementById("control-cube"),
   };
 
-  function activePointerMode() {
-    return productMode === "manual" ? manualPointerMode : "camera";
-  }
-
-  function syncPointerUi() {
-    const manualVisible = productMode === "manual";
-    manualPointerGroup.hidden = !manualVisible;
-    const activeMode = activePointerMode();
-    for (const [modeId, btn] of Object.entries(pointerModeBtns)) {
-      btn.classList.toggle("mode-active", manualVisible && modeId === manualPointerMode);
-      btn.setAttribute("aria-pressed", manualVisible && modeId === manualPointerMode ? "true" : "false");
+  function syncControlUi() {
+    for (const [targetId, btn] of Object.entries(controlTargetBtns)) {
+      const selected = targetId === controlTarget;
+      btn.classList.toggle("mode-active", selected);
+      btn.setAttribute("aria-pressed", selected ? "true" : "false");
     }
-    canvas.style.cursor = POINTER_MODE_CURSOR[activeMode] || "default";
+    canvas.style.cursor = CONTROL_TARGET_CURSOR[controlTarget] || "default";
   }
 
-  function setManualPointerMode(nextMode) {
-    if (!pointerModeBtns[nextMode]) return;
-    manualPointerMode = nextMode;
-    syncPointerUi();
+  function setControlTarget(nextTarget) {
+    if (!controlTargetBtns[nextTarget]) return;
+    controlTarget = nextTarget;
+    syncControlUi();
   }
 
   function applyProductMode(nextMode) {
@@ -155,7 +145,6 @@ async function main() {
       btn.classList.toggle("mode-active", selected);
       btn.setAttribute("aria-pressed", selected ? "true" : "false");
     }
-    syncPointerUi();
     panelApi?.rerenderModes();
   }
 
@@ -163,10 +152,8 @@ async function main() {
     btn.addEventListener("click", () => applyProductMode(modeId));
   }
 
-  for (const [modeId, btn] of Object.entries(pointerModeBtns)) {
-    btn.addEventListener("click", () => {
-      if (productMode === "manual") setManualPointerMode(modeId);
-    });
+  for (const [targetId, btn] of Object.entries(controlTargetBtns)) {
+    btn.addEventListener("click", () => setControlTarget(targetId));
   }
 
   if (params.get("paused") === "1") {
@@ -196,36 +183,49 @@ async function main() {
       resetSimulation();
       return;
     }
-    if (productMode !== "manual") return;
     const idx = parseInt(e.key, 10) - 1;
-    if (idx >= 0 && idx < POINTER_MODE_ORDER.length) {
-      setManualPointerMode(POINTER_MODE_ORDER[idx]);
+    if (idx >= 0 && idx < CONTROL_TARGET_ORDER.length) {
+      setControlTarget(CONTROL_TARGET_ORDER[idx]);
     }
   });
 
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   canvas.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
     dragging = true;
+    dragButton = e.button;
     lastX = e.clientX;
     lastY = e.clientY;
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener("pointerup", (e) => {
-    dragging = false;
-    canvas.releasePointerCapture(e.pointerId);
+    if (e.buttons === 0) {
+      dragging = false;
+      try {
+        canvas.releasePointerCapture(e.pointerId);
+      } catch {}
+    }
   });
   canvas.addEventListener("pointercancel", (e) => {
     dragging = false;
-    canvas.releasePointerCapture(e.pointerId);
+    try {
+      canvas.releasePointerCapture(e.pointerId);
+    } catch {}
   });
   canvas.addEventListener("pointermove", (e) => {
     if (!dragging) return;
+    e.preventDefault();
     const dx = e.clientX - lastX;
     const dy = e.clientY - lastY;
-    const mode = activePointerMode();
-    if (mode === "camera") app.camera_orbit(dx, dy);
-    else if (mode === "rotate") app.rotate_box(dx, dy);
-    else if (mode === "rotateRoll") app.rotate_box_roll(dx, dy);
-    else if (mode === "slosh") app.slosh_box(dx, dy);
+    if (controlTarget === "camera") {
+      if (dragButton === 1) app.camera_pan(dx, dy);
+      else if (dragButton === 2) app.camera_twist(dx, dy);
+      else app.camera_orbit(dx, dy);
+    } else if (controlTarget === "cube") {
+      if (dragButton === 1) app.move_box(dx, dy);
+      else if (dragButton === 2) app.rotate_box_roll(dx, dy);
+      else app.rotate_box(dx, dy);
+    }
     lastX = e.clientX;
     lastY = e.clientY;
   });
@@ -234,7 +234,7 @@ async function main() {
     app.camera_zoom(e.deltaY);
   }, { passive: false });
 
-  setManualPointerMode("camera");
+  setControlTarget("camera");
   applyProductMode("autoRotate");
 
   const applyResize = () => {
@@ -258,7 +258,20 @@ async function main() {
   requestAnimationFrame(loop);
 
   window.__fluidShell = {
-    openWorkspace(tab = "general") {
+    openSettings(tab = "scenario") {
+      panelApi?.openSettings(tab);
+    },
+    closeSettings() {
+      panelApi?.closeSettings();
+    },
+    selectSettingsTab(tab) {
+      if (!panelApi?.isOpen()) {
+        panelApi?.openSettings(tab);
+      } else {
+        panelApi?.setActiveTab(tab);
+      }
+    },
+    openWorkspace(tab = "scenario") {
       panelApi?.openWorkspace(tab);
     },
     closeWorkspace() {
@@ -274,18 +287,25 @@ async function main() {
     selectProductMode(mode) {
       applyProductMode(mode);
     },
+    selectControlTarget(target) {
+      setControlTarget(target);
+    },
     selectManualPointerMode(mode) {
-      if (productMode === "manual") setManualPointerMode(mode);
+      const alias = mode === "camera" ? "camera" : "cube";
+      setControlTarget(alias);
     },
     reset() {
       resetSimulation();
     },
     state() {
       return {
+        settingsOpen: panelApi?.isOpen() ?? false,
+        settingsTab: panelApi?.activeTab() ?? "scenario",
         workspaceOpen: panelApi?.isOpen() ?? false,
-        workspaceTab: panelApi?.activeTab() ?? "general",
+        workspaceTab: panelApi?.activeTab() ?? "scenario",
         productMode,
-        manualPointerMode,
+        controlTarget,
+        manualPointerMode: controlTarget,
         paused: app.is_paused(),
       };
     },
