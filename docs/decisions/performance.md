@@ -102,13 +102,15 @@ over directly. Per-axis tuning of the timestep is deferred until extreme ratios 
 
 **Applies to** — `architecture/gpu-resources.md`, `architecture/simulation.md`.
 
-## Fixed-dt substep cap: default 1, drop excess, catch up by rendering the next frame
+## Fixed-dt substep cap: default 2, drop excess, catch up by rendering the next frame
 
-**Decision** — `physics.max_substeps` defaults to 1. Each rendered frame advances at most `max_substeps` fixed-dt substeps; if the natural substep count would exceed the cap, the remaining accumulated sim time is dropped entirely that frame (not carried forward) and recorded in cumulative `dropped_time`. The browser catches up by rendering the next frame, not by making one frame longer.
+**Decision** — `physics.max_substeps` defaults to 2. Each rendered frame advances at most `max_substeps` fixed-dt substeps; if the natural substep count would exceed the cap, the remaining accumulated sim time is dropped entirely that frame (not carried forward) and recorded in cumulative `dropped_time`. The browser catches up by rendering the next frame, not by making one frame longer.
 
-**Why** — A slow frame should stay cheap. A high cap allows unbounded catch-up: one hitch produces N× the normal per-frame work, compounding the overload and stalling interactivity. With the default of 1 the worst case per frame is exactly one fixed-dt substep, so frame time is predictable. The physics falls slightly behind under load but recovers immediately on the next frame.
+**Why** — A 60 Hz frame naturally wants two 1/120 s physics substeps. Real-GPU timing with the previous cap showed `natural_substeps=2`, `substep_cap_hit=true`, `real_time_factor=0.4026`, and roughly 4.9 ms combined sim/render GPU time, so the default cap of 1 caused ordinary refresh-rate slow motion despite available frame budget. A default of 2 fixes that ordinary case while preserving a bounded cap for hitches.
 
-**Tradeoffs** — At max\_substeps=1 the sim runs at most one substep per rendered frame, so on a 30 fps machine with a 120 Hz fixed\_dt the sim effectively runs at 30 Hz physics. For dev/stress testing, raising to 4 allows catch-up at the cost of occasional longer frames.
+**Tradeoffs** — The default now allows up to two fixed-dt substeps per rendered frame, so ordinary 60 Hz cadence can advance at real time. It is still not an adaptive or unbounded catch-up policy: a 30 Hz frame naturally wants four substeps, runs two by default, and drops the rest to avoid compounding overload. The profiler surfaces this as `real_time_factor`, plus executed/natural substeps and cap-hit state. For dev/stress testing, raising the setting higher allows more catch-up at the cost of occasional longer frames.
+
+**Current policy note** — The measured policy change is only the default cap. `fixed_dt` remains 1/120 s, and `TimestepController` still zeroes the remaining accumulator when capped.
 
 **Code anchors** — `app/crates/fluid-lab/src/timestep.rs → TimestepController::steps_for_frame`; `app/crates/fluid-lab/src/settings/mod.rs → physics.max_substeps`.
 
@@ -125,6 +127,24 @@ once the GPU path is mature, not an MVP design target.
 and can distort the architecture toward a number nobody needs yet.
 
 **Applies to** — `architecture/gpu-resources.md`, `architecture/profiler.md`.
+
+## Pressure early-exit and warm-start need GPU evidence before performance claims
+
+**Decision** — Host-reference support for pressure warm-start and residual tolerance
+is correctness prep only. A pressure performance claim requires the GPU path to be
+wired without normal-frame readback and measured with profiler/capture evidence.
+
+**Why** — CPU-side convergence facts do not reduce WebGPU dispatch count or shader
+work by themselves; the current runtime still records the fixed
+`solver.pressure_iterations` loop.
+
+**Code anchors** — `app/crates/fluid-lab/src/sim/pressure.rs → cg_solve_with_options`;
+`app/crates/fluid-lab/src/gpu/fluid.rs → record_pressure`.
+
+**Revisit when** — GPU active gating, indirect dispatch, or pressure warm-start lands
+behind conservative settings and captures name pressure iteration costs before/after.
+
+**Applies to** — `architecture/pressure-solver.md`, `architecture/profiler.md`.
 
 ## Keep one shared tiled particle-dispatch contract and preflight impossible scales
 

@@ -108,6 +108,9 @@ compatibility, while visible profiler text reports foam only.
 
 ## Removed features
 
+This section is the canonical owner for removed render features. Resource and
+settings docs should link here instead of repeating the old subsystem inventory.
+
 The following files are intentionally absent from the current runtime:
 
 - `gpu/caustics.rs`, `gpu/shaders/caustics_{generate,composite}.wgsl`

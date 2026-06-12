@@ -37,7 +37,12 @@ and after this subsystem but are **owned by the sim step** — see `simulation.m
 `scale = ρ h² / dt`. `app/crates/fluid-lab/src/sim/pressure.rs → ProjectionParams::rhs_scale`.
 
 **Host reference.** `app/crates/fluid-lab/src/sim/pressure.rs → cg_solve` — plain Rust, no GPU, used by
-tests. The same math is mirrored verbatim in the WGSL kernel set.
+tests. `cg_solve` remains the compatibility wrapper: zero initial pressure, fixed
+iteration budget, and no residual tolerance. The internal
+`app/crates/fluid-lab/src/sim/pressure.rs → cg_solve_with_options` helper accepts an
+optional initial pressure field and an optional relative residual tolerance. When an
+initial field is provided it is copied only for Liquid cells, the residual starts at
+`r = b - A·p_initial`, and tolerance exit uses `rs_new <= tol² · rs_initial`.
 
 **GPU kernel set.** A set of small `cg_*.wgsl` kernels in `app/crates/fluid-lab/src/gpu/shaders/`, each doing
 one algebraic step. Dispatch sequence in `app/crates/fluid-lab/src/gpu/fluid.rs → record_pressure`:
@@ -63,9 +68,11 @@ loading vector buffers; do not rely on WGSL `select` to mask out-of-range lanes.
 
 ## Non-obvious invariants and gotchas
 
-**Pressure is zeroed each step — no warm-start.** `cg_init` sets `p = 0` before the
-first iteration every step. The result is deterministic; the previous frame's pressure
-field is discarded.
+**GPU pressure is zeroed each step — no runtime warm-start.** `cg_init` sets `p = 0`
+before the first iteration every step. The result is deterministic; the previous
+frame's pressure field is discarded. The host reference has an internal warm-initial
+and tolerance helper for GPU-prep tests, but the shipped GPU path still runs the
+fixed `solver.pressure_iterations` loop with no early-exit dispatch gating.
 
 **Participation is cell-type gated.** Only Liquid cells hold a meaningful pressure.
 Air cells are Dirichlet `p = 0` (they count as neighbours, pushing `n_c` up but
@@ -76,6 +83,8 @@ is the stencil used by both `apply_poisson` and `cg_spmv`.
 The settled-pool residual plateau at ~19.2 k liquid cells (64³) is FLIP volume loss,
 not solver under-convergence — brute-force Jacobi at 400 iters reaches the same
 ceiling. Raising iterations past ~30 has no visible effect on fluid volume.
+The runtime GPU loop is still fixed-count; host-side tolerance support is not a
+performance claim until the GPU path and profiler evidence exist.
 
 **Scale consistency.** Relative divergence reduction is independent of ρ. Host tests
 use `ρ = dt = h = 1` (`ProjectionParams::unit`). Runtime uses a hardcoded

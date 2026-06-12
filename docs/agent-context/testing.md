@@ -36,9 +36,18 @@ CG-vs-Jacobi convergence
   output (or the labeled minimum-honest fallback). Don't fabricate per-pass GPU times
   when `timestamp-query` is unavailable. See
   [`../architecture/profiler.md`](../architecture/profiler.md).
+- Browser perf gates should use `tools/capture.mjs` assertion env vars:
+  `FLUID_ASSERT_MIN_TIMING_SOURCE`, `FLUID_ASSERT_MAX_FRAME_AVG_MS`,
+  `FLUID_ASSERT_MAX_P95_MS`, `FLUID_ASSERT_MAX_GPU_SIM_MS`,
+  `FLUID_ASSERT_MAX_GPU_RENDER_MS`, `FLUID_ASSERT_SCALE_STATUS_OK`,
+  `FLUID_ASSERT_REQUIRE_GPU_STATS`, and `FLUID_ASSERT_REQUIRE_GPU_TIMESTAMP`.
+  GPU sim/render budgets are timestamp-only gates and fail when the final sample is
+  not `gpu-timestamp`.
 - A numerically-passing sim can still be visibly broken (volume loss, clumping,
   wall-stick). The cheap liveness gate is occupied-cell count staying within ~±10%
-  over ~10 s — a single throttled counter, not a readback-heavy diagnostic.
+  over ~10 s — a single throttled counter, not a readback-heavy diagnostic or
+  physical volume measurement. Capture writes the proxy into `<out>.stats.json` and
+  sampled rows into `<out>.trace.ndjson`.
 
 ## See also
 

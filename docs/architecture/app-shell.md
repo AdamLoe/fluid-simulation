@@ -42,11 +42,11 @@ The web shell owns `requestAnimationFrame`; Rust owns all scheduling. JavaScript
 
 1. Clamps incoming render dt to `MAX_RENDER_DT_S` = 1/30 s before accumulation — a single browser hitch cannot produce unbounded sim work.
 2. Drains the accumulator in `fixed_dt` (default 1/120 s) chunks.
-3. Runs `n = min(n_natural, max_substeps)` substeps. `max_substeps` defaults to 1 (see `decisions/performance.md`). If `n_natural > max_substeps` (behind), the entire remaining accumulator is zeroed this frame and the dropped seconds are added to cumulative `dropped_time`. The browser catches up by rendering the next frame, not by making one frame longer.
+3. Runs `n = min(n_natural, max_substeps)` substeps. `max_substeps` defaults to 2 (see `decisions/performance.md`), so an ordinary 60 Hz frame can execute the two 1/120 s physics steps it naturally wants when frame budget allows. If `n_natural > max_substeps` (behind), the entire remaining accumulator is zeroed this frame and the dropped seconds are added to cumulative `dropped_time`. The browser catches up by rendering the next frame, not by making one frame longer.
 
-Each call records a `TimestepFrameStats` snapshot (`substeps`, `accumulated_before`, `accumulated_after`, `dropped_this_frame`). Accessors: `last_stats()` returns the per-frame snapshot; `total_dropped()` (and legacy `dropped_time()`) returns the cumulative total. `FluidApp::frame` pushes both into the profiler via `set_timestep_stats(...)`.
+Each call records a `TimestepFrameStats` snapshot: executed `substeps`, `fixed_dt`, `max_substeps`, `natural_substeps`, whether the cap hit, accumulator before/after, per-frame dropped time, actually advanced sim time, raw sanitized rAF wall time, real-time factor, and the policy label. The real-time factor is `sim_advanced / raw_rAF_wall_dt`; dropped time is not counted as advanced simulation time. Accessors: `last_stats()` returns the per-frame snapshot; `total_dropped()` (and legacy `dropped_time()`) returns the cumulative total. `FluidApp::frame` pushes both into the profiler via `set_timestep_stats(...)`.
 
-When the sim is paused, `FluidApp::frame` calls `timestep.reset()` each frame so no stale time bursts on resume. Scheduled interaction time does not advance while paused; single-step while paused advances the sim tick but does not run auto-roll or wave-maker scheduling. `reset()` zeroes both the accumulator and `last` (so paused frames report 0 substeps / 0 dropped; cumulative `dropped_time` is preserved). On hard reset (`FluidApp::reset`) the controller is fully reconstructed from the registry.
+When the sim is paused, `FluidApp::frame` calls `timestep.reset()` each frame so no stale time bursts on resume. Scheduled interaction time does not advance while paused; single-step while paused advances the sim tick but does not run auto-roll or wave-maker scheduling. Paused idle frames record zero executed substeps with the raw rAF wall time; paused single-step records one manual substep so profiler stats match the actual `gpu.step(1)` call. `reset()` zeroes both the accumulator and `last` (so paused frames report 0 substeps / 0 dropped until the frame records idle/manual stats; cumulative `dropped_time` is preserved). On hard reset (`FluidApp::reset`) the controller is fully reconstructed from the registry.
 
 ## Camera and pointer methods
 
@@ -115,7 +115,7 @@ failed reset applied.
 
 **`box_pos` is clamped.** `move_box` and `slosh_box` both clamp `box_pos` to `[-3, 3]^3` so the tank cannot escape the camera frustum entirely.
 
-**`dropped_time` is cumulative since last hard reset**, not a per-frame value. The per-frame drop is in `TimestepFrameStats.dropped_this_frame` (seconds). Both are surfaced through the profiler / `stats_json` and are useful for detecting sustained frame-rate overload.
+**`dropped_time` is cumulative since last hard reset**, not a per-frame value. The per-frame drop is in `TimestepFrameStats.dropped_this_frame` (seconds). Both are surfaced through the profiler / `stats_json` and are useful for detecting sustained frame-rate overload. `real_time_factor` uses raw rAF wall time as its denominator, so an ordinary 60 Hz frame with default `max_substeps=2` reports about `1.0x` when both 1/120 s substeps execute; capped hitches still report the lower factor instead of hiding dropped accumulator time.
 
 **`#![allow(dead_code)]`** is intentional on the crate — many registry and scene fields belong to the forward-looking data model and are not yet read. Do not remove it.
 

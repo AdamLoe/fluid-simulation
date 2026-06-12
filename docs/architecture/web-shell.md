@@ -26,8 +26,8 @@ index.html -> main.js -> panels.js
 - Owning `requestAnimationFrame` and calling `app.frame(dtMs)`.
 - Wiring Pause, Reset, Settings, the right-side settings panel, bottom Mode/Control
   segmented controls, keyboard shortcuts, pointer dispatch, and wheel zoom.
-- URL params `?pressure=off`, `?paused=1`, `?flip=N`, `?slice=1`, and
-  `?slicemode=N`.
+- URL params `?set=id:value` (repeatable, registry-backed), plus legacy shell params
+  `?pressure=off`, `?paused=1`, `?flip=N`, `?slice=1`, and `?slicemode=N`.
 - Exposing `window.__fluidShell` helpers for captures:
   `openSettings`, `selectSettingsTab`, `selectProductMode`, `selectControlTarget`,
   `reset`, and `state`, plus backward-compatible workspace aliases. `reset` returns
@@ -56,10 +56,29 @@ Tabs are derived from registry metadata in `app.config_json()`, grouped by
 slider+number controls, dropdowns, color pickers, log2 particle-count sliders,
 per-setting reset buttons, and help affordances.
 
-Changes call `app.set_setting(id, value)` and persist visible non-default overrides to
-`localStorage` under `fluidlab.config.v1`. Hidden scheduler booleans are not rendered
-or persisted. Removed render ids are accepted during restore through a compatibility
-predicate and disappear on the next save.
+Changes call `app.set_setting_result_json(id, value)` and persist visible non-default
+overrides to `localStorage` under `fluidlab.config.v1`. The result JSON reports
+acceptance, clamping, stored value, apply class, and whether reset/reload is needed,
+so sliders and number boxes reflect clamped stored values instead of assuming the
+requested value stuck.
+
+Hidden scheduler booleans are not rendered or persisted. Removed render ids are sent
+to the bridge during restore/import; Rust owns legacy mapping/ignoring and reports
+`legacy_mapped` or `legacy_ignored`. Future saves walk visible non-default rows only,
+so removed ids disappear on the next save.
+
+Shareable registry settings use repeated `set` URL params:
+
+```
+?set=physics.flip_blend:0.65&set=grid.res_x:32
+```
+
+The shell parses all `set` entries once at boot, appends legacy `?flip=N` as
+`physics.flip_blend`, applies the batch after default product-mode initialization,
+and triggers one `app.reset()` if any accepted entry reports `needs_reset`. Reload
+class entries are stored and warned about; the shell does not auto-reload the page.
+The old `pressure`, `paused`, `slice`, and `slicemode` params remain ad hoc shell
+controls for this stage.
 
 The Profiler tab polls `app.stats_json()` at 4 Hz while open. It reports foam
 particles/emitted/clamped only; legacy JSON keys for spray and bubble may be present
@@ -95,6 +114,13 @@ The harness exits non-zero when WebGPU is unavailable, `stats_json` is missing, 
 errors/request failures occur, requested reset setup is rejected, or the boot smoke
 test reports failure. If `navigator.gpu` is false, the screenshot is the unsupported
 overlay and is not valid visual evidence.
+
+Every run also writes `<out>.trace.ndjson` and `<out>.stats.json`, including the raw
+final `stats_json` and occupied-cell drift proxy. Scale/detailed measurement runs poll
+during `MEASURE_WAIT`; otherwise the trace contains the final sample. Opt-in assertion
+env vars can fail the run on timing source, frame/GPU budgets, scale status, or
+missing GPU stats; GPU sim/render budget assertions are valid only when the final
+sample is `gpu-timestamp`.
 
 ## Gotchas
 

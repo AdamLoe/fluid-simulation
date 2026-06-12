@@ -58,7 +58,7 @@ ENFORCE BOUNDARIES  [×3 axes]  ← first enforce
   └─ boundaries.wgsl   → zero solid-adjacent / domain-edge faces
 
 ─────── record_pressure (see pressure-solver.md) ────────────────────────────
-  divergence.wgsl  →  [CG solve]  →  final pressure in pressure_a
+  divergence.wgsl  →  [fixed-count CG solve]  →  final pressure in pressure_a
 ──────────────────────────────────────────────────────────────────────────────
 
 SUBTRACT GRADIENT  [×3 axes]
@@ -125,7 +125,12 @@ local frame.
 
 **Compactness is split across physics and rendering.** `render.particle_size` only changes how large particles look. `particles.count` plus the selected scene preset control the initial seeded mass/distribution and require Reset. `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp` are the volume-correction trio: sufficiently occupied liquid cells above the rest particles/cell target receive a clamped negative divergence bias so projection pushes crowded regions outward. `classify.liquid_threshold` and `classify.surface_dilation` decide which occupied cells participate as liquid; the default dilation is 0 so thin cells are not automatically expanded. `solver.pressure_iterations` controls incompressibility quality/perf, not visual particle overlap.
 
-**Pressure solve ceiling (~19.2k liquid cells at 64³) is FLIP volume loss, not solver deficit.** Both CG-30 and brute-force Jacobi-400 plateau at the same occupied-cell count. See `pressure-solver.md` and `../decisions/pressure.md`.
+**Pressure solve ceiling (~19.2k liquid cells at 64³) is FLIP volume loss, not solver deficit.** Both CG-30 and brute-force Jacobi-400 plateau at the same occupied-cell count. The GPU pressure path remains a zero-initial, fixed-iteration loop; host-reference warm-start/tolerance support is only prep for future GPU work. See `pressure-solver.md` and `../decisions/pressure.md`.
+
+**Occupied-cell drift is only a liveness proxy.** The capture harness can baseline
+the throttled `gpu.liquid_cells` counter after reset and report an
+occupied-cell-count drift ratio. That catches gross loss/clumping cheaply, but it is
+not physical liquid volume and must not be presented as mass conservation.
 
 **`apply_impulse` submits its own command encoder.** The slosh and wave-maker impulses (`app/crates/fluid-lab/src/gpu/fluid.rs → apply_impulse`) are one-shot dispatches that run outside the main substep command buffer, writing directly to the particle buffer before the next `record_prep` clear.
 

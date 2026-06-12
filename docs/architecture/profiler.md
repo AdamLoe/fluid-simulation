@@ -80,7 +80,19 @@ Always-present keys additionally include measurement/scale facts:
 `particle_dispatch_groups_x`, `particle_dispatch_groups_y`,
 `particle_dispatch_capacity`, `max_particle_storage_count`,
 `pressure_iterations`, and `render_mode`, alongside the existing frame percentile,
-grid, memory, dropped-time, dispatch, and GPU fields.
+grid, dropped-time, dispatch, and GPU fields. `gpu_buffer_mb` remains the legacy
+simulation-buffer figure; categorized tracked-memory fields add `sim_buffers_mb`,
+`render_targets_mb`, `diffuse_mb`, `timing_mb`, and `total_tracked_mb`. `timing_mb`
+is `null` until timing-buffer byte accounting is plumbed through the timing owner.
+
+The timestep block is flattened into the top-level object for panel compatibility:
+existing `substeps`, `substeps_this_frame`, `accumulated_before_ms`,
+`accumulated_after_ms`, `dropped_sim_time_ms`, and
+`total_dropped_sim_time_ms` remain, and the audit-backed fields
+`fixed_dt_ms`, `max_substeps`, `natural_substeps`, `substep_cap_hit`,
+`sim_advanced_ms`, `wall_raf_ms`, `real_time_factor`, and `timestep_policy` are
+also always present. `real_time_factor` uses raw sanitized rAF wall time as the
+denominator and counts only the substeps actually submitted to the sim.
 
 The `gpu` sub-object always carries: `sim_ms`, `prep_ms`, `pressure_ms`,
 `finish_ms`, `render_ms`, `liquid_cells`, `substeps`, `detailed`. When `detailed` is
@@ -98,6 +110,14 @@ timestamp totals, so foam counter visibility must not be read as a timed cost.
 **Timing-source honesty is non-negotiable.** Every logged sample declares its source (`timing: gpu-timestamp` or `timing: cpu-wallclock`). Per-pass GPU numbers (`prep / pressure / finish / render`) are emitted only when `GpuSample` is set — if it is `None`, the GPU block is absent from the log and `"gpu": null` in `stats_json`. The profiler never fabricates per-pass numbers when timestamps are missing.
 
 **`timestamp-query` is not universally available.** In-browser it is often gated behind a flag or quantized to ~100 µs. The fallback minimum-honest profile is: total frame time (CPU rAF delta, always available), substep count, dispatch/draw counts, optional coarse fence for sim-vs-render split. These are clearly labeled; a gate asking for "top-5 GPU costs" is satisfied by the labeled fallback when the platform cannot provide timestamps.
+
+**Memory accounting is tracked allocation math, not driver VRAM.** The categorized
+memory fields come from owners that know their allocation sizes:
+`app/crates/fluid-lab/src/gpu/fluid.rs → GpuFluid::buffer_memory_bytes`,
+`app/crates/fluid-lab/src/gpu/mod.rs → GpuContext::render_target_memory_bytes`,
+and `app/crates/fluid-lab/src/gpu/diffuse.rs → DiffuseSystem::memory_bytes`.
+They do not include hidden driver allocations, pipeline caches, swapchain memory, or
+timing buffers while `timing_mb` is `null`.
 
 **GPU readback is throttled, never per-frame.** `record_resolve_and_maybe_copy` → `app/crates/fluid-lab/src/gpu/timing.rs → GpuTimers::record_resolve_and_maybe_copy` copies to the mappable buffer only every 20 frames, and only when no map is already `pending`. Normal frames skip the copy. This is the only allowed readback class.
 

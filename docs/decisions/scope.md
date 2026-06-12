@@ -135,6 +135,20 @@ state-capture, and UI complexity that should not be paid before the core is stab
 
 **Applies to** — `plans/roadmap.md`.
 
+## Config shareability starts as URL import, not preset management
+
+**Decision** — Shareable configuration starts with registry-backed URL settings:
+repeatable `?set=id:value` params validated by the Rust registry and applied once at
+boot. Named presets, file import/export controls, cloud sync, and account-level saved
+states remain deferred until the mutation/import path proves stable.
+
+**Why** — The important correctness boundary is that all imported values use the same
+typed validation, clamping, apply-class, and legacy-id policy as the live settings
+panel. A preset UI before that path is honest would create another config surface to
+maintain.
+
+**Applies to** — `architecture/settings.md`, `architecture/web-shell.md`.
+
 ## Portfolio honesty
 
 **Decision** — This is a portfolio-grade real-time fluid lab, not a validated

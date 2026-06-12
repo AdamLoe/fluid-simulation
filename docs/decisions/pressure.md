@@ -66,9 +66,9 @@ preconditioner.
 
 **Decision** — Pressure is solved only at Liquid cells. Air neighbours are Dirichlet
 `p = 0` (they count in the stencil contributing zero); Solid neighbours are Neumann
-(excluded from both the neighbour sum and the neighbour count). Pressure is zeroed
-each step (no warm-start). Determinism of the solve comes from fixed-order tree
-reductions in the CG dot products.
+(excluded from both the neighbour sum and the neighbour count). Runtime GPU pressure
+is zeroed each step (no warm-start). Determinism of the solve comes from fixed-order
+tree reductions in the CG dot products.
 
 **Why** — This is the standard free-surface/closed-tank treatment and keeps the
 operator SPD so CG applies. One-cell-thick solid walls make every Liquid cell
@@ -76,6 +76,25 @@ interior, so the divergence/pressure kernels need no bounds checks.
 
 **Note** — The CG solve is float; this is orthogonal to and does not weaken the
 integer-P2G determinism invariant (see `decisions/simulation.md`).
+
+**Applies to** — `architecture/pressure-solver.md`, `architecture/simulation.md`.
+
+## Host warm-start and tolerance support stays internal until the GPU path is measured
+
+**Decision** — The host CG reference may expose an internal optional initial-pressure
+and relative-residual-tolerance helper, but public/default runtime behavior remains
+fixed-iteration zero-start CG until GPU warm-start or early-exit work is implemented
+and measured.
+
+**Why** — The host helper proves the math and boundary convention without changing
+the shipped GPU loop, pressure-buffer clearing semantics, reset behavior, or the
+no-normal-frame-readback rule.
+
+**Code anchors** — `app/crates/fluid-lab/src/sim/pressure.rs → cg_solve`;
+`app/crates/fluid-lab/src/sim/pressure.rs → cg_solve_with_options`.
+
+**Revisit when** — GPU active gating, indirect dispatch, or pressure warm-start is
+wired behind settings and backed by profiler/capture evidence.
 
 **Applies to** — `architecture/pressure-solver.md`, `architecture/simulation.md`.
 

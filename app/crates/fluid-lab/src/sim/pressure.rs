@@ -188,32 +188,88 @@ fn dot(a: &[f32], b: &[f32]) -> f64 {
     acc
 }
 
-/// Solve the pressure Poisson system with **Conjugate Gradient** (unpreconditioned).
-/// Same `A`/`b` as `jacobi_solve` (`A p = b`, `b_c = −scale·div_c` over liquid),
-/// but Krylov convergence is O(N) iterations instead of Jacobi's O(N²) — it resolves
-/// the low-frequency (deep-column hydrostatic) mode that under-resolves a settled
-/// pool. The GPU WGSL port (`pressure` passes in `gpu/fluid.rs`) mirrors this math.
-pub fn cg_solve(
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CgSolveOptions<'a> {
+    pub initial_pressure: Option<&'a [f32]>,
+    pub relative_residual_tolerance: Option<f32>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CgSolveResult {
+    pub pressure: Vec<f32>,
+    pub iterations: usize,
+    pub initial_residual_sq: f64,
+    pub residual_sq: f64,
+}
+
+fn pressure_rhs(
     dims: &GridDims,
     cell_type: &[CellType],
     div: &[f32],
     params: ProjectionParams,
-    iters: usize,
 ) -> Vec<f32> {
     let scale = params.rhs_scale(dims.h);
     let n = dims.cell_count();
-
-    // b = -scale*div on liquid cells, 0 elsewhere.  p0 = 0  →  r0 = b - A·0 = b.
     let mut b = vec![0.0f32; n];
     for c in 0..n {
         if cell_type[c] == CellType::Liquid {
             b[c] = -scale * div[c];
         }
     }
+    b
+}
+
+fn residual_from_pressure(
+    dims: &GridDims,
+    cell_type: &[CellType],
+    b: &[f32],
+    p: &[f32],
+) -> Vec<f32> {
+    let ap = apply_poisson(dims, cell_type, p);
+    let mut r = vec![0.0f32; dims.cell_count()];
+    for c in 0..dims.cell_count() {
+        r[c] = b[c] - ap[c];
+    }
+    r
+}
+
+pub(crate) fn cg_solve_with_options(
+    dims: &GridDims,
+    cell_type: &[CellType],
+    div: &[f32],
+    params: ProjectionParams,
+    iters: usize,
+    options: CgSolveOptions<'_>,
+) -> CgSolveResult {
+    let n = dims.cell_count();
+    let b = pressure_rhs(dims, cell_type, div, params);
+
     let mut p = vec![0.0f32; n];
-    let mut r = b.clone();
+    if let Some(initial_pressure) = options.initial_pressure {
+        assert_eq!(initial_pressure.len(), n);
+        for c in 0..n {
+            if cell_type[c] == CellType::Liquid {
+                p[c] = initial_pressure[c];
+            }
+        }
+    }
+
+    let mut r = if options.initial_pressure.is_some() {
+        residual_from_pressure(dims, cell_type, &b, &p)
+    } else {
+        b.clone()
+    };
     let mut d = r.clone();
     let mut rs_old = dot(&r, &r);
+    let rs_initial = rs_old;
+    let residual_target = options
+        .relative_residual_tolerance
+        .filter(|tol| tol.is_finite() && *tol >= 0.0)
+        .map(|tol| {
+            let tol = tol as f64;
+            tol * tol * rs_initial
+        });
+    let mut iterations = 0usize;
 
     for _ in 0..iters {
         if rs_old <= 0.0 {
@@ -230,13 +286,50 @@ pub fn cg_solve(
             r[c] -= alpha * q[c];
         }
         let rs_new = dot(&r, &r);
+        iterations += 1;
+        if residual_target
+            .map(|target| rs_new <= target)
+            .unwrap_or(false)
+        {
+            rs_old = rs_new;
+            break;
+        }
         let beta = (rs_new / rs_old) as f32;
         for c in 0..n {
             d[c] = r[c] + beta * d[c];
         }
         rs_old = rs_new;
     }
-    p
+
+    CgSolveResult {
+        pressure: p,
+        iterations,
+        initial_residual_sq: rs_initial,
+        residual_sq: rs_old,
+    }
+}
+
+/// Solve the pressure Poisson system with **Conjugate Gradient** (unpreconditioned).
+/// Same `A`/`b` as `jacobi_solve` (`A p = b`, `b_c = −scale·div_c` over liquid),
+/// but Krylov convergence is O(N) iterations instead of Jacobi's O(N²) — it resolves
+/// the low-frequency (deep-column hydrostatic) mode that under-resolves a settled
+/// pool. The GPU WGSL port (`pressure` passes in `gpu/fluid.rs`) mirrors this math.
+pub fn cg_solve(
+    dims: &GridDims,
+    cell_type: &[CellType],
+    div: &[f32],
+    params: ProjectionParams,
+    iters: usize,
+) -> Vec<f32> {
+    cg_solve_with_options(
+        dims,
+        cell_type,
+        div,
+        params,
+        iters,
+        CgSolveOptions::default(),
+    )
+    .pressure
 }
 
 /// Subtract the pressure gradient from the face velocities. A face is updated only
@@ -366,6 +459,53 @@ mod tests {
     fn lcg(state: &mut u32) -> f32 {
         *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
         ((*state >> 8) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
+    }
+
+    struct DivergentTank {
+        dims: GridDims,
+        params: ProjectionParams,
+        cell_type: Vec<CellType>,
+        div: Vec<f32>,
+    }
+
+    fn divergent_16cubed_tank() -> DivergentTank {
+        let dims = GridDims::cubic(16, 1.0);
+        let params = ProjectionParams::unit();
+
+        let mut occ = vec![false; dims.cell_count()];
+        for k in 1..dims.nz - 1 {
+            for j in 1..dims.ny - 1 {
+                for i in 1..dims.nx - 1 {
+                    if j != dims.ny - 2 {
+                        occ[dims.cell_idx(i, j, k)] = true;
+                    }
+                }
+            }
+        }
+        let cell_type = classify_cells(&dims, &occ);
+
+        let mut st = 12345u32;
+        let mut u = vec![0.0f32; dims.u_count()];
+        let mut v = vec![0.0f32; dims.v_count()];
+        let mut w = vec![0.0f32; dims.w_count()];
+        for x in u.iter_mut() {
+            *x = lcg(&mut st);
+        }
+        for x in v.iter_mut() {
+            *x = lcg(&mut st);
+        }
+        for x in w.iter_mut() {
+            *x = lcg(&mut st);
+        }
+        zero_solid_faces(&dims, &cell_type, &mut u, &mut v, &mut w);
+
+        let div = compute_divergence(&dims, &u, &v, &w, &cell_type);
+        DivergentTank {
+            dims,
+            params,
+            cell_type,
+            div,
+        }
     }
 
     /// Build a 16³ tank: walls solid, top interior layer air (free surface),
@@ -555,6 +695,71 @@ mod tests {
         assert!(
             l2_cg <= l2_jac,
             "CG-40 should beat Jacobi-200: cg={l2_cg} jac={l2_jac}"
+        );
+    }
+
+    #[test]
+    fn cg_zero_initial_guess_matches_fixed_iteration_output() {
+        let case = divergent_16cubed_tank();
+        let zero = vec![0.0f32; case.dims.cell_count()];
+
+        let fixed = cg_solve(&case.dims, &case.cell_type, &case.div, case.params, 40);
+        let zero_initial = cg_solve_with_options(
+            &case.dims,
+            &case.cell_type,
+            &case.div,
+            case.params,
+            40,
+            CgSolveOptions {
+                initial_pressure: Some(&zero),
+                relative_residual_tolerance: None,
+            },
+        );
+
+        assert_eq!(zero_initial.iterations, 40);
+        assert_eq!(zero_initial.pressure, fixed);
+        assert!(zero_initial.initial_residual_sq > zero_initial.residual_sq);
+    }
+
+    #[test]
+    fn cg_warm_initial_guess_reaches_lower_residual_with_fewer_iterations() {
+        let case = divergent_16cubed_tank();
+
+        let zero_reference = cg_solve_with_options(
+            &case.dims,
+            &case.cell_type,
+            &case.div,
+            case.params,
+            12,
+            CgSolveOptions::default(),
+        );
+        let warm_initial = cg_solve_with_options(
+            &case.dims,
+            &case.cell_type,
+            &case.div,
+            case.params,
+            40,
+            CgSolveOptions {
+                initial_pressure: Some(&zero_reference.pressure),
+                relative_residual_tolerance: Some(1.0),
+            },
+        );
+
+        assert!(
+            warm_initial.iterations < zero_reference.iterations,
+            "warm solve should need fewer current-solve iterations: warm={} zero={}",
+            warm_initial.iterations,
+            zero_reference.iterations
+        );
+        assert!(
+            warm_initial.residual_sq <= zero_reference.residual_sq,
+            "warm solve should reach an equal/better residual: warm={} zero={}",
+            warm_initial.residual_sq,
+            zero_reference.residual_sq
+        );
+        assert!(
+            warm_initial.initial_residual_sq < zero_reference.initial_residual_sq,
+            "warm guess should start closer to the solution"
         );
     }
 

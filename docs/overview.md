@@ -19,7 +19,7 @@ vanilla JavaScript shell.
  │                    ▼                                          │
  │  WASM module (fluid-lab crate)                               │
  │    lib.rs  FluidApp — rAF frame loop, pointer modes (orbit/rotate/roll/slosh), bridge  │
- │     │  timestep accumulator (fixed dt=1/120, default cap 1)  │
+ │     │  timestep accumulator (fixed dt=1/120, default cap 2)  │
  │     ▼                                                        │
  │    per substep:  clear → mark/classify → P2G (i32 atomics)  │
  │       → normalize → forces → boundaries → divergence        │

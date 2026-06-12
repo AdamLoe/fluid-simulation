@@ -25,9 +25,26 @@ renders only visible durable rows and skips hidden scheduler/compatibility contr
 Optional fields include `tooltip`, `technical_tooltip`, `options`, and
 `slider_scale`.
 
-`set_setting(id, value)` rejects non-finite numbers, then validates and stores finite
-values through the registry. Live settings push directly into app/GPU state and
-return `true`; Reset/Reload settings store the value and return `false`.
+`set_setting_result_json(id, value)` is the honest mutation bridge. It rejects
+non-finite values, validates finite values through the registry, stores the clamped
+value when accepted, and returns:
+
+```json
+{"ok":true,"status":"applied","id":"physics.cfl","requested_id":"physics.cfl","requested_value":99,"stored_value":6,"clamped":true,"apply":"live","applied_live":true,"needs_reset":false,"needs_reload":false}
+```
+
+`status` is one of `applied`, `stored`, `unknown_id`, `non_finite_rejected`,
+`legacy_mapped`, or `legacy_ignored`. `apply` is `live`, `reset`, `reload`, or
+`null` when the id is unknown/non-finite. Live settings push directly into app/GPU
+state and set `applied_live`; Reset/Reload settings only store the value and report
+`needs_reset` / `needs_reload`. The old `set_setting(id, value) -> bool` remains a
+compatibility wrapper: `true` means the id was accepted as Live-class, not that every
+possible outcome was distinguishable.
+
+`physics.max_substeps` is the Reset-class frame catch-up cap. Its registry default is
+2, which lets a 60 Hz frame execute two 1/120 s physics substeps when the frame budget
+allows; the timestep controller still drops excess accumulated time when the natural
+substep count exceeds the cap.
 
 ## Functional tabs
 
@@ -43,8 +60,9 @@ The visible tabs are:
 - Sun & Reflection
 - Foam
 
-The web shell appends Profiler as a non-config tab. Caustics, Temporal, Wet Wall,
-Wall Fill, and Diffuse Water are not visible tabs.
+The web shell appends Profiler as a non-config tab. Removed render-feature tabs are
+not visible; `rendering.md` owns the removed-feature set, while this doc owns
+registry and legacy-id behavior.
 
 ## Render controls
 
@@ -70,8 +88,11 @@ settings.
 
 ## Legacy replay
 
-Old persisted settings must not break startup. `legacy_hidden_setting_id` accepts and
-ignores removed render ids:
+Old persisted settings must not break startup. JavaScript no longer mirrors a legacy
+allow-list; restore/import submits ids to the bridge and Rust decides whether to
+apply, map, ignore, or reject them. `rendering.md` owns which removed render feature
+families are absent; `legacy_hidden_setting_id` accepts and ignores their persisted
+ids:
 
 - `render.hero.mode_enabled` maps only the core optical toggles.
 - `render.hero.caustics.*`
@@ -85,17 +106,18 @@ ignores removed render ids:
   `render.diffuse.bubble_buoyancy`, `render.diffuse.spray_drag`,
   `render.diffuse.debug_view`
 
-`web/panels.js` mirrors that compatibility during localStorage restore. Future saves
-walk visible non-default rows only, so removed ids drop out naturally.
+Future saves walk visible non-default rows only, so removed ids drop out naturally.
 
 `render.particle_alpha` is also accepted as a legacy no-op redirect to
-`render.water_optical_density`.
+`render.water_optical_density`. It reports `legacy_ignored`, fixing old localStorage
+payloads that used to be skipped before Rust saw them.
 
 ## Gotchas
 
 - Registry lookups and mutations are by id, not row index.
-- `set_value_f64` rejects non-finite values, then clamps finite values to the row's
-  declared bounds.
+- `set_value_f64_result` rejects non-finite values, then clamps finite values to the
+  row's declared bounds and reports whether clamping happened. `set_value_f64` is the
+  legacy bool wrapper.
 - U32 settings round incoming f64s before storage; F32 settings cast to f32.
 - Hidden scheduler booleans (`interaction.auto_roll_enabled`,
   `interaction.wave_enabled`) are real settings but not visible durable preferences.

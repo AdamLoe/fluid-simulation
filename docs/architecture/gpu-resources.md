@@ -28,9 +28,8 @@ render targets, sub-renderers, timers, caps, and `GpuFluid` simulation state.
 - Particle-scale preflight/status - requested, estimated, actual, dispatch shape,
   storage limits, and `scale_status`.
 
-The current runtime has no GPU owners for caustics, temporal stabilization, wet
-walls, or dense wall fill. `GpuContext` has no fields for those systems, does not
-allocate their targets/buffers, and does not schedule their passes.
+Removed render feature ownership lives in `rendering.md`; `GpuContext` only owns
+targets and passes for the current renderer set.
 
 ## Render targets
 
@@ -45,8 +44,8 @@ Water mode owns these swapchain-sized targets:
 - `scene_color`: `Rgba16Float`
 - `scene_depth`: `R16Float`
 
-Removed targets are absent: no caustic ping/pong, no temporal history ping/pong, no
-wetness storage buffer, no wall occupancy atlas, and no `wallfill_mask` target.
+Removed render-feature targets are intentionally absent; see `rendering.md` for the
+canonical removed-feature list and legacy setting ids.
 
 `DiffuseSystem` owns a fixed-capacity particle storage buffer
 (`DIFFUSE_CAPACITY`, 48 bytes/particle, about 12.6 MB), a small counter buffer, and
@@ -82,7 +81,18 @@ log line describing the rejected request. Rebuilding `DiffuseSystem` clears foam
 particles. `GpuTimers` is also rebuilt when timestamp queries are available.
 
 `resize` recreates the surface-sized targets and rebinds smoothing/composite views.
-There are no temporal or caustic stable-view rebinding paths.
+
+## Surface loss and device loss
+
+`GpuContext::render` treats `CurrentSurfaceTexture::Lost` and
+`CurrentSurfaceTexture::Outdated` as recoverable surface events: it reconfigures the
+surface, recreates the swapchain-sized target views, rebinds composite/smoothing
+views, skips that frame, and lets the next frame continue. `Timeout` and `Occluded`
+also skip the frame. `Validation` returns an error to the caller.
+
+This is not full WebGPU device-loss recovery. The current app does not recreate the
+adapter/device/queue, rebuild every GPU owner after true device loss, or expose a
+status/reload path in the shell.
 
 ## Readbacks and counters
 
@@ -100,7 +110,11 @@ slots for spray/bubble. The profiler reports foam only while preserving the JSON
   read a field or use explicit layouts.
 - Particle-linear work uses one shared tiled dispatch shape.
 - Particle-scale preflight rejects impossible create/Reset attempts before allocation.
-- `gpu_buffer_mb` reports simulation buffers, not all render targets.
+- `gpu_buffer_mb` reports simulation buffers for legacy consumers. `stats_json`
+  also reports tracked categories (`sim_buffers_mb`, `render_targets_mb`,
+  `diffuse_mb`, `timing_mb`, `total_tracked_mb`), but those are allocation math
+  from known owners, not total driver-resident VRAM. `timing_mb` is `null` until
+  exact timing-buffer byte accounting is plumbed through the timing owner.
 - Timestamp-query is optional; timing paths guard on `Option<GpuTimers>`.
 
 ## Update when

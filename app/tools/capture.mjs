@@ -47,14 +47,193 @@ if (
 }
 const viewportWidth = parseInt(process.env.VIEWPORT_WIDTH || process.argv[7] || "1280", 10);
 const viewportHeight = parseInt(process.env.VIEWPORT_HEIGHT || process.argv[8] || "800", 10);
+const statsPollIntervalMs = Math.max(
+  50,
+  parseInt(process.env.STATS_POLL_INTERVAL_MS || "250", 10) || 250,
+);
+const timingRank = {
+  "cpu-wallclock": 0,
+  "coarse-fence": 1,
+  "gpu-timestamp": 2,
+};
+const assertions = readAssertions();
 
 const consoleLines = [];
 const pageErrors = [];
 const requestFailures = [];
+const traceSamples = [];
+let liquidCellsBaseline = null;
+let latestOccupiedCellDrift = null;
 
 function record(line) {
   consoleLines.push(line);
   console.log(line);
+}
+
+function envFlag(name) {
+  return /^(1|true|yes|on)$/i.test(process.env[name] || "");
+}
+
+function envNumber(name) {
+  if (!process.env[name]) return null;
+  const n = Number(process.env[name]);
+  if (!Number.isFinite(n)) throw new Error(`${name} must be a finite number`);
+  return n;
+}
+
+function readAssertions() {
+  const minTimingSource = process.env.FLUID_ASSERT_MIN_TIMING_SOURCE || "";
+  if (minTimingSource && timingRank[minTimingSource] == null) {
+    throw new Error(
+      "FLUID_ASSERT_MIN_TIMING_SOURCE must be cpu-wallclock, coarse-fence, or gpu-timestamp",
+    );
+  }
+  return {
+    minTimingSource,
+    maxFrameAvgMs: envNumber("FLUID_ASSERT_MAX_FRAME_AVG_MS"),
+    maxP95Ms: envNumber("FLUID_ASSERT_MAX_P95_MS"),
+    maxGpuSimMs: envNumber("FLUID_ASSERT_MAX_GPU_SIM_MS"),
+    maxGpuRenderMs: envNumber("FLUID_ASSERT_MAX_GPU_RENDER_MS"),
+    requireScaleStatusOk: envFlag("FLUID_ASSERT_SCALE_STATUS_OK"),
+    requireGpuStats: envFlag("FLUID_ASSERT_REQUIRE_GPU_STATS"),
+    requireGpuTimestamp: envFlag("FLUID_ASSERT_REQUIRE_GPU_TIMESTAMP"),
+  };
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function readPageStats(page) {
+  return await page.evaluate(() =>
+    window.__fluid ? JSON.parse(window.__fluid.stats_json()) : null,
+  );
+}
+
+function updateOccupiedCellDrift(stats) {
+  const liquidCells = stats?.gpu?.liquid_cells;
+  if (!Number.isFinite(liquidCells)) return null;
+  if (liquidCellsBaseline == null) {
+    liquidCellsBaseline = liquidCells;
+  }
+  const delta = liquidCells - liquidCellsBaseline;
+  const ratio =
+    liquidCellsBaseline > 0 ? delta / liquidCellsBaseline : liquidCells === 0 ? 0 : null;
+  latestOccupiedCellDrift = {
+    kind: "occupied_cell_count_proxy",
+    baseline_liquid_cells: liquidCellsBaseline,
+    final_liquid_cells: liquidCells,
+    delta_liquid_cells: delta,
+    ratio,
+    note: "Proxy from throttled gpu.liquid_cells samples; not physical volume.",
+  };
+  return latestOccupiedCellDrift;
+}
+
+function compactTraceSample(label, tMs, stats) {
+  const drift = updateOccupiedCellDrift(stats);
+  return {
+    label,
+    t_ms: tMs,
+    timing: stats?.timing ?? null,
+    frame_avg_ms: stats?.frame_avg_ms ?? null,
+    p95_ms: stats?.p95 ?? null,
+    scale_status: stats?.scale_status ?? null,
+    gpu_sim_ms: stats?.gpu?.sim_ms ?? null,
+    gpu_render_ms: stats?.gpu?.render_ms ?? null,
+    liquid_cells: stats?.gpu?.liquid_cells ?? null,
+    occupied_cell_drift_ratio: drift?.ratio ?? null,
+  };
+}
+
+async function pollStatsDuring(page, waitMs, label) {
+  const start = Date.now();
+  while (Date.now() - start < waitMs) {
+    const elapsed = Date.now() - start;
+    const stats = await readPageStats(page);
+    traceSamples.push(compactTraceSample(label, elapsed, stats));
+    await sleep(Math.min(statsPollIntervalMs, Math.max(0, waitMs - (Date.now() - start))));
+  }
+}
+
+function assertNumberAtMost(failures, stats, field, value, max, label) {
+  if (max == null) return;
+  if (!Number.isFinite(value)) {
+    failures.push(`${label} unavailable for ${field}`);
+  } else if (value > max) {
+    failures.push(`${field} ${value} exceeds ${max}`);
+  }
+}
+
+function requireGpuTimestampStats(failures, stats, reason) {
+  if (stats?.timing !== "gpu-timestamp") {
+    failures.push(
+      `${reason} requires stats.timing === "gpu-timestamp" (got ${stats?.timing ?? "null"})`,
+    );
+    return false;
+  }
+  if (stats.gpu == null) {
+    failures.push(`${reason} requires non-null stats.gpu`);
+    return false;
+  }
+  return true;
+}
+
+function collectAssertionFailures(stats) {
+  const failures = [];
+  if (assertions.minTimingSource) {
+    const actual = stats?.timing ?? "";
+    if (timingRank[actual] == null || timingRank[actual] < timingRank[assertions.minTimingSource]) {
+      failures.push(
+        `timing source ${actual || "null"} is below ${assertions.minTimingSource}`,
+      );
+    }
+  }
+  assertNumberAtMost(
+    failures,
+    stats,
+    "frame_avg_ms",
+    stats?.frame_avg_ms,
+    assertions.maxFrameAvgMs,
+    "frame average",
+  );
+  assertNumberAtMost(failures, stats, "p95", stats?.p95, assertions.maxP95Ms, "frame p95");
+  if (assertions.requireScaleStatusOk && stats?.scale_status !== "ok") {
+    failures.push(`scale_status ${stats?.scale_status ?? "null"} is not ok`);
+  }
+  if (assertions.requireGpuStats && stats?.gpu == null) {
+    failures.push("stats.gpu is null");
+  }
+  if (assertions.requireGpuTimestamp) {
+    requireGpuTimestampStats(failures, stats, "FLUID_ASSERT_REQUIRE_GPU_TIMESTAMP");
+  }
+  if (
+    assertions.maxGpuSimMs != null &&
+    requireGpuTimestampStats(failures, stats, "FLUID_ASSERT_MAX_GPU_SIM_MS")
+  ) {
+    assertNumberAtMost(
+      failures,
+      stats,
+      "gpu.sim_ms",
+      stats.gpu?.sim_ms,
+      assertions.maxGpuSimMs,
+      "GPU sim time",
+    );
+  }
+  if (
+    assertions.maxGpuRenderMs != null &&
+    requireGpuTimestampStats(failures, stats, "FLUID_ASSERT_MAX_GPU_RENDER_MS")
+  ) {
+    assertNumberAtMost(
+      failures,
+      stats,
+      "gpu.render_ms",
+      stats.gpu?.render_ms,
+      assertions.maxGpuRenderMs,
+      "GPU render time",
+    );
+  }
+  return failures;
 }
 
 const browser = await puppeteer.launch({
@@ -84,9 +263,10 @@ try {
     record("[requestfailed] " + line);
   });
 
+  const captureStartMs = Date.now();
   record("[harness] navigating to " + url);
   await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
-  await new Promise((r) => setTimeout(r, waitMs));
+  await sleep(waitMs);
 
   // Repeatable scale/profiler measurement path. Keep this separate from EVAL so
   // Windows cmd.exe quoting cannot silently drop the requested configuration.
@@ -114,16 +294,16 @@ try {
       { requestedParticles, detailed },
     );
     record("[harness] scale config -> " + JSON.stringify(applied));
-    await new Promise((r) =>
-      setTimeout(r, parseInt(process.env.MEASURE_WAIT || "12000", 10)),
-    );
+    liquidCellsBaseline = null;
+    latestOccupiedCellDrift = null;
+    await pollStatsDuring(page, parseInt(process.env.MEASURE_WAIT || "12000", 10), "measure");
   }
 
   // Optional: run a JS snippet in the page (e.g. drive reset) then settle.
   if (evalSnippet) {
     const out = await page.evaluate(evalSnippet);
     record("[harness] EVAL -> " + JSON.stringify(out));
-    await new Promise((r) => setTimeout(r, parseInt(process.env.EVAL_WAIT || "1500", 10)));
+    await sleep(parseInt(process.env.EVAL_WAIT || "1500", 10));
   }
 
   // Optional: drag across the canvas to exercise the orbit camera (DRAG=1).
@@ -140,7 +320,7 @@ try {
     }
     await page.mouse.up();
     record("[harness] performed orbit drag");
-    await new Promise((r) => setTimeout(r, 500));
+    await sleep(500);
   }
 
   // Optional: capture a frame sequence (for GIF encoding) into <outPng>.frames/.
@@ -152,7 +332,7 @@ try {
     if (process.env.SEQ_RESET) await page.evaluate("window.__fluid.reset()");
     for (let i = 0; i < n; i++) {
       await page.screenshot({ path: `${dir}/f_${String(i).padStart(4, "0")}.png` });
-      await new Promise((r) => setTimeout(r, interval));
+      await sleep(interval);
     }
     record("[harness] captured " + n + " frames to " + dir);
   }
@@ -167,12 +347,34 @@ try {
   }));
   record("[harness] navigator.gpu present: " + gpu.hasGpu);
   record("[harness] UA: " + gpu.ua);
-  const stats = await page.evaluate(() =>
-    window.__fluid ? JSON.parse(window.__fluid.stats_json()) : null,
-  );
+  const stats = await readPageStats(page);
+  traceSamples.push(compactTraceSample("final", Date.now() - captureStartMs, stats));
   record("[harness] stats_json: " + JSON.stringify(stats));
+  if (latestOccupiedCellDrift) {
+    record("[harness] occupied_cell_drift_proxy: " + JSON.stringify(latestOccupiedCellDrift));
+  }
 
   writeFileSync(outPng + ".console.txt", consoleLines.join("\n") + "\n");
+  writeFileSync(
+    outPng + ".trace.ndjson",
+    traceSamples.map((sample) => JSON.stringify(sample)).join("\n") + "\n",
+  );
+  writeFileSync(
+    outPng + ".stats.json",
+    JSON.stringify(
+      {
+        url,
+        out_png: outPng,
+        viewport: { width: viewportWidth, height: viewportHeight },
+        stats_poll_interval_ms: statsPollIntervalMs,
+        sample_count: traceSamples.length,
+        final_stats: stats,
+        occupied_cell_drift_proxy: latestOccupiedCellDrift,
+      },
+      null,
+      2,
+    ) + "\n",
+  );
   const smokeFailed = consoleLines.some((line) => line.includes("[fluid-lab][smoke] FAIL"));
   const failures = [];
   if (!gpu.hasGpu) failures.push("navigator.gpu is false");
@@ -180,6 +382,7 @@ try {
   if (pageErrors.length > 0) failures.push(`${pageErrors.length} page error(s)`);
   if (requestFailures.length > 0) failures.push(`${requestFailures.length} failed request(s)`);
   if (smokeFailed) failures.push("WebGPU smoke test failed");
+  failures.push(...collectAssertionFailures(stats));
   if (failures.length > 0) {
     throw new Error("capture failed acceptance checks: " + failures.join(", "));
   }

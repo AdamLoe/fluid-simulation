@@ -13,32 +13,6 @@ const HIDDEN_SETTING_IDS = new Set([
   "interaction.auto_roll_enabled",
   "interaction.wave_enabled",
 ]);
-const LEGACY_REPLAY_SETTING_IDS = new Set([
-  "render.hero.mode_enabled",
-  "render.hero.flat_water.fill_enabled",
-  "render.hero.flat_water.fill_strength",
-  "render.hero.flat_water.fill_slab",
-  "render.hero.flat_water.fill_supersample",
-  "render.hero.flat_water.fill_color_strength",
-  "render.hero.flat_water.fill_reflection_strength",
-  "render.hero.flat_water.fill_roughness",
-  "render.hero.flat_water.fill_absorption_strength",
-  "render.hero.flat_water.waterline_softness",
-  "render.diffuse.wall_impact_threshold",
-  "render.diffuse.wall_impact_gain",
-  "render.diffuse.spray_lifetime",
-  "render.diffuse.bubble_lifetime",
-  "render.diffuse.bubble_buoyancy",
-  "render.diffuse.spray_drag",
-  "render.diffuse.debug_view",
-]);
-
-function isLegacyReplaySettingId(id) {
-  return LEGACY_REPLAY_SETTING_IDS.has(id) ||
-    id.startsWith("render.hero.caustics.") ||
-    id.startsWith("render.hero.temporal.") ||
-    id.startsWith("render.hero.wet_wall.");
-}
 const DEFAULT_TAB = "scenario";
 const PROFILER_TAB = { id: "profiler", label: "Profiler", order: 1000, profiler: true };
 const TAB_ALIASES = {
@@ -94,6 +68,63 @@ function safeStatsJson(app) {
     console.warn("[panels] stats_json parse error:", e);
     return null;
   }
+}
+
+function setSetting(app, id, value) {
+  if (typeof app.set_setting_result_json === "function") {
+    try {
+      return JSON.parse(app.set_setting_result_json(id, value));
+    } catch (e) {
+      console.warn("[panels] set_setting_result_json parse error:", id, e);
+      return { ok: false, status: "bridge_result_parse_error", id, requested_id: id };
+    }
+  }
+
+  const live = app.set_setting(id, value);
+  return {
+    ok: live,
+    status: live ? "applied" : "stored_or_rejected",
+    id,
+    requested_id: id,
+    requested_value: value,
+    stored_value: value,
+    clamped: false,
+    apply: live ? "live" : null,
+    applied_live: live,
+    needs_reset: false,
+    needs_reload: false,
+  };
+}
+
+function applySettingEntries(app, entries, source = "settings") {
+  let needsReset = false;
+  let needsReload = false;
+  let applied = 0;
+  let rejected = 0;
+  let clamped = 0;
+
+  for (const [id, value] of entries) {
+    const numericValue = typeof value === "number" ? value : Number(value);
+    const result = setSetting(app, id, numericValue);
+    if (result.ok) {
+      applied += 1;
+      needsReset = needsReset || !!result.needs_reset;
+      needsReload = needsReload || !!result.needs_reload;
+      clamped += result.clamped ? 1 : 0;
+    } else {
+      rejected += 1;
+      console.warn(`[panels] ${source} setting rejected`, id, result.status);
+    }
+  }
+
+  if (needsReset && !app.reset()) {
+    console.warn(`[panels] ${source} reset-class settings were stored, but reset was rejected`);
+  }
+  if (needsReload) {
+    console.warn(`[panels] ${source} reload-class settings were stored; reload required`);
+  }
+
+  return { applied, rejected, clamped, needsReset, needsReload };
 }
 
 function fmt(n, decimals) {
@@ -292,8 +323,8 @@ function appendResetDefaultsAction(container, app, tabId, tabSettings) {
   resetBtn.addEventListener("click", () => {
     const pendingApplyIds = new Set();
     for (const s of tabSettings) {
-      app.set_setting(s.id, s.default);
-      if (s.apply !== "live") pendingApplyIds.add(s.id);
+      const result = setSetting(app, s.id, s.default);
+      if (result.needs_reset || result.needs_reload) pendingApplyIds.add(s.id);
     }
     persistCurrentSettings(app);
     buildConfigPanel(container, app, tabId, safeConfigJson(app), pendingApplyIds);
@@ -451,14 +482,16 @@ function buildSettingRow(s, app, showPending = false) {
     const v = clamp(isF32 ? parseFloat(rawVal) : parseInt(rawVal, 10), s.min, s.max);
     if (isNaN(v)) return;
 
-    const live = app.set_setting(s.id, v);
-    s.value = v;
-    slider.value = toSlider(v);
-    numInput.value = isF32 ? v.toFixed(decimals) : v;
+    const result = setSetting(app, s.id, v);
+    if (!result.ok) return;
+    const stored = typeof result.stored_value === "number" ? result.stored_value : v;
+    s.value = stored;
+    slider.value = toSlider(stored);
+    numInput.value = isF32 ? stored.toFixed(decimals) : stored;
     persistCurrentSettings(app);
 
-    if (!live && s.apply !== "live") {
-      showApplyBadge(badge, s.apply);
+    if (result.needs_reset || result.needs_reload) {
+      showApplyBadge(badge, result.apply || s.apply);
     } else {
       badge.style.display = "none";
     }
@@ -508,19 +541,21 @@ function buildEnumRow(s, app, row, labelWrap, showPending = false) {
   function applyChange(v) {
     v = clamp(parseInt(v, 10), s.min, s.max);
     if (isNaN(v)) return;
-    app.set_setting(s.id, v);
-    s.value = v;
-    select.value = String(v);
+    const result = setSetting(app, s.id, v);
+    if (!result.ok) return;
+    const stored = typeof result.stored_value === "number" ? result.stored_value : v;
+    s.value = stored;
+    select.value = String(stored);
     persistCurrentSettings(app);
 
     if (autoReset) {
       if (app.reset()) {
         badge.style.display = "none";
       } else {
-        showApplyBadge(badge, s.apply);
+        showApplyBadge(badge, result.apply || s.apply);
       }
-    } else if (s.apply !== "live") {
-      showApplyBadge(badge, s.apply);
+    } else if (result.needs_reset || result.needs_reload) {
+      showApplyBadge(badge, result.apply || s.apply);
     }
   }
 
@@ -563,9 +598,11 @@ function buildColorRow(s, app, row, labelWrap) {
   row.appendChild(badge);
 
   function applyChange(v) {
-    app.set_setting(s.id, v);
-    s.value = v;
-    picker.value = toHex(v);
+    const result = setSetting(app, s.id, v);
+    if (!result.ok) return;
+    const stored = typeof result.stored_value === "number" ? result.stored_value : v;
+    s.value = stored;
+    picker.value = toHex(stored);
     persistCurrentSettings(app);
     badge.style.display = "none";
   }
@@ -589,11 +626,20 @@ function buildProfilerPanel(container, app) {
   const scaleColor = scaleOk ? "#4ade80" : "#f87171";
   const fps = stats.fps;
   const fpsColor = fps == null ? "#6b7689" : fps >= 55 ? "#4ade80" : fps >= 30 ? "#fbbf24" : "#f87171";
+  const rtf = stats.real_time_factor;
+  const rtfColor = rtf == null ? "#6b7689" : rtf >= 0.95 ? "#4ade80" : rtf >= 0.5 ? "#fbbf24" : "#f87171";
+  const capColor = stats.substep_cap_hit ? "#f87171" : "#94a3b8";
+  const substepText = `${stats.substeps_this_frame ?? stats.substeps ?? "—"} / ${stats.natural_substeps ?? "—"}`;
+  const maxSubstepsText = stats.max_substeps != null ? `cap ${stats.max_substeps}` : "cap —";
 
   let html = `
     <div class="prof-row" style="align-items:baseline;padding-top:2px;padding-bottom:2px;">
       <span class="prof-key" style="font-size:12px;">FPS</span>
       <span class="prof-val" style="font-size:20px;font-weight:700;color:${fpsColor};line-height:1;">${fmt(fps, 0)}</span>
+    </div>
+    <div class="prof-row">
+      <span class="prof-key">Sim / real-time</span>
+      <span class="prof-val" style="color:${rtfColor}">${fmt(rtf, 2)}x &nbsp;<span class="prof-fps">(${fmt(stats.sim_advanced_ms, 2)} / ${fmt(stats.wall_raf_ms, 2)} ms)</span></span>
     </div>
     <div class="prof-divider"></div>
     <div class="prof-row prof-header-row">
@@ -647,8 +693,12 @@ function buildProfilerPanel(container, app) {
       <span class="prof-val">${fmt(stats.p50, 2)} / ${fmt(stats.p95, 2)} / ${fmt(stats.p99, 2)} ms</span>
     </div>
     <div class="prof-row">
-      <span class="prof-key">Substeps this frame</span>
-      <span class="prof-val">${stats.substeps_this_frame ?? stats.substeps ?? "—"}</span>
+      <span class="prof-key">Substeps exec / natural</span>
+      <span class="prof-val">${substepText} &nbsp;<span class="prof-fps" style="color:${capColor}">(${maxSubstepsText}${stats.substep_cap_hit ? ", hit" : ""})</span></span>
+    </div>
+    <div class="prof-row">
+      <span class="prof-key">Timestep policy</span>
+      <span class="prof-val">${stats.timestep_policy ?? "—"} &nbsp;<span class="prof-fps">(fixed ${fmt(stats.fixed_dt_ms, 3)} ms)</span></span>
     </div>
     <div class="prof-row">
       <span class="prof-key">Dropped sim time</span>
@@ -776,22 +826,7 @@ export function initPanels(app) {
 
   const stored = loadStoredConfig();
   if (Object.keys(stored).length > 0) {
-    const current = safeConfigJson(app);
-    const knownIds = new Set(current.map((s) => s.id));
-    let needsRebuild = false;
-    for (const [id, value] of Object.entries(stored)) {
-      if (knownIds.has(id) || isLegacyReplaySettingId(id)) {
-        try {
-          const live = app.set_setting(id, value);
-          if (!live) needsRebuild = true;
-        } catch (e) {
-          console.warn("[panels] failed to restore setting", id, e);
-        }
-      }
-    }
-    if (needsRebuild && !app.reset()) {
-      console.warn("[panels] restored reset-class settings, but reset was rejected");
-    }
+    applySettingEntries(app, Object.entries(stored), "localStorage");
   }
 
   const tabs = deriveTabs(safeConfigJson(app));
@@ -901,6 +936,21 @@ export function initPanels(app) {
     },
     rerenderModes() {
       if (isOpen && activeTab === "modes") renderActiveTab();
+    },
+    applySettings(entries, source = "import") {
+      const result = applySettingEntries(app, entries, source);
+      if (isOpen) renderActiveTab();
+      return result;
+    },
+    shareUrl() {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("set");
+      for (const s of safeConfigJson(app)) {
+        if (!HIDDEN_SETTING_IDS.has(s.id) && !isDefaultValue(s)) {
+          url.searchParams.append("set", `${s.id}:${s.value}`);
+        }
+      }
+      return url.toString();
     },
     isOpen() {
       return isOpen;

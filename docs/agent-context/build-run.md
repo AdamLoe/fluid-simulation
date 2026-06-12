@@ -129,13 +129,24 @@ default while providing later args. The optional `evalJs` arg is the CLI equival
 override the default `1280x800` viewport. Env hooks:
 `PARTICLES=N` applies an exact integer requested particle count and resets; invalid
 values or rejected resets fail the capture. `DETAILED=1` enables detailed GPU
-profiling before that reset; `MEASURE_WAIT=ms` controls the post-reset sample window.
+profiling before that reset; `MEASURE_WAIT=ms` controls the post-reset sample window
+and is polled into `<out>.trace.ndjson`. A final summary is written to
+`<out>.stats.json` with the raw final `stats_json` and the occupied-cell drift proxy.
 `DRAG=1` exercises the orbit camera; `EVAL=...` runs a JS
 expression against `window.__fluid`; `FRAMES` / `FRAME_INTERVAL` capture a sequence;
 `SEQ_RESET` exercises repeated resets. Every run records a final machine-readable
 `stats_json` line. A console line `hasGpu: false` means the screenshot is the
 `#unsupported` overlay, not the sim — a healthy boot instead logs `navigator.gpu present:
 true`, the smoke-test PASS, and `fluid init: n=64 …`.
+
+Opt-in assertion env vars:
+`FLUID_ASSERT_MIN_TIMING_SOURCE=cpu-wallclock|coarse-fence|gpu-timestamp`,
+`FLUID_ASSERT_MAX_FRAME_AVG_MS=N`, `FLUID_ASSERT_MAX_P95_MS=N`,
+`FLUID_ASSERT_MAX_GPU_SIM_MS=N`, `FLUID_ASSERT_MAX_GPU_RENDER_MS=N`,
+`FLUID_ASSERT_SCALE_STATUS_OK=1`, `FLUID_ASSERT_REQUIRE_GPU_STATS=1`, and
+`FLUID_ASSERT_REQUIRE_GPU_TIMESTAMP=1`. GPU sim/render budget assertions require
+`stats.timing === "gpu-timestamp"` and non-null `stats.gpu`; otherwise the harness
+fails honestly instead of applying those budgets to CPU fallback timing.
 
 ## Toolchain (pinned)
 

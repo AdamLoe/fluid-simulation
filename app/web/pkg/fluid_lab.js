@@ -211,10 +211,8 @@ export class FluidApp {
         wasm.fluidapp_set_pressure_enabled(this.__wbg_ptr, enabled);
     }
     /**
-     * Set a setting by id from a JS number (f64).
-     * For Live settings pushes the change to the GPU immediately and returns true.
-     * For Reset/Reload settings only the registry value is updated and returns false
-     * (caller should show a "needs reset / needs reload" hint).
+     * Legacy boolean setting bridge. True still means "accepted and live-class";
+     * callers that need honest mutation details should use set_setting_result_json.
      * @param {string} id
      * @param {number} value
      * @returns {boolean}
@@ -226,6 +224,28 @@ export class FluidApp {
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.fluidapp_set_setting(this.__wbg_ptr, ptr0, len0, value);
         return ret !== 0;
+    }
+    /**
+     * Set a setting by id from a JS number and return an honest JSON result.
+     * @param {string} id
+     * @param {number} value
+     * @returns {string}
+     */
+    set_setting_result_json(id, value) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
+            _assertNum(this.__wbg_ptr);
+            const ptr0 = passStringToWasm0(id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.fluidapp_set_setting_result_json(this.__wbg_ptr, ptr0, len0, value);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Toggle the grid-slice debug view (XY cross-section at k=n/2).
@@ -1736,17 +1756,17 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, getArrayU8FromWasm0(arg2, arg3), arg4, arg5);
         }, arguments); },
         __wbindgen_cast_0000000000000001: function() { return logError(function (arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 208, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 209, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hf5350740cdbd877e);
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000002: function() { return logError(function (arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 382, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 383, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hb0274228f4a4e50a);
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000003: function() { return logError(function (arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 207, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 208, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h328d18e0122974dd);
             return ret;
         }, arguments); },

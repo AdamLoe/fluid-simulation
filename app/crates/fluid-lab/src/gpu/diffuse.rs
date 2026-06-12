@@ -312,6 +312,14 @@ impl DiffuseSystem {
         &self.counters
     }
 
+    pub fn memory_bytes(&self) -> u64 {
+        let particles = (DIFFUSE_CAPACITY as u64) * (VEC4S_PER_PARTICLE as u64) * 16;
+        let counters = (COUNTERS as u64) * 4;
+        let uniforms = std::mem::size_of::<DiffuseUniform>() as u64
+            + std::mem::size_of::<DiffuseCamera>() as u64;
+        particles + counters + uniforms
+    }
+
     /// Run one emit + update step (own command encoder, outside the timestamped sim
     /// passes). Resets the per-frame counters first (the ring cursor persists).
     pub fn record_step(

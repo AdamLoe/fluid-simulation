@@ -97,10 +97,18 @@ pub struct Profiler {
 #[derive(Clone, Copy, Default)]
 struct TimestepStats {
     substeps_this_frame: u32,
+    fixed_dt_ms: f32,
+    max_substeps: u32,
+    natural_substeps: u32,
+    substep_cap_hit: bool,
     accumulated_before_ms: f32,
     accumulated_after_ms: f32,
     dropped_this_frame_ms: f32,
     total_dropped_ms: f32,
+    sim_advanced_ms: f32,
+    wall_raf_ms: f32,
+    real_time_factor: f32,
+    policy_label: &'static str,
 }
 
 /// Per-frame structural facts about the sim (grid/particle/memory/dispatch).
@@ -110,6 +118,7 @@ struct FrameFacts {
     particles: u32,
     grid_res: [u32; 3],
     buffer_bytes: u64,
+    memory: crate::gpu::GpuMemoryStats,
     dispatches_per_substep: u32,
     requested_particles: u32,
     estimated_particles: u32,
@@ -175,10 +184,18 @@ impl Profiler {
     ) {
         self.timestep = TimestepStats {
             substeps_this_frame: stats.substeps,
+            fixed_dt_ms: stats.fixed_dt * 1000.0,
+            max_substeps: stats.max_substeps,
+            natural_substeps: stats.natural_substeps,
+            substep_cap_hit: stats.substep_cap_hit,
             accumulated_before_ms: stats.accumulated_before * 1000.0,
             accumulated_after_ms: stats.accumulated_after * 1000.0,
             dropped_this_frame_ms: stats.dropped_this_frame * 1000.0,
             total_dropped_ms: total_dropped * 1000.0,
+            sim_advanced_ms: stats.sim_advanced * 1000.0,
+            wall_raf_ms: stats.wall_dt * 1000.0,
+            real_time_factor: stats.real_time_factor,
+            policy_label: stats.policy_label,
         };
     }
 
@@ -204,6 +221,7 @@ impl Profiler {
             particles,
             grid_res,
             buffer_bytes,
+            memory: crate::gpu::latest_memory_stats(),
             dispatches_per_substep,
             requested_particles,
             estimated_particles,
@@ -500,11 +518,30 @@ impl Profiler {
             particles
         };
         let gpu_buffer_mb = format!("{:.1}", f.buffer_bytes as f64 / 1.0e6);
+        let sim_buffers_bytes = if f.memory.sim_buffers_bytes > 0 {
+            f.memory.sim_buffers_bytes
+        } else {
+            f.buffer_bytes
+        };
+        let sim_buffers_mb = format!("{:.1}", sim_buffers_bytes as f64 / 1.0e6);
+        let render_targets_mb = format!("{:.1}", f.memory.render_targets_bytes as f64 / 1.0e6);
+        let diffuse_mb = format!("{:.1}", f.memory.diffuse_bytes as f64 / 1.0e6);
+        let timing_mb = if f.memory.timing_bytes > 0 {
+            format!("{:.1}", f.memory.timing_bytes as f64 / 1.0e6)
+        } else {
+            "null".to_string()
+        };
+        let total_tracked_bytes = if f.memory.total_tracked_bytes > 0 {
+            f.memory.total_tracked_bytes
+        } else {
+            sim_buffers_bytes
+        };
+        let total_tracked_mb = format!("{:.1}", total_tracked_bytes as f64 / 1.0e6);
         let dispatches_per_substep = f.dispatches_per_substep;
         let dispatches_this_frame = dispatches_per_substep * ts.substeps_this_frame;
 
         format!(
-            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"particle_dispatch_groups_x":{pdgx},"particle_dispatch_groups_y":{pdgy},"particle_dispatch_capacity":{pdcap},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"substeps_this_frame":{stf},"accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
+            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"particle_dispatch_groups_x":{pdgx},"particle_dispatch_groups_y":{pdgy},"particle_dispatch_capacity":{pdcap},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"sim_buffers_mb":{sim_mb},"render_targets_mb":{rt_mb},"diffuse_mb":{diffuse_mb},"timing_mb":{timing_mb},"total_tracked_mb":{total_mb},"substeps_this_frame":{stf},"fixed_dt_ms":{fdt},"max_substeps":{max_substeps},"natural_substeps":{natural_substeps},"substep_cap_hit":{cap_hit},"sim_advanced_ms":{sim_adv},"wall_raf_ms":{wall_raf},"real_time_factor":{rtf},"timestep_policy":"{policy}","accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
             timing = self.timing_source.label(),
             sample_count = samples.len(),
             avg = fmt_ms(avg),
@@ -529,7 +566,20 @@ impl Profiler {
             pressure_iterations = pressure_iterations,
             render_mode = render_mode,
             gmb = gpu_buffer_mb,
+            sim_mb = sim_buffers_mb,
+            rt_mb = render_targets_mb,
+            diffuse_mb = diffuse_mb,
+            timing_mb = timing_mb,
+            total_mb = total_tracked_mb,
             stf = ts.substeps_this_frame,
+            fdt = fmt_ms(ts.fixed_dt_ms as f64),
+            max_substeps = ts.max_substeps,
+            natural_substeps = ts.natural_substeps,
+            cap_hit = ts.substep_cap_hit,
+            sim_adv = fmt_ms(ts.sim_advanced_ms as f64),
+            wall_raf = fmt_ms(ts.wall_raf_ms as f64),
+            rtf = fmt_ratio(ts.real_time_factor as f64),
+            policy = ts.policy_label,
             ab = fmt_ms(ts.accumulated_before_ms as f64),
             aa = fmt_ms(ts.accumulated_after_ms as f64),
             drop = fmt_ms(ts.dropped_this_frame_ms as f64),
@@ -547,6 +597,16 @@ fn fmt_ms(v: f64) -> String {
         return "0".to_string();
     }
     let s = format!("{:.3}", v);
+    let s = s.trim_end_matches('0');
+    let s = s.trim_end_matches('.');
+    s.to_string()
+}
+
+fn fmt_ratio(v: f64) -> String {
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    let s = format!("{:.4}", v);
     let s = s.trim_end_matches('0');
     let s = s.trim_end_matches('.');
     s.to_string()

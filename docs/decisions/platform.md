@@ -76,6 +76,24 @@ harness. Reconciling the two paths is deferred polish.
 
 **Applies to** — `architecture/web-shell.md`, `agent-context/build-run.md`.
 
+## Surface loss is local; true device loss needs a user-visible recovery path
+
+**Decision** — Recover `CurrentSurfaceTexture::Lost` / `Outdated` by recreating
+swapchain-sized render targets, but do not claim full WebGPU device-loss recovery
+until the app has a status and reload path.
+
+**Why** — Surface reacquisition can be handled inside the existing `GpuContext`; true
+device loss invalidates broader GPU state and needs a product-visible failure mode
+instead of silently pretending the frame loop can continue.
+
+**Tradeoffs** — The current browser path can continue across ordinary surface
+outdated/lost events, while real device loss remains a reload-worthy platform gap.
+
+**Revisit when** — The shell exposes a clear GPU-status/reload UI and the Rust side
+can report device-lost state without conflating it with surface resize/reconfigure.
+
+**Applies to** — `architecture/gpu-resources.md`, `architecture/web-shell.md`.
+
 ## See also
 
 - [`../architecture/web-shell.md`](../architecture/web-shell.md) · [`../architecture/gpu-resources.md`](../architecture/gpu-resources.md)

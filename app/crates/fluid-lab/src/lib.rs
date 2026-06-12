@@ -351,18 +351,16 @@ impl FluidApp {
     #[wasm_bindgen]
     pub fn frame(&mut self, render_dt_ms: f64) {
         let render_dt_ms = finite_or_zero_f64(render_dt_ms).max(0.0);
+        let render_dt_s = (render_dt_ms as f32) / 1000.0;
         self.profiler.begin_frame(render_dt_ms);
 
         // --- update (logical) ---
         self.profiler.scope_begin("update");
         let n_substeps: u32 = match self.run_state {
             RunState::Running => {
-                let interaction_dt_s =
-                    ((render_dt_ms as f32) / 1000.0).clamp(0.0, INTERACTION_MAX_DT_S);
+                let interaction_dt_s = render_dt_s.clamp(0.0, INTERACTION_MAX_DT_S);
                 self.update_interactions(interaction_dt_s);
-                let n = self
-                    .timestep
-                    .steps_for_frame((render_dt_ms as f32) / 1000.0);
+                let n = self.timestep.steps_for_frame(render_dt_s);
                 if n > 0 {
                     self.profiler.scope_begin("simulation");
                     self.gpu.step(n);
@@ -380,8 +378,10 @@ impl FluidApp {
                     self.gpu.step(1);
                     self.profiler.scope_end("simulation");
                     self.tick += 1;
+                    self.timestep.record_manual_steps(render_dt_s, 1);
                     1
                 } else {
+                    self.timestep.record_idle_frame(render_dt_s);
                     0
                 }
             }
@@ -620,30 +620,47 @@ impl FluidApp {
         self.settings.config_json()
     }
 
-    /// Set a setting by id from a JS number (f64).
-    /// For Live settings pushes the change to the GPU immediately and returns true.
-    /// For Reset/Reload settings only the registry value is updated and returns false
-    /// (caller should show a "needs reset / needs reload" hint).
+    /// Legacy boolean setting bridge. True still means "accepted and live-class";
+    /// callers that need honest mutation details should use set_setting_result_json.
     #[wasm_bindgen]
     pub fn set_setting(&mut self, id: &str, value: f64) -> bool {
-        if !value.is_finite() {
-            warn(&format!("[fluid-lab] ignored non-finite setting {id}"));
-            return false;
+        let result = self.mutate_setting(id, value);
+        result.accepted() && result.apply == Some(settings::ApplyClass::Live)
+    }
+
+    /// Set a setting by id from a JS number and return an honest JSON result.
+    #[wasm_bindgen]
+    pub fn set_setting_result_json(&mut self, id: &str, value: f64) -> String {
+        self.mutate_setting(id, value).to_json()
+    }
+
+    fn mutate_setting(&mut self, id: &str, value: f64) -> settings::SettingMutationResult {
+        let mut result = self.settings.set_value_f64_result(id, value);
+        match result.status {
+            settings::MutationStatus::UnknownId => return result,
+            settings::MutationStatus::NonFiniteRejected => {
+                warn(&format!("[fluid-lab] ignored non-finite setting {id}"));
+                return result;
+            }
+            settings::MutationStatus::LegacyIgnored => {
+                if id == "render.particle_alpha" {
+                    log("[fluid-lab] ignored legacy render.particle_alpha; use render.water_optical_density");
+                } else {
+                    log(&format!("[fluid-lab] ignored legacy setting {id}"));
+                }
+                return result;
+            }
+            settings::MutationStatus::Applied | settings::MutationStatus::LegacyMapped => {}
+            settings::MutationStatus::Stored => return result,
         }
-        if id == "render.particle_alpha" {
-            log(
-                "[fluid-lab] ignored legacy render.particle_alpha; use render.water_optical_density",
-            );
-            return true;
-        }
-        if !self.settings.set_value_f64(id, value) {
-            return false; // unknown id
-        }
-        let value = self
-            .settings
-            .get(id)
-            .map(|s| s.value_as_f64())
-            .unwrap_or(value);
+
+        let canonical_id = result.id;
+        let stored_value = result.stored_value.unwrap_or(value);
+        result.applied_live = self.apply_live_setting(canonical_id, stored_value);
+        result
+    }
+
+    fn apply_live_setting(&mut self, id: &str, value: f64) -> bool {
         // Hero-water (Water tab) settings are all Live: rebuild the single
         // HeroParams snapshot and push it to the composite + environment, instead
         // of plumbing each id individually.
@@ -659,137 +676,135 @@ impl FluidApp {
             log(&format!("[fluid-lab] live {id} = {value}"));
             return true;
         }
-        match self.settings.apply_class_str(id) {
-            Some("live") => {
-                match id {
-                    "physics.gravity" => {
-                        self.push_gravity();
-                        log(&format!("[fluid-lab] live gravity = {value}"));
-                    }
-                    "physics.flip_blend" => {
-                        self.gpu.set_flip_blend(value as f32);
-                        log(&format!("[fluid-lab] live flip_blend = {value}"));
-                    }
-                    "physics.wall_friction" => {
-                        self.gpu.set_wall_friction(value as f32);
-                        log(&format!("[fluid-lab] live wall_friction = {value}"));
-                    }
-                    "physics.rest_density" => {
-                        self.gpu.set_rest_density(value as f32);
-                        log(&format!("[fluid-lab] live rest_density = {value}"));
-                    }
-                    "physics.volume_stiffness" => {
-                        self.gpu.set_volume_stiffness(value as f32);
-                        log(&format!("[fluid-lab] live volume_stiffness = {value}"));
-                    }
-                    "physics.drift_clamp" => {
-                        self.gpu.set_drift_clamp(value as f32);
-                        log(&format!("[fluid-lab] live drift_clamp = {value}"));
-                    }
-                    "physics.cfl" => {
-                        self.gpu.set_cfl(value as f32);
-                        log(&format!("[fluid-lab] live cfl = {value}"));
-                    }
-                    "classify.liquid_threshold" => {
-                        self.gpu.set_liquid_threshold(value as u32);
-                        log(&format!("[fluid-lab] live liquid_threshold = {value}"));
-                    }
-                    "classify.surface_dilation" => {
-                        self.gpu.set_surface_dilation(value as u32);
-                        log(&format!("[fluid-lab] live surface_dilation = {value}"));
-                    }
-                    "solver.pressure_iterations" => {
-                        self.gpu.set_pressure_iters(value as u32);
-                        log(&format!("[fluid-lab] live pressure_iterations = {value}"));
-                    }
-                    "render.particle_size" => {
-                        self.gpu.set_particle_size(value as f32);
-                        log(&format!("[fluid-lab] live particle_size = {value}"));
-                    }
-                    "render.speed_scale" => {
-                        self.gpu.set_speed_scale(value as f32);
-                        log(&format!("[fluid-lab] live speed_scale = {value}"));
-                    }
-                    "render.particle_view" => {
-                        let view = self.settings.particle_view();
-                        self.gpu.set_particle_view(view);
-                        log(&format!("[fluid-lab] live particle_view = {view}"));
-                    }
-                    "render.particle_slow_color" => {
-                        self.gpu.set_particle_slow_color(unpack_rgb(value as u32));
-                    }
-                    "render.particle_fast_color" => {
-                        self.gpu.set_particle_fast_color(unpack_rgb(value as u32));
-                    }
-                    "render.water_optical_density" => {
-                        self.gpu.set_water_optical_density(value as f32);
-                        log(&format!("[fluid-lab] live water_optical_density = {value}"));
-                    }
-                    "render.particle_edge" => {
-                        self.gpu.set_particle_edge(value as f32);
-                    }
-                    "render.particle_shading" => {
-                        self.gpu.set_particle_shading(value as f32);
-                    }
-                    "render.whitewater_strength" => {
-                        self.gpu.set_whitewater_strength(value as f32);
-                    }
-                    "render.whitewater_threshold" => {
-                        self.gpu.set_whitewater_threshold(value as f32);
-                    }
-                    "render.whitewater_softness" => {
-                        self.gpu.set_whitewater_softness(value as f32);
-                    }
-                    "render.fps_target" => {
-                        // FPS target is consumed by the JS rAF loop; no GPU dispatch needed.
-                        log(&format!("[fluid-lab] live fps_target = {value}"));
-                    }
-                    "interaction.auto_roll_enabled" => {
-                        log(&format!(
-                            "[fluid-lab] live auto_roll_enabled = {}",
-                            value as u32 != 0
-                        ));
-                    }
-                    "interaction.auto_roll_strength" => {
-                        log(&format!("[fluid-lab] live auto_roll_strength = {value}"));
-                    }
-                    "interaction.auto_roll_cadence" => {
-                        log(&format!("[fluid-lab] live auto_roll_cadence = {value}"));
-                    }
-                    "interaction.wave_enabled" => {
-                        log(&format!(
-                            "[fluid-lab] live wave_enabled = {}",
-                            value as u32 != 0
-                        ));
-                    }
-                    "interaction.wave_strength" => {
-                        log(&format!("[fluid-lab] live wave_strength = {value}"));
-                    }
-                    "interaction.wave_frequency" => {
-                        log(&format!("[fluid-lab] live wave_frequency = {value}"));
-                    }
-                    "camera.rot_x" => {
-                        self.camera.set_pitch(value as f32);
-                        log(&format!("[fluid-lab] live camera.rot_x = {value}"));
-                    }
-                    "camera.rot_y" => {
-                        self.camera.set_yaw(value as f32);
-                        log(&format!("[fluid-lab] live camera.rot_y = {value}"));
-                    }
-                    "camera.rot_z" => {
-                        self.camera.set_roll(value as f32);
-                        log(&format!("[fluid-lab] live camera.rot_z = {value}"));
-                    }
-                    "camera.distance" => {
-                        self.camera.set_distance(value as f32);
-                        log(&format!("[fluid-lab] live camera.distance = {value}"));
-                    }
-                    _ => {}
-                }
-                true
-            }
-            _ => false,
+        if self.settings.apply_class_str(id) != Some("live") {
+            return false;
         }
+        match id {
+            "physics.gravity" => {
+                self.push_gravity();
+                log(&format!("[fluid-lab] live gravity = {value}"));
+            }
+            "physics.flip_blend" => {
+                self.gpu.set_flip_blend(value as f32);
+                log(&format!("[fluid-lab] live flip_blend = {value}"));
+            }
+            "physics.wall_friction" => {
+                self.gpu.set_wall_friction(value as f32);
+                log(&format!("[fluid-lab] live wall_friction = {value}"));
+            }
+            "physics.rest_density" => {
+                self.gpu.set_rest_density(value as f32);
+                log(&format!("[fluid-lab] live rest_density = {value}"));
+            }
+            "physics.volume_stiffness" => {
+                self.gpu.set_volume_stiffness(value as f32);
+                log(&format!("[fluid-lab] live volume_stiffness = {value}"));
+            }
+            "physics.drift_clamp" => {
+                self.gpu.set_drift_clamp(value as f32);
+                log(&format!("[fluid-lab] live drift_clamp = {value}"));
+            }
+            "physics.cfl" => {
+                self.gpu.set_cfl(value as f32);
+                log(&format!("[fluid-lab] live cfl = {value}"));
+            }
+            "classify.liquid_threshold" => {
+                self.gpu.set_liquid_threshold(value as u32);
+                log(&format!("[fluid-lab] live liquid_threshold = {value}"));
+            }
+            "classify.surface_dilation" => {
+                self.gpu.set_surface_dilation(value as u32);
+                log(&format!("[fluid-lab] live surface_dilation = {value}"));
+            }
+            "solver.pressure_iterations" => {
+                self.gpu.set_pressure_iters(value as u32);
+                log(&format!("[fluid-lab] live pressure_iterations = {value}"));
+            }
+            "render.particle_size" => {
+                self.gpu.set_particle_size(value as f32);
+                log(&format!("[fluid-lab] live particle_size = {value}"));
+            }
+            "render.speed_scale" => {
+                self.gpu.set_speed_scale(value as f32);
+                log(&format!("[fluid-lab] live speed_scale = {value}"));
+            }
+            "render.particle_view" => {
+                let view = self.settings.particle_view();
+                self.gpu.set_particle_view(view);
+                log(&format!("[fluid-lab] live particle_view = {view}"));
+            }
+            "render.particle_slow_color" => {
+                self.gpu.set_particle_slow_color(unpack_rgb(value as u32));
+            }
+            "render.particle_fast_color" => {
+                self.gpu.set_particle_fast_color(unpack_rgb(value as u32));
+            }
+            "render.water_optical_density" => {
+                self.gpu.set_water_optical_density(value as f32);
+                log(&format!("[fluid-lab] live water_optical_density = {value}"));
+            }
+            "render.particle_edge" => {
+                self.gpu.set_particle_edge(value as f32);
+            }
+            "render.particle_shading" => {
+                self.gpu.set_particle_shading(value as f32);
+            }
+            "render.whitewater_strength" => {
+                self.gpu.set_whitewater_strength(value as f32);
+            }
+            "render.whitewater_threshold" => {
+                self.gpu.set_whitewater_threshold(value as f32);
+            }
+            "render.whitewater_softness" => {
+                self.gpu.set_whitewater_softness(value as f32);
+            }
+            "render.fps_target" => {
+                // FPS target is consumed by the JS rAF loop; no GPU dispatch needed.
+                log(&format!("[fluid-lab] live fps_target = {value}"));
+            }
+            "interaction.auto_roll_enabled" => {
+                log(&format!(
+                    "[fluid-lab] live auto_roll_enabled = {}",
+                    value as u32 != 0
+                ));
+            }
+            "interaction.auto_roll_strength" => {
+                log(&format!("[fluid-lab] live auto_roll_strength = {value}"));
+            }
+            "interaction.auto_roll_cadence" => {
+                log(&format!("[fluid-lab] live auto_roll_cadence = {value}"));
+            }
+            "interaction.wave_enabled" => {
+                log(&format!(
+                    "[fluid-lab] live wave_enabled = {}",
+                    value as u32 != 0
+                ));
+            }
+            "interaction.wave_strength" => {
+                log(&format!("[fluid-lab] live wave_strength = {value}"));
+            }
+            "interaction.wave_frequency" => {
+                log(&format!("[fluid-lab] live wave_frequency = {value}"));
+            }
+            "camera.rot_x" => {
+                self.camera.set_pitch(value as f32);
+                log(&format!("[fluid-lab] live camera.rot_x = {value}"));
+            }
+            "camera.rot_y" => {
+                self.camera.set_yaw(value as f32);
+                log(&format!("[fluid-lab] live camera.rot_y = {value}"));
+            }
+            "camera.rot_z" => {
+                self.camera.set_roll(value as f32);
+                log(&format!("[fluid-lab] live camera.rot_z = {value}"));
+            }
+            "camera.distance" => {
+                self.camera.set_distance(value as f32);
+                log(&format!("[fluid-lab] live camera.distance = {value}"));
+            }
+            _ => {}
+        }
+        true
     }
 
     /// Return the current FPS target so the JS rAF loop can throttle itself.

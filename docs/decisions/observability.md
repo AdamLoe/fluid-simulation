@@ -71,6 +71,26 @@ the eventual UI honest.
 **Applies to** — `architecture/settings.md`, `architecture/gpu-resources.md` (the
 `recreate_fluid` rebuild path Reset settings trigger).
 
+## Setting writes must report their real outcome
+
+**Decision** — The JS bridge exposes an honest setting-mutation result instead of
+forcing callers to infer meaning from a boolean. Accepted finite values report the
+requested value, stored value, whether validation clamped it, the registry apply
+class, whether a Live side effect was pushed, and whether reset/reload is required.
+Unknown ids and non-finite values are rejected distinctly. Legacy ids report
+`legacy_mapped` or `legacy_ignored` instead of disappearing in JavaScript.
+
+**Why** — A single boolean hid important differences: clamped values looked
+unmodified, Reset/Reload settings looked like failures, and stale saved ids could
+drift between JS and Rust. The registry is the only durable config authority, so the
+bridge result needs to carry the registry's answer all the way to persistence, URL
+import, and UI badges.
+
+**Code anchors** — `crates/fluid-lab/src/settings/mod.rs → SettingMutationResult`;
+`crates/fluid-lab/src/lib.rs → set_setting_result_json`.
+
+**Applies to** — `architecture/settings.md`, `architecture/web-shell.md`.
+
 ## The profiler is hierarchical, config-tagged, and timing-source honest from the start
 
 **Decision** — The profiler supports nested scopes (Frame → Simulation → substep →
@@ -98,6 +118,20 @@ minimum-honest fallback and **never fabricates per-pass numbers**.
 **Code anchors** — `app/crates/fluid-lab/src/gpu/timing.rs → GpuTimers`, `FINE_SECTIONS`, `CG_CATS`, `CG_BUCKET`; `app/crates/fluid-lab/src/settings/mod.rs → dev.detailed_gpu_profiling`.
 
 **Applies to** — `architecture/profiler.md`, `architecture/gpu-resources.md`.
+
+## Capture gates assert only source-honest observability fields
+
+**Decision** — The browser capture harness may fail builds on explicit stats budgets
+and scale status, but timestamp-specific GPU pass budgets only apply to final samples
+whose `timing` is `gpu-timestamp` and whose `gpu` block is non-null.
+
+**Why** — Acceptance gates should turn profiler data into repeatable signals without
+smuggling in fake precision on adapters that expose only the CPU fallback.
+
+**Code anchors** — `app/tools/capture.mjs → collectAssertionFailures`;
+`app/crates/fluid-lab/src/profiler/mod.rs → Profiler::stats_json`.
+
+**Applies to** — `architecture/profiler.md`.
 
 ## Hot-pass thresholds are configurable; 100ms is a stall threshold, not the only one
 

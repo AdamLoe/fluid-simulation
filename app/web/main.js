@@ -61,6 +61,21 @@ function finiteParam(params, name) {
   return Number.isFinite(value) ? value : null;
 }
 
+function parseRegistryUrlSettings(params) {
+  const entries = [];
+  for (const raw of params.getAll("set")) {
+    const sep = raw.indexOf(":");
+    if (sep <= 0 || sep === raw.length - 1) {
+      console.warn("[fluid-lab] ignored malformed set URL param:", raw);
+      continue;
+    }
+    const id = raw.slice(0, sep);
+    const value = Number(raw.slice(sep + 1));
+    entries.push([id, value]);
+  }
+  return entries;
+}
+
 function setPauseButtonState(button, paused) {
   button.setAttribute("aria-label", paused ? "Resume simulation" : "Pause simulation");
   button.title = paused ? "Resume simulation" : "Pause simulation";
@@ -104,8 +119,9 @@ async function main() {
   const panelApi = initPanels(app);
   const params = new URLSearchParams(location.search);
   if (params.get("pressure") === "off") app.set_pressure_enabled(false);
+  const urlSettings = parseRegistryUrlSettings(params);
   const flip = finiteParam(params, "flip");
-  if (flip !== null) app.set_flip_blend(flip);
+  if (flip !== null) urlSettings.push(["physics.flip_blend", flip]);
   if (params.get("slice") === "1") app.set_slice_enabled(true);
   const sliceMode = finiteParam(params, "slicemode");
   if (sliceMode !== null) app.set_slice_mode(Math.trunc(sliceMode));
@@ -246,6 +262,7 @@ async function main() {
 
   setControlTarget("camera");
   applyProductMode("autoRotate");
+  if (urlSettings.length) panelApi?.applySettings(urlSettings, "url");
 
   const applyResize = () => {
     sizeCanvas(canvas);

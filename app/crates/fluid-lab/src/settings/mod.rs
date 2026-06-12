@@ -17,6 +17,115 @@ pub enum ApplyClass {
     Reload,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MutationStatus {
+    Applied,
+    Stored,
+    UnknownId,
+    NonFiniteRejected,
+    LegacyMapped,
+    LegacyIgnored,
+}
+
+impl MutationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MutationStatus::Applied => "applied",
+            MutationStatus::Stored => "stored",
+            MutationStatus::UnknownId => "unknown_id",
+            MutationStatus::NonFiniteRejected => "non_finite_rejected",
+            MutationStatus::LegacyMapped => "legacy_mapped",
+            MutationStatus::LegacyIgnored => "legacy_ignored",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SettingMutationResult {
+    pub id: &'static str,
+    pub requested_id: String,
+    pub requested_value: f64,
+    pub stored_value: Option<f64>,
+    pub clamped: bool,
+    pub apply: Option<ApplyClass>,
+    pub applied_live: bool,
+    pub status: MutationStatus,
+}
+
+impl SettingMutationResult {
+    fn new(requested_id: &str, requested_value: f64) -> Self {
+        Self {
+            id: "",
+            requested_id: requested_id.to_string(),
+            requested_value,
+            stored_value: None,
+            clamped: false,
+            apply: None,
+            applied_live: false,
+            status: MutationStatus::UnknownId,
+        }
+    }
+
+    pub fn accepted(&self) -> bool {
+        !matches!(
+            self.status,
+            MutationStatus::UnknownId | MutationStatus::NonFiniteRejected
+        )
+    }
+
+    pub fn needs_reset(&self) -> bool {
+        self.accepted() && self.apply == Some(ApplyClass::Reset)
+    }
+
+    pub fn needs_reload(&self) -> bool {
+        self.accepted() && self.apply == Some(ApplyClass::Reload)
+    }
+
+    pub fn to_json(&self) -> String {
+        let apply = self
+            .apply
+            .map(|a| json_quote(a.as_str()))
+            .unwrap_or_else(|| "null".to_string());
+        let requested_value = if self.requested_value.is_finite() {
+            fmt_f64(self.requested_value)
+        } else {
+            "null".to_string()
+        };
+        let stored_value = self
+            .stored_value
+            .map(fmt_f64)
+            .unwrap_or_else(|| "null".to_string());
+        format!(
+            concat!(
+                "{{",
+                r#""ok":{},"#,
+                r#""status":{},"#,
+                r#""id":{},"#,
+                r#""requested_id":{},"#,
+                r#""requested_value":{},"#,
+                r#""stored_value":{},"#,
+                r#""clamped":{},"#,
+                r#""apply":{},"#,
+                r#""applied_live":{},"#,
+                r#""needs_reset":{},"#,
+                r#""needs_reload":{}"#,
+                "}}"
+            ),
+            self.accepted(),
+            json_quote(self.status.as_str()),
+            json_quote(self.id),
+            json_quote(&self.requested_id),
+            requested_value,
+            stored_value,
+            self.clamped,
+            apply,
+            self.applied_live,
+            self.needs_reset(),
+            self.needs_reload()
+        )
+    }
+}
+
 impl ApplyClass {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -435,11 +544,11 @@ impl Default for Registry {
                 id: "physics.max_substeps",
                 label: "Max substeps",
                 category: Category::Physics,
-                default: Value::U32(1),
-                value: Value::U32(1),
+                default: Value::U32(2),
+                value: Value::U32(2),
                 validation: Validation::U32Range { min: 1, max: 16 },
                 tooltip: Some("Limits physics catch-up work per rendered frame; higher helps stress tests but costs interactivity."),
-                technical_tooltip: Some("Reset-class cap on fixed-dt substeps per rAF callback. Default 1 drops excess accumulated sim time instead of extending a slow frame."),
+                technical_tooltip: Some("Reset-class cap on fixed-dt substeps per rAF callback. Default 2 lets 60 Hz frames run two 1/120 s steps while still dropping excess after hitches."),
                 apply: ApplyClass::Reset,
             },
             Setting {
@@ -1510,7 +1619,7 @@ impl Registry {
     pub fn max_substeps(&self) -> u32 {
         self.get("physics.max_substeps")
             .map(|s| s.as_u32())
-            .unwrap_or(4)
+            .unwrap_or(2)
     }
     pub fn pressure_iterations(&self) -> u32 {
         self.get("solver.pressure_iterations")
@@ -1722,10 +1831,24 @@ impl Registry {
 
     /// Set a setting value by id, clamping to its validation range.
     /// Preserves the Value variant (U32 → round, F32 → as f32).
-    /// Returns true if the id was found (regardless of clamping).
+    /// Returns true if the id was accepted (regardless of clamping).
     pub fn set_value_f64(&mut self, id: &str, v: f64) -> bool {
+        self.set_value_f64_result(id, v).accepted()
+    }
+
+    /// Set a setting value by id and return the full mutation outcome. This is the
+    /// internal source of truth used by the WASM bridge and legacy bool wrapper.
+    pub fn set_value_f64_result(&mut self, id: &str, v: f64) -> SettingMutationResult {
+        let mut result = SettingMutationResult::new(id, v);
         if !v.is_finite() {
-            return false;
+            result.status = MutationStatus::NonFiniteRejected;
+            return result;
+        }
+        if id == "render.particle_alpha" {
+            result.id = "render.particle_alpha";
+            result.status = MutationStatus::LegacyIgnored;
+            result.apply = Some(ApplyClass::Live);
+            return result;
         }
         if id == "render.hero.mode_enabled" {
             let mapped = if v == 0.0 { 0.0 } else { 1.0 };
@@ -1737,36 +1860,71 @@ impl Registry {
             ] {
                 accepted |= self.set_value_f64(mapped_id, mapped);
             }
-            return accepted;
+            if accepted {
+                result.id = "render.hero.mode_enabled";
+                result.stored_value = Some(mapped);
+                result.clamped = false;
+                result.apply = Some(ApplyClass::Live);
+                result.status = MutationStatus::LegacyMapped;
+            }
+            return result;
         }
         if legacy_hidden_setting_id(id) {
-            return true;
+            result.id = "";
+            result.status = MutationStatus::LegacyIgnored;
+            result.apply = Some(ApplyClass::Live);
+            return result;
         }
 
         let idx = match self.settings.iter().position(|s| s.id == id) {
             Some(i) => i,
-            None => return false,
+            None => return result,
         };
         let s = &self.settings[idx];
-        let new_value = match (s.validation, s.value) {
+        result.id = s.id;
+        result.apply = Some(s.apply);
+        let (new_value, clamped) = match (s.validation, s.value) {
             (Validation::U32Range { min, max }, Value::U32(_)) => {
-                Value::U32((v.round() as u32).clamp(min, max))
+                let rounded = v.round();
+                let stored = (rounded as u32).clamp(min, max);
+                (
+                    Value::U32(stored),
+                    rounded < min as f64 || rounded > max as f64,
+                )
             }
             (Validation::F32Range { min, max }, Value::F32(_)) => {
-                Value::F32((v as f32).clamp(min, max))
+                let incoming = v as f32;
+                let stored = incoming.clamp(min, max);
+                (Value::F32(stored), incoming < min || incoming > max)
             }
-            (Validation::None, Value::U32(_)) => Value::U32(v.round() as u32),
-            (Validation::None, Value::F32(_)) => Value::F32(v as f32),
+            (Validation::None, Value::U32(_)) => (Value::U32(v.round() as u32), false),
+            (Validation::None, Value::F32(_)) => (Value::F32(v as f32), false),
             // Mismatched variant: clamp as the existing variant type.
             (Validation::U32Range { min, max }, Value::F32(_)) => {
-                Value::F32((v as f32).clamp(min as f32, max as f32))
+                let incoming = v as f32;
+                let stored = incoming.clamp(min as f32, max as f32);
+                (
+                    Value::F32(stored),
+                    incoming < min as f32 || incoming > max as f32,
+                )
             }
             (Validation::F32Range { min, max }, Value::U32(_)) => {
-                Value::U32((v.round() as u32).clamp(min as u32, max as u32))
+                let rounded = v.round();
+                let stored = (rounded as u32).clamp(min as u32, max as u32);
+                (
+                    Value::U32(stored),
+                    rounded < min as f64 || rounded > max as f64,
+                )
             }
         };
         self.settings[idx].value = new_value;
-        true
+        result.stored_value = Some(self.settings[idx].value_as_f64());
+        result.clamped = clamped;
+        result.status = match self.settings[idx].apply {
+            ApplyClass::Live => MutationStatus::Applied,
+            ApplyClass::Reset | ApplyClass::Reload => MutationStatus::Stored,
+        };
+        result
     }
 
     /// Return the apply class string for a setting id, or None if not found.
@@ -2133,6 +2291,62 @@ mod tests {
     }
 
     #[test]
+    fn mutation_result_reports_clamp_and_live_apply_class() {
+        let mut registry = Registry::default();
+
+        let result = registry.set_value_f64_result("physics.cfl", 1.0e100);
+
+        assert!(result.accepted());
+        assert_eq!(result.status, MutationStatus::Applied);
+        assert_eq!(result.apply, Some(ApplyClass::Live));
+        assert_eq!(result.requested_value, 1.0e100);
+        assert_eq!(result.stored_value, Some(6.0));
+        assert!(result.clamped);
+        assert!(!result.needs_reset());
+        assert_eq!(registry.f32_or("physics.cfl", 0.0), 6.0);
+    }
+
+    #[test]
+    fn mutation_result_reports_stored_reset_class() {
+        let mut registry = Registry::default();
+
+        let result = registry.set_value_f64_result("grid.res_x", 32.0);
+
+        assert!(result.accepted());
+        assert_eq!(result.status, MutationStatus::Stored);
+        assert_eq!(result.apply, Some(ApplyClass::Reset));
+        assert_eq!(result.stored_value, Some(32.0));
+        assert!(result.needs_reset());
+        assert!(!result.needs_reload());
+        assert_eq!(registry.grid_res_x(), 32);
+    }
+
+    #[test]
+    fn mutation_result_distinguishes_rejections_and_legacy() {
+        let mut registry = Registry::default();
+
+        let unknown = registry.set_value_f64_result("missing.setting", 1.0);
+        assert!(!unknown.accepted());
+        assert_eq!(unknown.status, MutationStatus::UnknownId);
+
+        let non_finite = registry.set_value_f64_result("physics.cfl", f64::NAN);
+        assert!(!non_finite.accepted());
+        assert_eq!(non_finite.status, MutationStatus::NonFiniteRejected);
+        assert_eq!(non_finite.stored_value, None);
+
+        let legacy_ignored = registry.set_value_f64_result("render.particle_alpha", 0.5);
+        assert!(legacy_ignored.accepted());
+        assert_eq!(legacy_ignored.status, MutationStatus::LegacyIgnored);
+        assert_eq!(legacy_ignored.apply, Some(ApplyClass::Live));
+
+        let legacy_mapped = registry.set_value_f64_result("render.hero.mode_enabled", 0.0);
+        assert!(legacy_mapped.accepted());
+        assert_eq!(legacy_mapped.status, MutationStatus::LegacyMapped);
+        assert_eq!(legacy_mapped.stored_value, Some(0.0));
+        assert!(!registry.hero_params().refraction_enabled);
+    }
+
+    #[test]
     fn interaction_settings_are_live_default_controls() {
         let registry = Registry::default();
         let json = registry.config_json();
@@ -2180,6 +2394,23 @@ mod tests {
                 "{id} must remain Reset-class"
             );
         }
+    }
+
+    #[test]
+    fn max_substeps_defaults_to_two_with_same_bounds() {
+        let registry = Registry::default();
+        let setting = registry
+            .get("physics.max_substeps")
+            .expect("missing physics.max_substeps");
+
+        assert_eq!(registry.max_substeps(), 2);
+        assert!(matches!(setting.default, Value::U32(2)));
+        assert!(matches!(setting.value, Value::U32(2)));
+        assert!(matches!(
+            setting.validation,
+            Validation::U32Range { min: 1, max: 16 }
+        ));
+        assert_eq!(setting.apply, ApplyClass::Reset);
     }
 
     #[test]

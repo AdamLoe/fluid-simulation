@@ -14,17 +14,48 @@
 /// Maximum render dt clamped before adding to the accumulator (≈33 ms).
 const MAX_RENDER_DT_S: f32 = 1.0 / 30.0;
 
+/// Human-readable label for the active fixed-timestep scheduling policy.
+pub const TIMESTEP_POLICY_LABEL: &str = "fixed-drop-cap";
+
 /// Per-frame stats recorded by the last `steps_for_frame` call.
 #[derive(Clone, Copy, Default)]
 pub struct TimestepFrameStats {
     /// Number of substeps executed this frame.
     pub substeps: u32,
+    /// Fixed simulation timestep in seconds.
+    pub fixed_dt: f32,
+    /// Maximum substeps allowed in one frame.
+    pub max_substeps: u32,
+    /// Number of substeps the accumulator naturally wanted before capping.
+    pub natural_substeps: u32,
+    /// Whether the natural substep count exceeded `max_substeps`.
+    pub substep_cap_hit: bool,
     /// Accumulator value immediately after adding the clamped render dt.
     pub accumulated_before: f32,
     /// Accumulator value after draining the executed substeps (and dropping excess).
     pub accumulated_after: f32,
     /// Seconds of sim time dropped this frame due to the substep cap.
     pub dropped_this_frame: f32,
+    /// Seconds of simulation time actually advanced this frame.
+    pub sim_advanced: f32,
+    /// Raw sanitized browser rAF wall time in seconds, before the hitch clamp.
+    pub wall_dt: f32,
+    /// Executed sim time divided by raw sanitized rAF wall time.
+    pub real_time_factor: f32,
+    /// Human-readable label for the active policy.
+    pub policy_label: &'static str,
+}
+
+impl TimestepFrameStats {
+    fn idle(fixed_dt: f32, max_substeps: u32, wall_dt: f32) -> Self {
+        Self {
+            fixed_dt,
+            max_substeps,
+            wall_dt,
+            policy_label: TIMESTEP_POLICY_LABEL,
+            ..Self::default()
+        }
+    }
 }
 
 pub struct TimestepController {
@@ -58,12 +89,17 @@ impl TimestepController {
     /// interactivity: a slow frame stays cheap and the browser catches up by
     /// rendering the next frame rather than by making one frame longer.
     pub fn steps_for_frame(&mut self, render_dt_s: f32) -> u32 {
-        let clamped = render_dt_s.min(MAX_RENDER_DT_S);
+        let wall_dt_s = finite_nonnegative(render_dt_s);
+        let clamped = wall_dt_s.min(MAX_RENDER_DT_S);
         self.accumulator += clamped;
 
         let accumulated_before = self.accumulator;
 
-        let n_natural = (self.accumulator / self.fixed_dt).floor() as u32;
+        let n_natural = if self.fixed_dt > 0.0 {
+            (self.accumulator / self.fixed_dt).floor() as u32
+        } else {
+            0
+        };
         let n = n_natural.min(self.max_substeps);
 
         // Drain only the steps we actually run.
@@ -81,15 +117,55 @@ impl TimestepController {
         };
 
         let accumulated_after = self.accumulator;
+        let sim_advanced = n as f32 * self.fixed_dt;
 
         self.last = TimestepFrameStats {
             substeps: n,
+            fixed_dt: self.fixed_dt,
+            max_substeps: self.max_substeps,
+            natural_substeps: n_natural,
+            substep_cap_hit: n_natural > self.max_substeps,
             accumulated_before,
             accumulated_after,
             dropped_this_frame,
+            sim_advanced,
+            wall_dt: wall_dt_s,
+            real_time_factor: real_time_factor(sim_advanced, wall_dt_s),
+            policy_label: TIMESTEP_POLICY_LABEL,
         };
 
         n
+    }
+
+    /// Record substeps that were executed outside the accumulator policy, such
+    /// as a single manual step while paused.
+    pub fn record_manual_steps(&mut self, render_dt_s: f32, substeps: u32) {
+        let wall_dt_s = finite_nonnegative(render_dt_s);
+        let sim_advanced = substeps as f32 * self.fixed_dt;
+        self.last = TimestepFrameStats {
+            substeps,
+            fixed_dt: self.fixed_dt,
+            max_substeps: self.max_substeps,
+            natural_substeps: 0,
+            substep_cap_hit: false,
+            accumulated_before: 0.0,
+            accumulated_after: 0.0,
+            dropped_this_frame: 0.0,
+            sim_advanced,
+            wall_dt: wall_dt_s,
+            real_time_factor: real_time_factor(sim_advanced, wall_dt_s),
+            policy_label: TIMESTEP_POLICY_LABEL,
+        };
+    }
+
+    /// Record a no-op frame outside the accumulator, preserving the rAF wall dt
+    /// so stats still show the display cadence while paused.
+    pub fn record_idle_frame(&mut self, render_dt_s: f32) {
+        self.last = TimestepFrameStats::idle(
+            self.fixed_dt,
+            self.max_substeps,
+            finite_nonnegative(render_dt_s),
+        );
     }
 
     /// Stats recorded during the most recent `steps_for_frame` call.
@@ -116,13 +192,99 @@ impl TimestepController {
         // Zero the per-frame stats too so a paused frame reports 0 substeps / 0
         // dropped rather than echoing the last running frame. Cumulative
         // `dropped_time` is intentionally preserved.
-        self.last = TimestepFrameStats::default();
+        self.last = TimestepFrameStats::idle(self.fixed_dt, self.max_substeps, 0.0);
+    }
+}
+
+fn finite_nonnegative(v: f32) -> f32 {
+    if v.is_finite() {
+        v.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+fn real_time_factor(sim_advanced: f32, wall_dt: f32) -> f32 {
+    if wall_dt > 0.0 {
+        sim_advanced / wall_dt
+    } else {
+        0.0
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 1.0e-6,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn one_hundred_twentieth_frame_with_cap_one_runs_realtime() {
+        let fixed_dt = 1.0 / 120.0;
+        let mut tc = TimestepController::new(fixed_dt, 1);
+
+        let n = tc.steps_for_frame(1.0 / 120.0);
+        let stats = tc.last_stats();
+
+        assert_eq!(n, 1);
+        assert_eq!(stats.substeps, 1);
+        assert_eq!(stats.natural_substeps, 1);
+        assert_eq!(stats.max_substeps, 1);
+        assert!(!stats.substep_cap_hit);
+        assert_close(stats.fixed_dt, fixed_dt);
+        assert_close(stats.wall_dt, 1.0 / 120.0);
+        assert_close(stats.sim_advanced, fixed_dt);
+        assert_close(stats.real_time_factor, 1.0);
+        assert_eq!(stats.policy_label, TIMESTEP_POLICY_LABEL);
+        assert_eq!(tc.total_dropped(), 0.0);
+    }
+
+    #[test]
+    fn sixty_hz_frame_with_cap_one_reports_half_realtime() {
+        let fixed_dt = 1.0 / 120.0;
+        let mut tc = TimestepController::new(fixed_dt, 1);
+
+        let n = tc.steps_for_frame(1.0 / 60.0);
+        let stats = tc.last_stats();
+
+        assert_eq!(n, 1);
+        assert_eq!(stats.substeps, 1);
+        assert_eq!(stats.natural_substeps, 2);
+        assert_eq!(stats.max_substeps, 1);
+        assert!(stats.substep_cap_hit);
+        assert_close(stats.wall_dt, 1.0 / 60.0);
+        assert_close(stats.sim_advanced, fixed_dt);
+        assert_close(stats.real_time_factor, 0.5);
+        assert_close(stats.dropped_this_frame, fixed_dt);
+        assert_close(tc.total_dropped(), fixed_dt);
+        assert!(stats.accumulated_after.abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn large_hitch_uses_raw_wall_time_for_realtime_factor() {
+        let fixed_dt = 1.0 / 120.0;
+        let mut tc = TimestepController::new(fixed_dt, 1);
+
+        let n = tc.steps_for_frame(1.0);
+        let stats = tc.last_stats();
+
+        assert_eq!(n, 1);
+        assert_eq!(stats.substeps, 1);
+        assert_eq!(stats.natural_substeps, 4);
+        assert!(stats.substep_cap_hit);
+        assert_close(stats.accumulated_before, MAX_RENDER_DT_S);
+        assert_close(stats.wall_dt, 1.0);
+        assert_close(stats.sim_advanced, fixed_dt);
+        assert_close(stats.real_time_factor, fixed_dt);
+        assert_close(stats.dropped_this_frame, 3.0 * fixed_dt);
+        assert_close(tc.total_dropped(), 3.0 * fixed_dt);
+        assert!(stats.accumulated_after.abs() < 1.0e-6);
+    }
 
     /// At fixed_dt = 1/120 s, one 1/60 s render frame should yield exactly 2 steps
     /// with no remainder.
@@ -135,6 +297,8 @@ mod tests {
         assert_eq!(tc.dropped_time(), 0.0);
         assert_eq!(tc.last_stats().substeps, 2);
         assert_eq!(tc.last_stats().dropped_this_frame, 0.0);
+        assert_eq!(tc.last_stats().natural_substeps, 2);
+        assert!(!tc.last_stats().substep_cap_hit);
     }
 
     /// A 1-second render dt is clamped to 1/30 s. With fixed_dt=1/120 and

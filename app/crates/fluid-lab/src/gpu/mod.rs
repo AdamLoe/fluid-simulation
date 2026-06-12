@@ -20,6 +20,7 @@ use crate::log;
 use crate::scene::SceneConfig;
 use crate::settings::{self, Registry};
 use glam::{Mat4, Vec3};
+use std::cell::Cell;
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Offscreen scene-color format for the hero-water prepass: linear HDR so the
@@ -65,6 +66,29 @@ pub struct GpuCaps {
     pub max_buffer_size: u64,
     pub max_storage_buffer_binding_size: u64,
     pub timestamp_query: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct GpuMemoryStats {
+    pub sim_buffers_bytes: u64,
+    pub render_targets_bytes: u64,
+    pub diffuse_bytes: u64,
+    pub timing_bytes: u64,
+    pub total_tracked_bytes: u64,
+}
+
+thread_local! {
+    static LATEST_MEMORY_STATS: Cell<GpuMemoryStats> = Cell::new(GpuMemoryStats {
+        sim_buffers_bytes: 0,
+        render_targets_bytes: 0,
+        diffuse_bytes: 0,
+        timing_bytes: 0,
+        total_tracked_bytes: 0,
+    });
+}
+
+pub fn latest_memory_stats() -> GpuMemoryStats {
+    LATEST_MEMORY_STATS.with(Cell::get)
 }
 
 pub struct GpuContext {
@@ -565,7 +589,34 @@ impl GpuContext {
 
     /// Total GPU storage-buffer memory owned by the fluid simulation.
     pub fn buffer_memory_bytes(&self) -> u64 {
-        self.fluid.buffer_memory_bytes()
+        let memory = self.memory_stats();
+        LATEST_MEMORY_STATS.with(|stats| stats.set(memory));
+        memory.sim_buffers_bytes
+    }
+
+    fn memory_stats(&self) -> GpuMemoryStats {
+        let sim_buffers_bytes = self.fluid.buffer_memory_bytes();
+        let render_targets_bytes = self.render_target_memory_bytes();
+        let diffuse_bytes = self.diffuse.memory_bytes();
+        let timing_bytes = 0;
+        GpuMemoryStats {
+            sim_buffers_bytes,
+            render_targets_bytes,
+            diffuse_bytes,
+            timing_bytes,
+            total_tracked_bytes: sim_buffers_bytes
+                + render_targets_bytes
+                + diffuse_bytes
+                + timing_bytes,
+        }
+    }
+
+    fn render_target_memory_bytes(&self) -> u64 {
+        let pixels = (self.config.width as u64) * (self.config.height as u64);
+        let depth32 = 4_u64;
+        let r16_targets = 6_u64 * 2;
+        let scene_color = 8_u64;
+        pixels * (depth32 + r16_targets + scene_color)
     }
 
     /// Number of compute dispatches issued per substep (prep+pressure+finish).
