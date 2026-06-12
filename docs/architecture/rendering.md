@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-09
+last_updated:  2026-06-12
 okay_to_delete: false
 long_lived:    true
 ---
@@ -45,7 +45,7 @@ FluidApp::frame
          scene prepass -> scene_color (Rgba16Float) + scene_depth (R16Float, eye dist):
            procedural skybox (world background) + environment (floor + back/left walls,
              reading the wetness field for darken/gloss/streak/meniscus/contact-shadow) + wireframe
-         thickness + whitewater + nearest-Z MRT -> wall-fill sheet injection ->
+         thickness + whitewater + nearest-Z MRT -> optional wall-fill sheet injection ->
          separable thickness + whitewater blur (plain Gaussian) + bilateral depth smoothing ->
          temporal history-blend of thickness / smooth-Z / whitewater into stabilized targets ->
          caustic generation (half-res) -> caustic composite (additive into scene_color) ->
@@ -153,8 +153,15 @@ grab foreground geometry.
 mirrored into one `HeroParams` snapshot (`settings::Registry::hero_params`), pushed
 into the composite + environment + skybox uniforms whenever a slider changes — Live, no
 pipeline rebuild, no per-setting plumbing. `f0` is derived from `ior` (Schlick), never
-stored independently. `render.hero.mode_enabled` is the master toggle (off forces both
-the refraction offset and the reflection strength to zero — the non-hero comparison).
+stored independently. The visible core optical switches are explicit:
+`render.hero.refraction_enabled` gates only the normal-driven scene-color offset,
+`render.hero.reflection_enabled` gates Fresnel environment reflection and sun specular
+without disabling the skybox/environment prepass, `render.hero.body_color_enabled` gates
+Beer-Lambert absorption, tint, transparency, and deep-water darkening, and
+`render.hero.wall_contact_enabled` gates the cheap near-wall normal/depth snap.
+`render.hero.mode_enabled` is a hidden legacy id accepted by `set_setting`; it maps only
+to refraction, reflection, and body-color, leaving wall contact and add-on feature groups
+unchanged.
 `render.hero.debug_view` routes an intermediate stage (scene color/depth, thickness,
 refraction UV offset, Fresnel, absorption, water-only, reflection, env-only, caustics, and
 the wall-diagnosis views nearest-Z / whitewater / wallfill-mask) to the swapchain; the
@@ -208,7 +215,9 @@ point from `scene_depth` along the eye ray (no kind G-buffer; it gates floor/bac
 by world position) and blends additively into `scene_color` — so the water's refracted
 background tap picks up the caustic lighting, and non-receiver geometry is untouched.
 Caustics are screen-space normal-gradient focusing, **not** projected/refracted photons
-(`../decisions/rendering.md`). Default off; all `render.hero.caustics.*` are Live.
+(`../decisions/rendering.md`). Default off; active `render.hero.caustics.*` controls are
+Live. Reserved/no-op caustics ids are hidden from `config_json` but accepted by
+`set_setting` for persisted-setting compatibility.
 
 **Wet walls, meniscus & contact shadow.** `WetWallSystem`
 (`crates/fluid-lab/src/gpu/wetwall.rs`) owns a persistent supersampled per-wall-texel
@@ -228,7 +237,9 @@ thin-film drainage (`../decisions/rendering.md`); particle→wetness coupling
 (`wetness_spray_gain`) is registered but stubbed at 0. Wetness persists across frames and
 clears on Reset (`WetWallSystem` rebuilt with a fresh zeroed buffer in `recreate_fluid`,
 which also rebinds the fresh buffer into the rebuilt `EnvironmentRenderer`). Most
-`render.hero.wet_wall.*` settings are Live; `render.hero.wet_wall.supersample` is
+`render.hero.wet_wall.*` settings are Live; the wet-wall master and weak sub-effects are
+off by default so the startup path stays clean unless the user opts into them.
+`render.hero.wet_wall.supersample` is
 Reset-class because it changes the wetness buffer dimensions. `WetWallSystem` stores the
 allocation-time supersampled dimensions and keeps using them until Reset, so changing the
 Reset-class setting cannot desynchronize the uniform from the allocated buffer mid-run.
@@ -236,7 +247,9 @@ Reset-class setting cannot desynchronize the uniform from the allocated buffer m
 **Dense wall fill.** `WallOccupancySystem` (`crates/fluid-lab/src/gpu/wallfill.rs`)
 maintains a dense, current-frame wall occupancy buffer from particle splats near the
 tank walls, using the supersampled atlas dimensions allocated from
-`render.hero.flat_water.fill_supersample`. The render pass runs after particle
+`render.hero.flat_water.fill_supersample`. It defaults off; when disabled the occupancy
+compute returns before dispatch and the render path clears the `wallfill_mask` without
+issuing the injection draw. When enabled, the render pass runs after particle
 thickness/nearest-Z writes and before smoothing, intersects the **rendered** back and
 left wall planes per pixel, bilinearly samples the dense atlas in both wall axes, smooths
 the coverage curve by `waterline_softness`, and injects a subtle flat sheet into the

@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-09
+last_updated:  2026-06-12
 ---
 
 # Decisions - Rendering
@@ -80,10 +80,8 @@ prepass + refraction cost is negligible against the pressure solve.)
 **Decision** - The hero-water series (v1.12 refraction onward) evolves the existing
 screen-space composite into the hero path rather than adding a parallel `HeroWater`
 render mode. `RenderMode { Water, OpticalParticles, SimpleParticles }` replaces the bare
-`u32 particle_view` dispatch; hero features (refraction, foam, and the procedural
-environment reflection + world skybox now; marching-cubes surface, caustics, wet walls,
-temporal later) are Live-toggleable settings under the `Water` category with their own
-`enabled` flags, mirrored into one `HeroParams` uniform.
+`u32 particle_view` dispatch; hero features are Live-toggleable settings under the
+`Water` category with their own controls, mirrored into one `HeroParams` uniform.
 
 **Why** - The composite already does most of the material (thickness, smoothed front
 depth, reconstructed normal, Fresnel, Beer-Lambert absorption). A second top-level mode
@@ -91,12 +89,32 @@ would duplicate that renderer. Keeping hero features Live keeps the ~150-control
 navigable with no reset and no pipeline rebuilds.
 
 **Tradeoffs** - One composite shader grows in complexity and uniform size across the
-series, gated by `render.hero.mode_enabled` and per-feature flags, instead of being
-split into independent pipelines.
+series instead of being split into independent pipelines. The old
+`render.hero.mode_enabled` id is compatibility-only; visible controls split refraction,
+reflection, body color, and wall-contact correction so comparisons do not disable
+unrelated effects.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/mod.rs -> RenderMode`;
 `crates/fluid-lab/src/gpu/composite.rs`; `crates/fluid-lab/src/gpu/environment.rs`;
 `crates/fluid-lab/src/settings/mod.rs -> HeroParams`.
+
+**Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
+`architecture/gpu-resources.md`.
+
+## Weak hero-water add-ons are opt-in, not startup defaults
+
+**Decision** - Caustics, temporal stabilization, diffuse particles, wet walls, and
+dense wall fill remain shipped feature groups but default off in the normal Water path.
+
+**Why** - The default view should first read as a coherent liquid body; weak or expensive
+optional cues should not add cost or artifacts unless the user explicitly enables them.
+
+**Tradeoffs** - The UI still exposes the feature groups for deliberate tuning, so the
+renderer keeps their pass wiring and buffer ownership. This is not a decision to remove
+or abandon those features.
+
+**Code anchors** - `crates/fluid-lab/src/settings/mod.rs -> Registry`;
+`crates/fluid-lab/src/gpu/mod.rs -> GpuContext::render`.
 
 **Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
 `architecture/gpu-resources.md`.
@@ -185,8 +203,7 @@ off.
 **Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`,
 `architecture/settings.md`.
 
-**Revisit when** - A projected-photon mode is wanted (the reserved `caustics.mode` enum
-is the seam).
+**Revisit when** - A projected-photon mode is wanted.
 
 ## Wet walls are a procedural render-only cue, not simulated drainage
 
@@ -215,8 +232,9 @@ individual droplets. Direct particle/spray→wetness coupling is registered
 (`wetness_spray_gain`) but stubbed at 0 — airborne spray re-wetting a wall above the
 waterline is a follow-up. The dense wall-fill mask is a screen-space visual sheet rather
 than additional simulated water mass, and it follows the open viewing-corner policy by
-not projecting hidden sheets onto the front/right faces. Defaults are intentionally
-subtle.
+not projecting hidden sheets onto the front/right faces. Wet walls and dense wall fill
+default off so the startup path favors the cheaper flat-water contact correction until
+the optional effects are explicitly enabled.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/wetwall.rs -> WetWallSystem`;
 `crates/fluid-lab/src/gpu/shaders/wetwall_update.wgsl`; the wall reads in

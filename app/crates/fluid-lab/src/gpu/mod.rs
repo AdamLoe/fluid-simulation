@@ -1501,13 +1501,32 @@ impl GpuContext {
                     self.particles
                         .draw_thickness(&mut pass, self.fluid.particle_count());
                 }
+                // Clear wall-fill mask every frame. The expensive injection draw runs
+                // only when dense wall fill is enabled.
+                if !self.hero.flat_water_fill_enabled {
+                    let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("wallfill mask clear pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &self.wallfill_mask_view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                }
                 // v1.21 Wall-fill injection pass: runs AFTER particle thickness, BEFORE
                 // bilateral smoothing. Injects a flat glass-plane surface into the same
                 // three MRT targets (thickness Add, nearest_z Min, whitewater Add) wherever
                 // the occupancy buffer reports liquid against the wall, and writes a
                 // separate wall-fill mask for composite-time color/reflection controls.
-                // It still runs when disabled so the mask target is cleared every frame.
-                {
+                if self.hero.flat_water_fill_enabled {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("wallfill injection pass"),
                         color_attachments: &[

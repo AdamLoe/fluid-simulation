@@ -33,9 +33,20 @@ const outPng =
     : join(CAPTURES_DIR, outArg);
 mkdirSync(dirname(outPng), { recursive: true });
 const waitMs = parseInt(process.argv[4] || "6000", 10);
+const chromePathArg = process.argv[5] && process.argv[5] !== '""' ? process.argv[5] : "";
 const chromePath =
-  process.argv[5] ||
+  chromePathArg ||
   "C:/Program Files/Google/Chrome/Application/chrome.exe";
+let evalSnippet = process.env.EVAL || process.argv[6] || "";
+if (
+  evalSnippet.length >= 2 &&
+  ((evalSnippet.startsWith('"') && evalSnippet.endsWith('"')) ||
+    (evalSnippet.startsWith("'") && evalSnippet.endsWith("'")))
+) {
+  evalSnippet = evalSnippet.slice(1, -1);
+}
+const viewportWidth = parseInt(process.env.VIEWPORT_WIDTH || process.argv[7] || "1280", 10);
+const viewportHeight = parseInt(process.env.VIEWPORT_HEIGHT || process.argv[8] || "800", 10);
 
 const consoleLines = [];
 
@@ -52,13 +63,13 @@ const browser = await puppeteer.launch({
     "--enable-features=Vulkan",
     "--use-angle=default",
     "--no-sandbox",
-    "--window-size=1280,800",
+    `--window-size=${viewportWidth},${viewportHeight}`,
   ],
 });
 
 try {
   const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 1 });
+  await page.setViewport({ width: viewportWidth, height: viewportHeight, deviceScaleFactor: 1 });
 
   page.on("console", (msg) => record("[console:" + msg.type() + "] " + msg.text()));
   page.on("pageerror", (err) => record("[pageerror] " + err.message));
@@ -98,8 +109,8 @@ try {
   }
 
   // Optional: run a JS snippet in the page (e.g. drive reset) then settle.
-  if (process.env.EVAL) {
-    const out = await page.evaluate(process.env.EVAL);
+  if (evalSnippet) {
+    const out = await page.evaluate(evalSnippet);
     record("[harness] EVAL -> " + JSON.stringify(out));
     await new Promise((r) => setTimeout(r, parseInt(process.env.EVAL_WAIT || "1500", 10)));
   }

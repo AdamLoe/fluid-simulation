@@ -1,10 +1,34 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-08
+last_updated:  2026-06-12
 ---
 
 # Decisions — Performance
+
+## Dense wall fill is opt-in until profiler data justifies its default cost
+
+**Decision** — Dense wall fill defaults off, with a lower default atlas supersample and
+an enabled-only occupancy/injection path; the cheaper wall-contact normal/depth snap is
+the default near-wall aid.
+
+**Why** — Wall fill owns a large supersampled occupancy atlas and per-frame splat +
+injection work. Without capture/profiler evidence that it improves the startup view more
+than it costs, it should not be in the normal frame path.
+
+**Tradeoffs** — The occupancy buffer remains allocated because the feature is still
+shipped and can be enabled live, but disabled frames skip the occupancy dispatch and the
+injection draw. The mask is still cleared so composite reads stay deterministic.
+
+**Code anchors** — `crates/fluid-lab/src/settings/mod.rs → Registry`;
+`crates/fluid-lab/src/gpu/wallfill.rs → WallOccupancySystem::record_step`;
+`crates/fluid-lab/src/gpu/mod.rs → GpuContext::render`.
+
+**Revisit when** — repeated real-GPU captures show wall fill materially improves default
+quality and profiler samples show acceptable median `gpu.render_ms`.
+
+**Applies to** — `architecture/rendering.md`, `architecture/gpu-resources.md`,
+`architecture/settings.md`.
 
 ## Resolution targets: 32³ baseline, 64³ first serious target, 128³ aspirational
 

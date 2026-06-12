@@ -12,6 +12,15 @@ const HIDDEN_SETTING_IDS = new Set([
   "interaction.auto_roll_enabled",
   "interaction.wave_enabled",
 ]);
+const LEGACY_REPLAY_SETTING_IDS = new Set([
+  "render.hero.mode_enabled",
+  "render.hero.caustics.mode",
+  "render.hero.caustics.resolution_scale",
+  "render.hero.caustics.blur_radius",
+  "render.hero.caustics.temporal_enabled",
+  "render.hero.caustics.temporal_alpha",
+  "render.hero.temporal.jitter_enabled",
+]);
 const DEFAULT_TAB = "scenario";
 const PROFILER_TAB = { id: "profiler", label: "Profiler", order: 1000, profiler: true };
 const TAB_ALIASES = {
@@ -43,6 +52,8 @@ function deriveTabs(settings) {
         id: s.tab,
         label: s.tab_label,
         order: typeof s.tab_order === "number" ? s.tab_order : 500,
+        group: s.tab_group || "Settings",
+        variant: s.tab_variant || "normal",
       });
     }
   }
@@ -513,9 +524,6 @@ function buildColorRow(s, app, row, labelWrap) {
   picker.type = "color";
   picker.value = toHex(s.value);
   picker.className = "cfg-color";
-  picker.style.cssText =
-    "width:44px;height:26px;padding:1px 2px;border:1px solid #2a3142;" +
-    "border-radius:4px;background:#0f1219;cursor:pointer;flex-shrink:0;";
 
   const resetBtn = document.createElement("button");
   resetBtn.type = "button";
@@ -741,6 +749,7 @@ export function initPanels(app) {
   const settingsPanel = document.getElementById("settings-panel");
   const settingsBody = document.getElementById("settings-body");
   const tabsRoot = document.getElementById("settings-tabs");
+  const navToggle = document.getElementById("settings-nav-toggle");
   const btnConfig = document.getElementById("btn-config");
   const toolbarReset = document.getElementById("btn-reset");
 
@@ -755,7 +764,7 @@ export function initPanels(app) {
     const knownIds = new Set(current.map((s) => s.id));
     let needsRebuild = false;
     for (const [id, value] of Object.entries(stored)) {
-      if (knownIds.has(id)) {
+      if (knownIds.has(id) || LEGACY_REPLAY_SETTING_IDS.has(id)) {
         try {
           const live = app.set_setting(id, value);
           if (!live) needsRebuild = true;
@@ -822,12 +831,22 @@ export function initPanels(app) {
     if (isOpen) renderActiveTab();
   }
 
+  let lastGroup = "";
   for (const tab of tabs) {
+    if (tab.group !== lastGroup) {
+      lastGroup = tab.group;
+      const group = document.createElement("div");
+      group.className = "tab-group-label";
+      group.textContent = tab.group;
+      tabsRoot.appendChild(group);
+    }
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "tab-btn";
+    if (tab.variant === "experimental") btn.classList.add("tab-experimental");
     btn.dataset.tab = tab.id;
     btn.textContent = tab.label;
+    btn.title = tab.label;
     btn.setAttribute("role", "tab");
     btn.setAttribute("aria-controls", "settings-body");
     btn.addEventListener("click", () => setActiveTab(tab.id));
@@ -835,6 +854,11 @@ export function initPanels(app) {
   }
 
   btnConfig.addEventListener("click", toggleSettings);
+  navToggle?.addEventListener("click", () => {
+    const collapsed = settingsPanel.classList.toggle("nav-collapsed");
+    navToggle.setAttribute("aria-pressed", collapsed ? "true" : "false");
+    navToggle.title = collapsed ? "Expand settings navigation" : "Collapse settings navigation";
+  });
 
   if (toolbarReset) {
     toolbarReset.addEventListener("click", () => {

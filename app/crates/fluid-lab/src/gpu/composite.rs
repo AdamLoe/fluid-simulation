@@ -24,7 +24,7 @@ struct HeroUniform {
     refr: [f32; 4], // x = effective strength, y = thickness scale, z = max offset px, w = f0
     absorb: [f32; 4], // rgb = absorption color, w = absorption strength
     tint: [f32; 4], // rgb = base tint, w = transparency
-    misc: [f32; 4], // x = deep darkening, y = invalid fallback, z = debug view, w = mode enabled
+    misc: [f32; 4], // x = deep darkening, y = invalid fallback, z = debug view, w = body color enabled
     // --- Environment reflection (v1.15) ---
     refl: [f32; 4], // x = effective reflection strength, y = environment strength, z = environment brightness, w = skybox enabled
     envc: [f32; 4], // x = environment rotation, y = environment mode, z = roughness base, w = unused
@@ -60,14 +60,12 @@ struct CamUniform {
 fn hero_uniform(hero: &HeroParams) -> HeroUniform {
     let ratio = (hero.ior - 1.0) / (hero.ior + 1.0);
     let f0 = (ratio * ratio).clamp(0.0, 1.0);
-    let effective_strength = if hero.mode_enabled {
+    let effective_strength = if hero.refraction_enabled {
         hero.refraction_strength.max(0.0)
     } else {
         0.0
     };
-    // Reflection is gated by the master hero toggle too, so "off" is the plain
-    // non-hero comparison (no refraction and no reflection).
-    let effective_reflection = if hero.mode_enabled {
+    let effective_reflection = if hero.reflection_enabled {
         hero.reflection_strength.max(0.0)
     } else {
         0.0
@@ -95,7 +93,7 @@ fn hero_uniform(hero: &HeroParams) -> HeroUniform {
             hero.deep_water_darkening.max(0.0),
             hero.invalid_refraction_fallback as f32,
             hero.debug_view as f32,
-            if hero.mode_enabled { 1.0 } else { 0.0 },
+            if hero.body_color_enabled { 1.0 } else { 0.0 },
         ],
         refl: [
             effective_reflection,
@@ -503,9 +501,17 @@ impl CompositeRenderer {
             tank_lo: [tank_lo[0], tank_lo[1], tank_lo[2], 0.0],
             tank_hi: [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
             flat: [
-                hero.flat_water_strength.clamp(0.0, 1.0),
+                if hero.wall_contact_enabled {
+                    hero.flat_water_strength.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
                 hero.flat_water_epsilon.max(0.0),
-                hero.flat_water_depth_strength.clamp(0.0, 1.0),
+                if hero.wall_contact_enabled {
+                    hero.flat_water_depth_strength.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
                 0.0,
             ],
         };

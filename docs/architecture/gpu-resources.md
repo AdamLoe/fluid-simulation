@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-09
+last_updated:  2026-06-12
 okay_to_delete: false
 long_lived:    true
 ---
@@ -141,14 +141,16 @@ The hero-water finishing systems own three more render-memory allocations, all G
   storage buffer with dense current-frame wall occupancy, supersampled by
   `render.hero.flat_water.fill_supersample`: back/front `(nx*ss)·(ny*ss)` each,
   left/right `(nz*ss)·(ny*ss)` each, plus floor `(nx*ss)·(nz*ss)`. At default 64³ and
-  `ss=16` this is ~7.34M entries × 4 B ≈ 28 MB; at selectable max `ss=32`,
-  ~29.4M entries ≈ 112 MB. It is recomputed from near-wall particle splats every frame
-  while wall fill is enabled, using a 2D workgroup split when the flattened pass would exceed WebGPU's
-  per-dimension dispatch ceiling, and is rebound when `recreate_fluid` creates fresh sim
-  buffers. The wall-fill render pass samples the back and left atlas faces only, matching
-  the rendered glass faces in `rendering.md`, and also clears/writes one
-  swapchain-sized `R16Float` `wallfill_mask` target each frame; the composite samples it
-  for fill-only optical controls.
+  `ss=8` this is ~1.84M entries × 4 B ≈ 7 MB; at selectable max `ss=32`, ~29.4M entries
+  ≈ 112 MB. The buffer remains allocated with the renderer, but the feature defaults off:
+  the occupancy compute returns before dispatch and the render path clears only the
+  swapchain-sized `R16Float` `wallfill_mask` target until the user enables
+  `render.hero.flat_water.fill_enabled`. When enabled, occupancy is recomputed from
+  near-wall particle splats every frame, using a 2D workgroup split when the flattened
+  pass would exceed WebGPU's per-dimension dispatch ceiling, and is rebound when
+  `recreate_fluid` creates fresh sim buffers. The wall-fill render pass samples the back
+  and left atlas faces only, matching the rendered glass faces in `rendering.md`; the
+  composite samples the mask for fill-only optical controls.
 - **Temporal** (`gpu/temporal.rs -> TemporalSystem`) — true **full-res** `R16Float`
   ping-pong (two stabilized textures) per enabled target: `thickness` + `smooth_z`
   (default-on) ≈ **8 MB**, plus `whitewater` ≈ **4 MB** when `foam_history` is on, at

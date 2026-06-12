@@ -8,7 +8,7 @@ struct Hero {
     refr: vec4<f32>,   // x = effective strength, y = thickness scale, z = max offset px, w = f0
     absorb: vec4<f32>, // rgb = absorption color, w = absorption strength
     tint: vec4<f32>,   // rgb = base tint, w = transparency
-    misc: vec4<f32>,   // x = deep darkening, y = invalid fallback, z = debug view, w = mode enabled
+    misc: vec4<f32>,   // x = deep darkening, y = invalid fallback, z = debug view, w = body color enabled
     // --- Environment reflection (v1.15) ---
     refl: vec4<f32>,   // x = effective reflection strength, y = environment strength, z = environment brightness, w = skybox enabled
     envc: vec4<f32>,   // x = environment rotation, y = environment mode, z = roughness base, w = unused
@@ -387,8 +387,9 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     );
     let scene_z_refr = textureLoad(scene_depth_tex, refr_pixel, 0).r;
     let invalid = has_water && scene_z_refr < front_z - 0.02;
-    let use_tint_fallback = invalid && hero.misc.y > 0.5;
-    if invalid && hero.misc.y < 0.5 {
+    let body_enabled = hero.misc.w > 0.5;
+    let use_tint_fallback = invalid && hero.misc.y > 0.5 && body_enabled;
+    if invalid && !use_tint_fallback {
         refract_uv = in.uv;
     }
 
@@ -399,8 +400,9 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     // Beer-Lambert absorption of the refracted background through the water.
-    let fill_absorb_scale = mix(1.0, clamp(hero.wallfill.w, 0.0, 1.0), wall_fill_mask);
-    let fill_color_scale = mix(1.0, clamp(hero.wallfill.x, 0.0, 1.0), wall_fill_mask);
+    let body_gate = select(0.0, 1.0, body_enabled);
+    let fill_absorb_scale = mix(1.0, clamp(hero.wallfill.w, 0.0, 1.0), wall_fill_mask) * body_gate;
+    let fill_color_scale = mix(1.0, clamp(hero.wallfill.x, 0.0, 1.0), wall_fill_mask) * body_gate;
     let absorption_thickness = thickness * fill_absorb_scale;
     let color_thickness = thickness * fill_color_scale;
     let ext = max(vec3<f32>(0.0), hero.absorb.rgb * hero.absorb.w);

@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-11
+last_updated:  2026-06-12
 okay_to_delete: false
 long_lived:    true
 ---
@@ -20,8 +20,8 @@ settings independently.
 semantic `Category`, numeric value type/default/bounds, optional help copy, and
 `ApplyClass`. Functional settings-tab metadata is registry-owned through
 `crates/fluid-lab/src/settings/mod.rs -> settings_tab`, which maps each row to a
-`SettingsTab` (`tab`, `tab_label`, `tab_order` in `config_json`). The web shell does
-not maintain an independent product taxonomy.
+`SettingsTab` (`tab`, `tab_label`, `tab_order`, `tab_group`, and `tab_variant` in
+`config_json`). The web shell does not maintain an independent product taxonomy.
 
 Help is optional. `tooltip` is short functional help; `technical_tooltip` is technical
 help about wiring, apply-class implications, or caveats. Absent help fields are omitted
@@ -53,8 +53,8 @@ The settings bridge lives in `crates/fluid-lab/src/lib.rs -> FluidApp::config_js
 `crates/fluid-lab/src/settings/mod.rs -> Registry::config_json`.
 
 Each `config_json()` entry carries stable control fields (`id`, `label`, `category`,
-`tab`, `tab_label`, `tab_order`, `type`, `value`, `default`, `min`, `max`, and
-`apply`). Optional fields are emitted only when present:
+`tab`, `tab_label`, `tab_order`, `tab_group`, `tab_variant`, `type`, `value`, `default`,
+`min`, `max`, and `apply`). Optional fields are emitted only when present:
 
 - `tooltip` and `technical_tooltip`.
 - `options` for enum/dropdown settings from
@@ -70,7 +70,9 @@ hint.
 ## Functional tabs
 
 The product-facing tabs are owned by `SettingsTab` in the registry and rendered by
-`web/panels.js`:
+`web/panels.js`. `tab_group` lets the shell cluster Setup, Core, and Optional Effects
+without hardcoding feature groups; `tab_variant: "experimental"` marks optional render
+effects for subdued navigation styling.
 
 - Scenario — `scene.*`, `grid.*`, and `particles.count`.
 - Simulation — physics, liquid classification, pressure solver, and diagnostics
@@ -121,15 +123,22 @@ strength/frequency tuning.
 Water and environment controls are Live unless they resize GPU resources. Most
 `render.hero.*` settings share one snapshot path: `FluidApp::set_setting` matches the
 `render.hero.` prefix, rebuilds `Registry::hero_params() -> HeroParams`, and pushes it
-through `GpuContext::set_hero_params`.
+through `GpuContext::set_hero_params`. The visible hero-water core is split into
+`render.hero.refraction_enabled`, `render.hero.reflection_enabled`,
+`render.hero.body_color_enabled`, and `render.hero.wall_contact_enabled`; the hidden
+legacy `render.hero.mode_enabled` id still replays by setting only refraction,
+reflection, and body-color. Reserved/no-op caustics controls and temporal jitter are
+hidden from `config_json` but accepted as no-op legacy ids so old localStorage payloads
+do not break startup.
 
 `render.diffuse.*` uses the same pattern via `Registry::diffuse_params() ->
 DiffuseParams` and `GpuContext::set_diffuse_params`. `render.diffuse.max_particles` is
 an active cap inside a fixed buffer, so it applies Live.
 
-Controls that resize render-side buffers are Reset-class, such as wet-wall
-supersample and wall-fill supersample. Their registry rows store the value immediately;
-Reset performs the allocation.
+Weak optional render effects are available but default off: caustics, temporal,
+diffuse water, wet walls, and dense wall fill. Controls that resize render-side buffers
+are Reset-class, such as wet-wall supersample and wall-fill supersample. Their registry
+rows store the value immediately; Reset performs the allocation.
 
 `render.particle_alpha` is not serialized into `config_json`. `FluidApp::set_setting`
 accepts the legacy id as a no-op redirect to `render.water_optical_density`.
@@ -144,6 +153,9 @@ accepts the legacy id as a no-op redirect to `render.water_optical_density`.
   setting values; the web shell reapplies current Mode after reset.
 - Reload restores persisted visible settings, then the shell reapplies Auto rotate as
   the product default. Hidden enable booleans are not durable user preferences.
+- The web shell accepts a short allowlist of hidden legacy render ids during restore;
+  the ids are omitted on the next save because persistence is rebuilt from visible
+  non-default rows.
 - There is no `solver.density` setting. The CG pressure solve uses a hardcoded density
   internally; see `../decisions/pressure.md`.
 

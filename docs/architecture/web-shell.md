@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-11
+last_updated:  2026-06-12
 okay_to_delete: false
 long_lived:    true
 ---
@@ -55,10 +55,12 @@ layout column beside the canvas, not an overlay; on narrow screens it may overla
 preserve viewport space. The panel starts closed and opens on the Scenario tab.
 
 Config tabs are derived from registry-owned metadata in `app.config_json()`: every row
-has `tab`, `tab_label`, and `tab_order` from
-`crates/fluid-lab/src/settings/mod.rs -> settings_tab`. `panels.js` sorts those tabs,
-appends a Profiler tab, and then renders rows by `category` inside the active config
-tab. Profiler is not a config tab and is excluded from tab-level reset.
+has `tab`, `tab_label`, `tab_order`, `tab_group`, and `tab_variant` from
+`crates/fluid-lab/src/settings/mod.rs -> SettingsTab`. `panels.js` sorts those tabs,
+groups them in a compact side navigator, appends a Profiler tab, and then renders rows
+by `category` inside the active config tab. On desktop the navigator can collapse to a
+narrow rail; on narrow screens it wraps above the active tab body. Profiler is not a
+config tab and is excluded from tab-level reset.
 
 Rows support:
 
@@ -72,7 +74,9 @@ Rows support:
 Changes call `app.set_setting(id, value)` and persist non-default visible setting
 overrides to `localStorage` under `fluidlab.config.v1`. Hidden scheduler booleans
 (`interaction.auto_roll_enabled`, `interaction.wave_enabled`) are real registry
-settings but are not rendered or persisted as user choices. The `apply` field drives
+settings but are not rendered or persisted as user choices. A narrow compatibility list
+of hidden legacy render ids is accepted during restore and drops out on the next save
+because persistence is rebuilt from visible rows. The `apply` field drives
 the row dot and reset/reload badge. Stored settings replay on startup; if any restored
 setting is reset-class, the panel calls `app.reset()` once to materialize them.
 
@@ -100,6 +104,9 @@ The bottom launcher has two always-visible segmented controls:
 `Mode` writes only the hidden scheduler booleans:
 Auto rotate enables auto-roll, Waves enables the wave-maker, and Manual disables both.
 `Control` is independent of Mode and chooses what pointer drags manipulate.
+The launcher is fit-content on desktop with a viewport max-width, so it shrinks to the
+two segmented groups instead of spanning a fixed wide panel. On narrow screens it wraps
+to full-width groups without changing the control semantics.
 
 Pointer-button mapping in `web/main.js`:
 
@@ -119,15 +126,18 @@ state and remains selected across reset. A full reload returns to Auto rotate + 
 ## Capture harness
 
 `tools/capture.mjs` runs on Windows via
-`node tools/capture.mjs <url> <out.png> [waitMs] [chromePath]`. It launches real-GPU
-headless Chrome with WebGPU flags, navigates to the dev server, waits, then writes a PNG
-and `<out>.console.txt`.
+`node tools/capture.mjs <url> <out.png> [waitMs] [chromePath] [evalJs]
+[viewportWidth] [viewportHeight]`. It launches real-GPU headless Chrome with WebGPU
+flags, navigates to the dev server, waits, then writes a PNG and `<out>.console.txt`.
+The CLI `evalJs` and viewport args mirror the env hooks and avoid brittle shell/env
+quoting when captures are launched through `cmd.exe`.
 
 Environment hooks:
 
 | Var | Effect |
 |---|---|
 | `EVAL=<js>` | Evaluates JS in the page and waits `EVAL_WAIT` ms after. |
+| `VIEWPORT_WIDTH` / `VIEWPORT_HEIGHT` | Override the default `1280x800` viewport. |
 | `PARTICLES=N` | Applies an exact requested particle count and resets for scale smoke. |
 | `DETAILED=1` | Enables detailed GPU profiling before the scale reset. |
 | `DRAG=1` | Drags the orbit camera across the canvas centre before screenshotting. |
@@ -141,6 +151,10 @@ appears, the screenshot is the unsupported overlay and is not valid visual evide
 
 - The static shell depends on a fresh `web/pkg/fluid_lab.js` + `fluid_lab_bg.wasm` from
   `wasm-pack build --target web`; stale pkg files mean stale Rust exports.
+- Core shell CSS uses a token layer in `index.html` (`--app-bg`, surface/chrome colors,
+  text colors, accents/states, radii, spacing, control height, panel width, focus ring,
+  and panel shadow). New panel/launcher styling should consume those tokens before
+  adding one-off colors.
 - `window.__fluid` is the Rust control surface; `window.__fluidShell` is the shell
   control surface.
 - Canvas sizing uses CSS client size multiplied by `devicePixelRatio`; resizing the

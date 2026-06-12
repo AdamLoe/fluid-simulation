@@ -8,23 +8,43 @@
     <style>
       :root {
         color-scheme: dark;
+        --app-bg: #0a0c10;
         --chrome-bg: rgba(12, 16, 24, 0.62);
         --chrome-border: rgba(78, 92, 120, 0.55);
         --chrome-hover: rgba(31, 38, 54, 0.92);
         --panel-bg: rgba(15, 18, 25, 0.92);
         --panel-header: rgba(24, 29, 40, 0.95);
+        --panel-border: #2a3142;
+        --control-bg: #0f1219;
+        --control-hover: #232b3d;
+        --divider: #1d2230;
+        --text-body: #cdd6e4;
         --text-muted: #8e99ae;
         --text-strong: #f0f4fa;
         --accent: #7dd3fc;
         --accent-strong: #38bdf8;
+        --active: #4ade80;
+        --warning: #fbbf24;
+        --danger: #f87171;
         --success: #4ade80;
+        --focus-ring: rgba(125, 211, 252, 0.9);
+        --radius-sm: 4px;
+        --radius-md: 6px;
+        --radius-lg: 8px;
+        --space-1: 4px;
+        --space-2: 8px;
+        --space-3: 12px;
+        --control-height: 32px;
+        --panel-width: clamp(380px, 34vw, 520px);
+        --settings-nav-width: 148px;
+        --shadow-panel: 0 12px 32px rgba(0, 0, 0, 0.44);
       }
 
       html, body {
         margin: 0;
         height: 100%;
-        background: #0a0c10;
-        color: #cdd6e4;
+        background: var(--app-bg);
+        color: var(--text-body);
         font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
 
@@ -101,7 +121,7 @@
         min-width: 0;
         padding: 9px 12px;
         border: 1px solid var(--chrome-border);
-        border-radius: 8px;
+        border-radius: var(--radius-lg);
         background: var(--chrome-bg);
         backdrop-filter: blur(10px);
         -webkit-backdrop-filter: blur(10px);
@@ -150,7 +170,7 @@
       .icon-btn:focus-visible,
       .mode-chip:focus-visible,
       .tab-btn:focus-visible {
-        outline: 2px solid rgba(125, 211, 252, 0.9);
+        outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
       }
 
@@ -166,16 +186,16 @@
 
       .settings-panel {
         position: relative;
-        flex: 0 0 clamp(320px, 30vw, 420px);
+        flex: 0 0 var(--panel-width);
         margin: 12px 12px 12px 0;
         min-width: 0;
         display: flex;
         flex-direction: column;
-        border: 1px solid #2a3142;
-        border-radius: 8px;
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-lg);
         background: var(--panel-bg);
         overflow: hidden;
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.44);
+        box-shadow: var(--shadow-panel);
         backdrop-filter: blur(10px);
         -webkit-backdrop-filter: blur(10px);
         z-index: 20;
@@ -187,31 +207,68 @@
 
       .settings-header {
         display: flex;
-        flex-direction: column;
-        padding: 10px 12px 8px;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-2);
+        padding: 9px 10px;
         background: var(--panel-header);
-        border-bottom: 1px solid #2a3142;
+        border-bottom: 1px solid var(--panel-border);
+      }
+
+      .settings-title {
+        color: var(--text-strong);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .settings-content {
+        min-height: 0;
+        flex: 1;
+        display: grid;
+        grid-template-columns: var(--settings-nav-width) minmax(0, 1fr);
       }
 
       .settings-tabs {
         display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 8px;
+        border-right: 1px solid var(--panel-border);
+        background: rgba(10, 13, 19, 0.45);
+      }
+
+      .tab-group-label {
+        padding: 8px 6px 2px;
+        color: #6b7689;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
       }
 
       .tab-btn {
-        flex: 1 1 96px;
-        min-width: 92px;
-        border: 1px solid #2a3142;
-        border-radius: 6px;
+        flex: 0 0 auto;
+        min-height: 30px;
+        width: 100%;
+        min-width: 0;
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-md);
         background: rgba(15, 18, 25, 0.78);
         color: var(--text-muted);
         padding: 6px 8px;
         cursor: pointer;
+        text-align: left;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       .tab-btn:hover {
-        background: #232b3d;
+        background: var(--control-hover);
         color: #dbe6f6;
       }
 
@@ -221,13 +278,43 @@
         background: rgba(26, 44, 62, 0.82);
       }
 
+      .tab-btn.tab-experimental {
+        border-color: rgba(251, 191, 36, 0.28);
+      }
+
+      .settings-panel.nav-collapsed .settings-content {
+        grid-template-columns: 48px minmax(0, 1fr);
+      }
+
+      .settings-panel.nav-collapsed .tab-group-label {
+        display: none;
+      }
+
+      .settings-panel.nav-collapsed .tab-btn {
+        height: 30px;
+        padding: 0;
+        font-size: 0;
+      }
+
+      .settings-panel.nav-collapsed .tab-btn::before {
+        content: attr(data-tab);
+        display: block;
+        color: inherit;
+        font-size: 10px;
+        font-weight: 700;
+        text-align: center;
+        text-transform: uppercase;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+
       .settings-body {
         flex: 1;
         overflow-y: auto;
         overflow-x: hidden;
         padding: 8px 0 12px;
         scrollbar-width: thin;
-        scrollbar-color: #2a3142 transparent;
+        scrollbar-color: var(--panel-border) transparent;
       }
 
       .settings-body::-webkit-scrollbar {
@@ -239,7 +326,7 @@
       }
 
       .settings-body::-webkit-scrollbar-thumb {
-        background: #2a3142;
+        background: var(--panel-border);
         border-radius: 3px;
       }
 
@@ -251,13 +338,13 @@
         letter-spacing: 0.1em;
         text-transform: uppercase;
         color: #6b7689;
-        border-bottom: 1px solid #1d2230;
+        border-bottom: 1px solid var(--divider);
         margin-bottom: 2px;
       }
       .cfg-group {
         margin: 6px 8px 4px;
         border: 1px solid #252c3c;
-        border-radius: 7px;
+        border-radius: var(--radius-md);
         background: rgba(15,18,25,0.55);
         overflow: hidden;
       }
@@ -333,7 +420,7 @@
       }
       .cfg-label {
         font-size: 12px;
-        color: #cdd6e4;
+        color: var(--text-body);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -384,51 +471,61 @@
       .cfg-slider {
         flex: 1;
         height: 3px;
-        accent-color: #4a9eff;
+        accent-color: var(--accent-strong);
         cursor: pointer;
         min-width: 0;
       }
       .cfg-number {
         width: 58px;
-        background: #0f1219;
-        border: 1px solid #2a3142;
-        border-radius: 4px;
-        color: #cdd6e4;
+        background: var(--control-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-sm);
+        color: var(--text-body);
         font-size: 11px;
         padding: 2px 4px;
         text-align: right;
         flex-shrink: 0;
       }
-      .cfg-number:focus { outline: none; border-color: #4a9eff; }
+      .cfg-number:focus { outline: none; border-color: var(--accent-strong); }
       .cfg-select {
         flex: 1;
         min-width: 0;
-        background: #0f1219;
-        border: 1px solid #2a3142;
-        border-radius: 4px;
-        color: #cdd6e4;
+        background: var(--control-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-sm);
+        color: var(--text-body);
         font-size: 11px;
         padding: 3px 4px;
         cursor: pointer;
       }
-      .cfg-select:focus { outline: none; border-color: #4a9eff; }
+      .cfg-select:focus { outline: none; border-color: var(--accent-strong); }
+      .cfg-color {
+        width: 44px;
+        height: 26px;
+        padding: 1px 2px;
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-sm);
+        background: var(--control-bg);
+        cursor: pointer;
+        flex-shrink: 0;
+      }
       .cfg-reset-btn {
         flex-shrink: 0;
         width: 22px;
         height: 22px;
         display: grid;
         place-items: center;
-        background: #0f1219;
-        border: 1px solid #2a3142;
-        border-radius: 4px;
+        background: var(--control-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-sm);
         color: #8a93a6;
         font-size: 13px;
         line-height: 1;
         cursor: pointer;
         padding: 0;
       }
-      .cfg-reset-btn:hover { background: #232b3d; color: #cdd6e4; border-color: #3a4456; }
-      .cfg-reset-btn:focus { outline: none; border-color: #4a9eff; }
+      .cfg-reset-btn:hover { background: var(--control-hover); color: var(--text-body); border-color: #3a4456; }
+      .cfg-reset-btn:focus { outline: none; border-color: var(--accent-strong); }
       .cfg-badge {
         display: inline-block;
         font-size: 10px;
@@ -439,8 +536,8 @@
         margin-left: 13px;
         width: fit-content;
       }
-      .badge-reset  { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
-      .badge-reload { background: rgba(248,113,113,0.15); color: #f87171; border: 1px solid rgba(248,113,113,0.3); }
+      .badge-reset  { background: rgba(251,191,36,0.15); color: var(--warning); border: 1px solid rgba(251,191,36,0.3); }
+      .badge-reload { background: rgba(248,113,113,0.15); color: var(--danger); border: 1px solid rgba(248,113,113,0.3); }
       .cfg-actions {
         display: flex;
         gap: 8px;
@@ -450,15 +547,15 @@
       .panel-btn {
         flex: 1;
         background: #1b2130;
-        color: #cdd6e4;
-        border: 1px solid #2a3142;
+        color: var(--text-body);
+        border: 1px solid var(--panel-border);
         padding: 5px 8px;
         border-radius: 5px;
         cursor: pointer;
         font-size: 11px;
         white-space: nowrap;
       }
-      .panel-btn:hover { background: #232b3d; }
+      .panel-btn:hover { background: var(--control-hover); }
       .panel-empty {
         padding: 16px 12px;
         color: #6b7689;
@@ -495,7 +592,7 @@
       .prof-header-row .prof-val { font-weight: 600; }
       .prof-divider {
         height: 1px;
-        background: #1d2230;
+        background: var(--divider);
         margin: 5px 0;
       }
       .prof-section-label {
@@ -525,7 +622,8 @@
       }
 
       .launcher-shell {
-        width: min(760px, 100%);
+        width: fit-content;
+        max-width: calc(100% - 24px);
         display: flex;
         flex-wrap: wrap;
         align-items: center;
@@ -533,7 +631,7 @@
         gap: 10px 12px;
         padding: 10px 12px;
         border: 1px solid var(--chrome-border);
-        border-radius: 8px;
+        border-radius: var(--radius-lg);
         background: var(--chrome-bg);
         backdrop-filter: blur(10px);
         -webkit-backdrop-filter: blur(10px);
@@ -559,16 +657,16 @@
       .mode-chip {
         min-height: 36px;
         padding: 7px 12px;
-        border: 1px solid #2a3142;
-        border-radius: 6px;
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-md);
         background: rgba(15, 18, 25, 0.82);
-        color: #cdd6e4;
+        color: var(--text-body);
         cursor: pointer;
         white-space: nowrap;
       }
 
       .mode-chip:hover {
-        background: #232b3d;
+        background: var(--control-hover);
       }
 
       .mode-chip.mode-active {
@@ -582,15 +680,15 @@
         inset: 0;
         display: none;
         place-items: center;
-        background: #0a0c10;
+        background: var(--app-bg);
         padding: 24px;
       }
 
       #unsupported .card {
         max-width: 560px;
         background: #11141b;
-        border: 1px solid #2a3142;
-        border-radius: 8px;
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-lg);
         padding: 24px;
       }
 
@@ -633,7 +731,7 @@
           top: 116px;
           right: 10px;
           bottom: 132px;
-          width: min(420px, calc(100vw - 20px));
+          width: min(520px, calc(100vw - 20px));
           margin: 0;
         }
       }
@@ -660,8 +758,46 @@
           bottom: 146px;
         }
 
+        .settings-content {
+          display: flex;
+          flex-direction: column;
+        }
+
+        .settings-tabs {
+          max-height: 112px;
+          flex-direction: row;
+          flex-wrap: wrap;
+          border-right: 0;
+          border-bottom: 1px solid var(--panel-border);
+        }
+
+        .tab-group-label {
+          width: 100%;
+          padding-left: 4px;
+        }
+
+        .tab-btn {
+          flex: 1 1 108px;
+          width: auto;
+          text-align: center;
+        }
+
+        .settings-panel.nav-collapsed .settings-content {
+          display: flex;
+        }
+
+        .settings-panel.nav-collapsed .tab-btn {
+          font-size: 11px;
+          padding: 6px 8px;
+        }
+
+        .settings-panel.nav-collapsed .tab-btn::before {
+          content: none;
+        }
+
         .launcher-shell {
           justify-content: stretch;
+          width: 100%;
         }
 
         .launcher-group {
@@ -731,9 +867,18 @@
 
         <aside id="settings-panel" class="settings-panel" aria-label="Settings" hidden>
           <div class="settings-header">
-            <div id="settings-tabs" class="settings-tabs" role="tablist" aria-label="Settings sections"></div>
+            <div class="settings-title">Settings</div>
+            <button id="settings-nav-toggle" class="icon-btn" type="button" aria-label="Collapse settings navigation" title="Collapse settings navigation" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 6h12M6 12h12M6 18h12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+              </svg>
+              <span class="visually-hidden">Toggle settings navigation</span>
+            </button>
           </div>
-          <div id="settings-body" class="settings-body"></div>
+          <div class="settings-content">
+            <div id="settings-tabs" class="settings-tabs" role="tablist" aria-label="Settings sections"></div>
+            <div id="settings-body" class="settings-body"></div>
+          </div>
         </aside>
       </div>
     </div>

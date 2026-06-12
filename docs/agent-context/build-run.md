@@ -109,7 +109,7 @@ page console. It must run under **Windows** node + Windows Chrome:
 - If your shell is already on the **Windows** side, run it plainly:
 
   ```
-  node app/tools/capture.mjs http://localhost:5184/ out.png [waitMs] [chromePath]
+  node app/tools/capture.mjs http://localhost:5184/ out.png [waitMs] [chromePath] [evalJs] [viewportWidth] [viewportHeight]
   ```
 
 Point the harness at the **bare** `http://localhost:5184/` (the same URL you open in a
@@ -119,8 +119,11 @@ serving in another shell — the harness only drives the page, it does not build
 It writes the PNG + a `<out>.console.txt` beside it. **A bare output filename (e.g.
 `boot.png`) lands in the repo `captures/` dir** (gitignored), anchored to the script
 location — so screenshots never pollute `app/tools/`, whatever cwd you launched from.
-Pass a path with a directory to override. The 4th positional arg overrides the Chrome
-path (default `C:/Program Files/Google/Chrome/Application/chrome.exe`). Env hooks:
+Pass a path with a directory to override. The optional `chromePath` arg overrides the
+default `C:/Program Files/Google/Chrome/Application/chrome.exe`; pass `""` to keep the
+default while providing later args. The optional `evalJs` arg is the CLI equivalent of
+`EVAL` and is useful when cross-shell env quoting is brittle. The optional viewport args
+override the default `1280x800` viewport. Env hooks:
 `PARTICLES=N` applies an exact requested particle count and resets; `DETAILED=1`
 enables detailed GPU profiling before that reset; `MEASURE_WAIT=ms` controls the
 post-reset sample window. `DRAG=1` exercises the orbit camera; `EVAL=...` runs a JS
