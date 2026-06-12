@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-08
+last_updated:  2026-06-12
 okay_to_delete: false
 long_lived:    true
 ---
@@ -125,7 +125,7 @@ local frame.
 
 **Compactness is split across physics and rendering.** `render.particle_size` only changes how large particles look. `particles.count` plus the selected scene preset control the initial seeded mass/distribution and require Reset. `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp` are the volume-correction trio: sufficiently occupied liquid cells above the rest particles/cell target receive a clamped negative divergence bias so projection pushes crowded regions outward. `classify.liquid_threshold` and `classify.surface_dilation` decide which occupied cells participate as liquid; the default dilation is 0 so thin cells are not automatically expanded. `solver.pressure_iterations` controls incompressibility quality/perf, not visual particle overlap.
 
-**Pressure solve ceiling (~19.2k liquid cells at 64³) is FLIP volume loss, not solver deficit.** Both CG-30 and brute-force Jacobi-400 plateau at the same occupied-cell count. The GPU pressure path remains a zero-initial, fixed-iteration loop; host-reference warm-start/tolerance support is only prep for future GPU work. See `pressure-solver.md` and `../decisions/pressure.md`.
+**Pressure solve ceiling (~19.2k liquid cells at 64³) is FLIP volume loss, not solver deficit.** Both CG-30 and brute-force Jacobi-400 plateau at the same occupied-cell count. The default GPU pressure path remains a zero-initial, fixed-iteration loop; `solver.pressure_residual_tolerance` and `solver.pressure_warm_start` are opt-in Live controls that preserve the fixed dispatch loop and avoid normal-frame readback. See `pressure-solver.md` and `../decisions/pressure.md`.
 
 **Occupied-cell drift is only a liveness proxy.** The capture harness can baseline
 the throttled `gpu.liquid_cells` counter after reset and report an

@@ -706,6 +706,28 @@ impl Default for Registry {
                 apply: ApplyClass::Live,
             },
             Setting {
+                id: "solver.pressure_warm_start",
+                label: "Pressure warm start",
+                category: Category::Solver,
+                default: Value::U32(0),
+                value: Value::U32(0),
+                validation: Validation::U32Range { min: 0, max: 1 },
+                tooltip: Some("Reuses the previous pressure field as the next solve's initial guess."),
+                technical_tooltip: Some("Live CG initialization toggle. 0 preserves the zero-start pressure solve; 1 keeps the previous liquid pressure, initializes r = b - A*p_old, and zeros non-liquid pressure."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
+                id: "solver.pressure_residual_tolerance",
+                label: "Pressure residual tolerance",
+                category: Category::Solver,
+                default: Value::F32(0.0),
+                value: Value::F32(0.0),
+                validation: Validation::F32Range { min: 0.0, max: 0.1 },
+                tooltip: Some("Optionally skips pressure-solver math after the relative residual is small; 0 keeps the fixed-iteration solve."),
+                technical_tooltip: Some("Live CG relative residual tolerance. 0 disables active gating. When enabled, GPU shaders stop doing heavy cell/reduction work after rs_new <= tolerance^2 * rs_initial, while dispatch count stays fixed."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
                 id: "render.particle_size",
                 label: "Particle size",
                 category: Category::Render,
@@ -1626,6 +1648,16 @@ impl Registry {
             .map(|s| s.as_u32())
             .unwrap_or(40)
     }
+    pub fn pressure_warm_start(&self) -> bool {
+        self.get("solver.pressure_warm_start")
+            .map(|s| s.as_u32() != 0)
+            .unwrap_or(false)
+    }
+    pub fn pressure_residual_tolerance(&self) -> f32 {
+        self.get("solver.pressure_residual_tolerance")
+            .map(|s| s.as_f32())
+            .unwrap_or(0.0)
+    }
     pub fn particle_size(&self) -> f32 {
         self.get("render.particle_size")
             .map(|s| s.as_f32())
@@ -2115,7 +2147,8 @@ fn enum_options(id: &str) -> Option<&'static [&'static str]> {
         "render.hero.refraction_enabled"
         | "render.hero.reflection_enabled"
         | "render.hero.body_color_enabled"
-        | "render.hero.wall_contact_enabled" => Some(&["Disabled", "Enabled"]),
+        | "render.hero.wall_contact_enabled"
+        | "solver.pressure_warm_start" => Some(&["Disabled", "Enabled"]),
         "render.hero.invalid_refraction_fallback" => Some(&["Unrefracted", "Base tint"]),
         "render.hero.skybox_enabled" => Some(&["Disabled", "Enabled"]),
         "render.hero.micro_normal_enabled" => Some(&["Disabled", "Enabled"]),
@@ -2288,6 +2321,43 @@ mod tests {
 
         assert!(registry.set_value_f64("solver.pressure_iterations", 1.0e100));
         assert_eq!(registry.u32_or("solver.pressure_iterations", 0), 200);
+
+        assert!(registry.set_value_f64("solver.pressure_warm_start", 1.0e100));
+        assert!(registry.pressure_warm_start());
+
+        assert!(registry.set_value_f64("solver.pressure_residual_tolerance", 1.0e100));
+        assert_eq!(registry.pressure_residual_tolerance(), 0.1);
+    }
+
+    #[test]
+    fn pressure_warm_start_defaults_off_and_live() {
+        let registry = Registry::default();
+        let setting = registry
+            .get("solver.pressure_warm_start")
+            .expect("warm-start setting exists");
+        let json = registry.config_json();
+
+        assert!(!registry.pressure_warm_start());
+        assert!(matches!(setting.default, Value::U32(0)));
+        assert!(matches!(
+            setting.validation,
+            Validation::U32Range { min: 0, max: 1 }
+        ));
+        assert_eq!(setting.apply, ApplyClass::Live);
+        assert!(json.contains(r#""id":"solver.pressure_warm_start""#));
+        assert!(json.contains(r#""options":["Disabled","Enabled"]"#));
+    }
+
+    #[test]
+    fn pressure_residual_tolerance_defaults_off_and_live() {
+        let registry = Registry::default();
+        let setting = registry
+            .get("solver.pressure_residual_tolerance")
+            .expect("residual tolerance setting exists");
+
+        assert_eq!(registry.pressure_residual_tolerance(), 0.0);
+        assert!(matches!(setting.default, Value::F32(v) if v == 0.0));
+        assert_eq!(setting.apply, ApplyClass::Live);
     }
 
     #[test]

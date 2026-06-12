@@ -128,21 +128,31 @@ and can distort the architecture toward a number nobody needs yet.
 
 **Applies to** — `architecture/gpu-resources.md`, `architecture/profiler.md`.
 
-## Pressure early-exit and warm-start need GPU evidence before performance claims
+## Pressure optimizations need GPU evidence before performance claims
 
-**Decision** — Host-reference support for pressure warm-start and residual tolerance
-is correctness prep only. A pressure performance claim requires the GPU path to be
-wired without normal-frame readback and measured with profiler/capture evidence.
+**Decision** — GPU residual active gating and pressure warm-start are default-off
+Live controls and do not justify pressure performance claims until measured with
+profiler/capture evidence.
 
-**Why** — CPU-side convergence facts do not reduce WebGPU dispatch count or shader
-work by themselves; the current runtime still records the fixed
-`solver.pressure_iterations` loop.
+**Why** — Active gating avoids normal-frame readback and preserves the fixed
+`solver.pressure_iterations` dispatch loop, so it can only reduce shader math/memory
+after convergence. Warm-start preserves `pressure_a` and computes the initial
+residual on GPU, but it also keeps the same fixed CG dispatch count.
 
 **Code anchors** — `app/crates/fluid-lab/src/sim/pressure.rs → cg_solve_with_options`;
-`app/crates/fluid-lab/src/gpu/fluid.rs → record_pressure`.
+`app/crates/fluid-lab/src/gpu/fluid.rs → record_pressure`;
+`app/crates/fluid-lab/src/gpu/shaders/cg_*.wgsl`.
 
-**Revisit when** — GPU active gating, indirect dispatch, or pressure warm-start lands
-behind conservative settings and captures name pressure iteration costs before/after.
+**Revisit when** — Indirect dispatch lands behind conservative settings, or captures
+name pressure iteration costs before/after the default-off pressure controls.
+
+**Current evidence** — Real Chrome/WebGPU smoke captures on 2026-06-12 validated the
+runtime paths: default zero-start (`captures/llm-overhaul-final-default-detailed.png`),
+warm-start via `?set=solver.pressure_warm_start:1`
+(`captures/llm-overhaul-final-warm-start.png`), and warm-start plus residual gating
+(`captures/llm-overhaul-final-warm-residual.png`). All reported
+`gpuDeviceStatus:"ok"` and real GPU timestamps. Treat these as correctness/smoke
+evidence, not a controlled performance benchmark.
 
 **Applies to** — `architecture/pressure-solver.md`, `architecture/profiler.md`.
 

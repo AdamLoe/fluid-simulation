@@ -129,8 +129,9 @@ default while providing later args. The optional `evalJs` arg is the CLI equival
 override the default `1280x800` viewport. Env hooks:
 `PARTICLES=N` applies an exact integer requested particle count and resets; invalid
 values or rejected resets fail the capture. `DETAILED=1` enables detailed GPU
-profiling before that reset; `MEASURE_WAIT=ms` controls the post-reset sample window
-and is polled into `<out>.trace.ndjson`. A final summary is written to
+profiling before that reset; `MEASURE_WAIT=ms` controls the sample window and is
+polled into `<out>.trace.ndjson` for ordinary captures as well as scale/detailed
+measurement captures. A final summary is written to
 `<out>.stats.json` with the raw final `stats_json` and the occupied-cell drift proxy.
 `DRAG=1` exercises the orbit camera; `EVAL=...` runs a JS
 expression against `window.__fluid`; `FRAMES` / `FRAME_INTERVAL` capture a sequence;
@@ -147,6 +148,9 @@ Opt-in assertion env vars:
 `FLUID_ASSERT_REQUIRE_GPU_TIMESTAMP=1`. GPU sim/render budget assertions require
 `stats.timing === "gpu-timestamp"` and non-null `stats.gpu`; otherwise the harness
 fails honestly instead of applying those budgets to CPU fallback timing.
+To test assertion failure behavior without launching Chrome, set
+`FLUID_ASSERT_TEST_STATS='<stats-json>'` with the assertion env vars; the script exits
+after checking the supplied object.
 
 ## Toolchain (pinned)
 

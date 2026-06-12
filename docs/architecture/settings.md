@@ -46,6 +46,26 @@ possible outcome was distinguishable.
 allows; the timestep controller still drops excess accumulated time when the natural
 substep count exceeds the cap.
 
+`solver.pressure_residual_tolerance` is a Live `f32` pressure setting. Default `0`
+means disabled; finite inputs clamp to the registry's conservative relative-residual
+range before the GPU scalar tolerance slot is updated.
+
+`solver.pressure_warm_start` is a Live `u32` boolean pressure setting. Default `0`
+keeps the zero-start pressure solve and comparable default captures. `1` lets the
+GPU pressure init reuse the previous pressure field as the initial CG guess; reset
+and rebuild paths clear the pressure field before reuse.
+
+Portable config payloads use the same persistence version as localStorage:
+
+```json
+{"schema":"fluidlab.config.v1","settings":{"physics.cfl":6}}
+```
+
+`settings` is a registry-id to numeric-value map over visible non-default rows. Import
+callers pass each entry through `set_setting_result_json`; the registry still owns
+clamping, unknown-id rejection, reset/reload classification, and legacy-id handling.
+Enum settings currently serialize as their numeric registry values, not stable slugs.
+
 ## Functional tabs
 
 The visible tabs are:

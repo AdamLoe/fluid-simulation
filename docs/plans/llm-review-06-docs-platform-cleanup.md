@@ -1,8 +1,8 @@
 ---
-status:        active
+status:        shipped
 owner:         codex
 last_updated:  2026-06-12
-okay_to_delete: false
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/gpu-resources.md
@@ -82,10 +82,27 @@ This docs-only pass migrated durable facts without creating a new registry doc:
   back to `architecture/rendering.md` for the removed feature set.
 - Surface-loss current state -> `architecture/gpu-resources.md`: Lost/Outdated
   recreate swapchain-sized targets and continue; Validation returns an error.
-- Platform policy -> `decisions/platform.md`: true WebGPU device loss still needs a
-  future status/reload path.
+- Platform policy -> `decisions/platform.md`: true WebGPU device loss is reload-only;
+  in-place device rebuild remains future work.
+
+Source-level status pass:
+
+- `GpuContext` now tracks `gpu_device_status` as `ok`, transient `surface-lost`,
+  `device-lost`, or `validation-error`.
+- `CurrentSurfaceTexture::Lost | Outdated` set `surface-lost`, recreate
+  swapchain-sized targets, skip the frame, and return to `ok` after the next
+  successful surface acquisition.
+- `CurrentSurfaceTexture::Validation` sets `validation-error` and returns an error.
+- wgpu's device-lost callback sets `device-lost`; the app does not recreate the
+  adapter/device/queue.
+- `FluidApp::gpu_device_status()` exposes the status to JS. The shell includes it
+  in `window.__fluidShell.state().gpuDeviceStatus`, stops scheduling frames on
+  fatal statuses, and shows reload guidance through the existing WebGPU overlay.
+- `tools/capture.mjs` records final shell state and fails when final
+  `gpuDeviceStatus` is `device-lost`/`validation-error` or console output reports
+  WebGPU device loss/validation failures.
 
 Deferred:
 
-- Source-level device-lost status/reload UI remains unimplemented, so this plan stays
-  active.
+- Full WebGPU device recovery remains out of scope. Recovery still means page reload
+  and fresh WebGPU initialization.

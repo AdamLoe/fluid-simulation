@@ -1,7 +1,7 @@
 // Canonical static entry for local verification/capture and production serving.
 // The old Vite/TS stub is not loaded by index.html.
 //
-// URL params for capture control: ?pressure=off  ?paused=1
+// URL params for capture control: ?pressure=off  ?paused=1  ?set=id:value
 // Exposes window.__fluid and window.__fluidShell so the capture harness can drive controls.
 
 import init, { FluidApp } from "./pkg/fluid_lab.js";
@@ -28,11 +28,21 @@ const CONTROL_TARGET_CURSOR = {
   cube: "move",
 };
 
-function showUnsupported(detail) {
+function showUnsupported(detail, title = "WebGPU is not available") {
   const el = document.getElementById("unsupported");
   el.style.display = "grid";
+  const titleEl = document.getElementById("unsupported-title");
+  if (titleEl) titleEl.textContent = title;
   document.getElementById("unsupported-detail").textContent = detail;
   console.error("[fluid-lab] " + detail);
+}
+
+function gpuDeviceStatus(app) {
+  return typeof app.gpu_device_status === "function" ? app.gpu_device_status() : "unknown";
+}
+
+function fatalGpuStatus(status) {
+  return status === "device-lost" || status === "validation-error";
 }
 
 function sizeCanvas(canvas) {
@@ -111,6 +121,7 @@ async function main() {
     return;
   }
   window.__fluid = app;
+  window.__fluidGpuStatus = () => gpuDeviceStatus(app);
 
   if (versionEl) {
     versionEl.textContent = await loadVersionLabel();
@@ -128,6 +139,7 @@ async function main() {
 
   let productMode = "autoRotate";
   let controlTarget = "camera";
+  let stoppedForGpuStatus = false;
   let dragging = false;
   let dragButton = 0;
   let lastX = 0;
@@ -262,7 +274,8 @@ async function main() {
 
   setControlTarget("camera");
   applyProductMode("autoRotate");
-  if (urlSettings.length) panelApi?.applySettings(urlSettings, "url");
+  let urlApplyResult = null;
+  if (urlSettings.length) urlApplyResult = panelApi?.applySettings(urlSettings, "url") || null;
 
   const applyResize = () => {
     sizeCanvas(canvas);
@@ -273,12 +286,22 @@ async function main() {
 
   let last = performance.now();
   const loop = (now) => {
+    if (stoppedForGpuStatus) return;
     const target = app.fps_target();
     const minMs = target > 0 ? 1000 / target : 0;
     const dt = now - last;
     if (dt >= minMs) {
       app.frame(dt);
       last = now;
+      const status = gpuDeviceStatus(app);
+      if (fatalGpuStatus(status)) {
+        stoppedForGpuStatus = true;
+        showUnsupported(
+          `GPU status: ${status}. Rendering has stopped; reload the page to request a new WebGPU device.`,
+          "GPU rendering stopped",
+        );
+        return;
+      }
     }
     requestAnimationFrame(loop);
   };
@@ -324,6 +347,21 @@ async function main() {
     reset() {
       return resetSimulation();
     },
+    applySettings(entries, source = "shell") {
+      return panelApi?.applySettings(entries, source) || null;
+    },
+    importConfigPayload(payload, source = "shell import") {
+      return panelApi?.importConfigPayload(payload, source) || null;
+    },
+    exportConfig() {
+      return panelApi?.exportConfig() || null;
+    },
+    shareUrl() {
+      return panelApi?.shareUrl() || "";
+    },
+    setting(id) {
+      return panelApi?.setting(id) || null;
+    },
     state() {
       return {
         settingsOpen: panelApi?.isOpen() ?? false,
@@ -334,6 +372,9 @@ async function main() {
         controlTarget,
         manualPointerMode: controlTarget,
         paused: app.is_paused(),
+        gpuDeviceStatus: gpuDeviceStatus(app),
+        gpuStopped: stoppedForGpuStatus,
+        urlApplyResult,
       };
     },
   };

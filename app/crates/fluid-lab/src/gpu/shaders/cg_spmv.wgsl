@@ -17,9 +17,16 @@ struct Params {
 @group(0) @binding(1) var<storage, read> cell_type: array<u32>;
 @group(0) @binding(2) var<storage, read> cg_d: array<f32>;
 @group(0) @binding(3) var<storage, read_write> cg_q: array<f32>;
+// cg_scalars layout:
+// 0 rs_old, 1 dot_scratch, 2 alpha, 3 beta, 4 rs_initial, 5 active, 6 tol_sq
+@group(0) @binding(4) var<storage, read> cg_scalars: array<f32>;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (cg_scalars[5] == 0.0) {
+        return;
+    }
+
     let nx = params.gdim.x;
     let ny = params.gdim.y;
     let nz = params.gdim.z;

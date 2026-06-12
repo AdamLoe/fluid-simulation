@@ -91,6 +91,21 @@ import, and UI badges.
 
 **Applies to** — `architecture/settings.md`, `architecture/web-shell.md`.
 
+## Portable config import must stay bridge-backed
+
+**Decision** — URL settings, localStorage restore, file import, and shell smoke hooks
+all submit setting entries through the same `set_setting_result_json` batch path and
+surface the resulting applied/rejected/clamped/reset/reload outcomes.
+
+**Why** — Shareability is useful only if imported configs obey the same typed
+validation and apply-class policy as live UI edits. A second import path would
+recreate the drift that the honest bridge was built to remove.
+
+**Code anchors** — `web/panels.js → applySettingEntries`; `web/main.js →
+window.__fluidShell`.
+
+**Applies to** — `architecture/settings.md`, `architecture/web-shell.md`.
+
 ## The profiler is hierarchical, config-tagged, and timing-source honest from the start
 
 **Decision** — The profiler supports nested scopes (Frame → Simulation → substep →
@@ -127,6 +142,10 @@ whose `timing` is `gpu-timestamp` and whose `gpu` block is non-null.
 
 **Why** — Acceptance gates should turn profiler data into repeatable signals without
 smuggling in fake precision on adapters that expose only the CPU fallback.
+
+**Tradeoffs** — The harness also has an assertion-only stats mode so failure behavior
+can be verified without Chrome, but that mode proves only assertion logic. Browser
+capture remains the acceptance path for real GPU state.
 
 **Code anchors** — `app/tools/capture.mjs → collectAssertionFailures`;
 `app/crates/fluid-lab/src/profiler/mod.rs → Profiler::stats_json`.

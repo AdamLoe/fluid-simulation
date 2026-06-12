@@ -1,5 +1,5 @@
 // CG update: p += alpha*d  ;  r -= alpha*q
-// scalars[2] = alpha
+// scalars[2] = alpha, scalars[5] = active
 // Non-liquid entries of d and q are 0, so p and r remain 0 there — no liquid check needed.
 
 struct Params {
@@ -21,6 +21,10 @@ struct Params {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (cg_scalars[5] == 0.0) {
+        return;
+    }
+
     let cells = params.gdim.x * params.gdim.y * params.gdim.z;
     let c = gid.x;
     if (c >= cells) { return; }

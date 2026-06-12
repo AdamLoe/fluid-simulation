@@ -1,8 +1,8 @@
 ---
-status:        active
+status:        shipped
 owner:         codex
 last_updated:  2026-06-12
-okay_to_delete: false
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/app-shell.md
@@ -48,22 +48,22 @@ The review identifies these themes:
 | Plan | Stage | Status | Owned Area | Purpose |
 |---|---:|---|---|---|
 | `llm-review-01-realtime-step.md` | 1 | Shipped | app shell, profiler, web panel | Make sim-time/wall-time ratio explicit and fix refresh-rate slow motion. |
-| `llm-review-02-observability-gates.md` | 1 | Active | profiler, capture, testing docs | Add volume drift and perf-budget acceptance before optimization work. |
-| `llm-review-03-config-shareability.md` | 2 | Active | settings registry, JS shell | Honest setting outcomes plus registry-backed shareable config URLs. |
-| `llm-review-04-pressure-performance.md` | 3 | Active | pressure solver, GPU passes | Warm-start and residual-gated pressure work after gates exist. |
-| `llm-review-05-volume-fidelity.md` | 4 | Draft | simulation fidelity | Use the new drift metric to select and verify a volume-loss correction. |
-| `llm-review-06-docs-platform-cleanup.md` | 5 | Active | docs, device lifecycle, VRAM | Consolidate removed-feature notes and document platform recovery gaps. |
+| `llm-review-02-observability-gates.md` | 1 | Shipped | profiler, capture, testing docs | Add volume drift and perf-budget acceptance before optimization work. |
+| `llm-review-03-config-shareability.md` | 2 | Shipped | settings registry, JS shell | Honest setting outcomes plus registry-backed shareable config URLs. |
+| `llm-review-04-pressure-performance.md` | 3 | Shipped | pressure solver, GPU passes | Default-off residual gating and warm-start implemented and real-GPU smoke validated. |
+| `llm-review-05-volume-fidelity.md` | 4 | Shipped | simulation fidelity | Two measurement sweeps found no safe default/code change; current occupancy bias remains. |
+| `llm-review-06-docs-platform-cleanup.md` | 5 | Shipped | docs, device lifecycle, VRAM | Consolidated removed-feature notes and added honest GPU status/reload reporting. |
 
 ## Streams
 
 | Stream | Area | Status | Last observed fact | Next action | Blockers |
 |---|---|---|---|---|---|
 | A | Done | Worker added RTF/policy stats, panel display, tests, docs, and changed the measured default cap to `2` while preserving drop-excess hitches. Final capture reported `max_substeps:2`, `natural_substeps:2`, and `substep_cap_hit:false`. | None | Lower refresh/throttled frames can still run below real time by design. |
-| B | Stage 1 done | Worker added opt-in capture assertions, stats/trace sidecars, occupied-cell drift proxy, and tracked memory categories; final capture emitted `stats.json`/trace and passed assertions. | Revisit Rust drift promotion/timing bytes later. | None for stage 1. |
-| C | Settings/shareability | Stage 1 done | Worker added `set_setting_result_json`, registry mutation results, registry-backed `?set=id:value`, bridge-owned legacy restore, and docs; narrow gates passed. | Browser smoke at consolidated gate; preset UI remains deferred. | None |
-| D | Pressure performance | Stage 1 done | Worker added host `cg_solve_with_options`, warm initial guess/tolerance tests, and docs; runtime GPU loop remains unchanged. | Defer GPU active gating/warm-start until browser metrics and review. | GPU stages still need browser metrics. |
-| E | Volume fidelity | Queued | External review names volume loss as the biggest physical defect. | Wait for volume metric from plan 02, then plan correction. | Depends on plan 02. |
-| F | Docs/platform cleanup | Stage 1 done | Worker made rendering the canonical removed-feature owner, replaced duplicated absence prose with pointers, and documented surface/device-loss current state. | Source-level device-loss status remains future work. | None |
+| B | Shipped | Worker added opt-in capture assertions, stats/trace sidecars, ordinary `MEASURE_WAIT` polling, assertion-only stats mode, occupied-cell drift proxy, and tracked timing-buffer memory. | Consolidated browser capture remains orchestrator-owned. | None for code work. |
+| C | Settings/shareability | Shipped | Worker added `set_setting_result_json`, registry mutation results, registry-backed `?set=id:value`, bridge-owned legacy restore, compact share/export/import controls, shell smoke hooks, and docs; narrow gates passed. | Browser smoke can verify via `window.__fluidShell.state().urlApplyResult`, `setting(id)`, `shareUrl()`, and `importConfigPayload(...)`. | None |
+| D | Pressure performance | Shipped | Worker added host `cg_solve_with_options`, GPU residual active gating behind default-off `solver.pressure_residual_tolerance`, and GPU warm-start behind default-off `solver.pressure_warm_start`; real-GPU captures passed default, warm-start, and warm-start+residual paths. | Future indirect dispatch/default-on decisions need controlled benchmarks. | None for this overhaul. |
+| E | Volume fidelity | Shipped | 2026-06-12 sweeps showed the current pressure-coupled occupancy bias is better than `volume_stiffness=0`; stronger candidates inflated occupied cells; nearby softer/clamped candidates were worse than the current default. | Future formula work needs a stronger physical-volume/visual-pulsing gate. | None for this overhaul. |
+| F | Docs/platform cleanup | Shipped | Worker made rendering the canonical removed-feature owner, replaced duplicated absence prose with pointers, documented surface/device-loss current state, added `gpuDeviceStatus` shell reporting, and made capture fail on fatal GPU status/console failures. | Full WebGPU device recovery remains a future reload/reinit project. | None |
 
 ## Sequencing Rules
 
@@ -102,8 +102,7 @@ The review identifies these themes:
 
 ## Consolidated Exit Gate
 
-- All active plan docs either shipped with migration notes or left clearly queued with
-  blockers.
+- All plan docs shipped with migration notes.
 - `cd app && cargo test --lib`
 - `cd app && cargo build --target wasm32-unknown-unknown`
 - If visible/GPU behavior changes, run `app/tools/capture.mjs` through Windows node as
@@ -111,7 +110,7 @@ The review identifies these themes:
 
 ## Gate Evidence
 
-- `cargo test --lib` — passed, 47 tests.
+- Final consolidated `cargo test --lib` — passed, 54 tests.
 - `cargo build --target wasm32-unknown-unknown` — passed.
 - `node --check tools/capture.mjs`, `node --check web/main.js`, and
   `node --check web/panels.js` — passed.
@@ -120,6 +119,36 @@ The review identifies these themes:
   `max_substeps:2`, `natural_substeps:2`, `substep_cap_hit:false`,
   `sim_advanced_ms:16.667`, `wall_raf_ms:20.8`, `real_time_factor:0.8013`,
   `gpu.sim_ms:8.405`, `gpu.render_ms:0.993`, and occupied-cell drift proxy `0`.
+- Plan 02 final worker gates — `node --check tools/capture.mjs`, assertion-only
+  passing/failing checks, `cargo test --lib`, and
+  `cargo build --target wasm32-unknown-unknown` passed. Browser capture was not run
+  by that worker; the orchestrator owns the consolidated real-GPU rerun.
+- Plan 03 final worker gates — `node --check web/main.js`,
+  `node --check web/panels.js`, `cargo test --lib`, and
+  `cargo build --target wasm32-unknown-unknown` passed.
+- Pressure active-gating real-GPU captures — default-off passed at
+  `captures/llm-overhaul-pressure-gating-off-3.png`; tolerance-on via
+  `?set=solver.pressure_residual_tolerance:0.05` passed at
+  `captures/llm-overhaul-pressure-gating-on.png`. Both had `timing:"gpu-timestamp"`
+  and no WebGPU/WGSL validation warnings after the reduction shader fixes.
+- Volume fidelity measurement captures — `captures/llm-review-05-default.png`
+  ended with occupied-cell drift proxy `+0.1383` (34005 -> 38708 cells);
+  `captures/llm-review-05-stiffness0.png` ended at `-0.2978` (13544 -> 9510);
+  `captures/llm-review-05-rd6-vs075-dc075.png` ended at `+0.0299` (49491 -> 50969);
+  `captures/llm-review-05-rd4-vs12-dc10.png` ended at `-0.0058` (62780 -> 62413).
+  The stronger candidates were rejected as default changes because their final
+  occupied-cell counts were inflated relative to the default capture.
+- Pressure warm-start real-GPU captures — default detailed capture passed at
+  `captures/llm-overhaul-final-default-detailed.png`; warm-start URL capture passed
+  at `captures/llm-overhaul-final-warm-start.png`; warm-start plus residual gating
+  passed at `captures/llm-overhaul-final-warm-residual.png`. Final shell states
+  reported `gpuDeviceStatus:"ok"` and URL setting results were applied without
+  rejection.
+- Volume narrow sweep captures — current default with `classify.surface_dilation=0`
+  ended near-flat at `-0.0021` (34423 -> 34350). Nearby candidates ended worse:
+  `volume_stiffness=0.30` at `-0.0849`, `volume_stiffness=0.35` at `-0.0499`,
+  `drift_clamp=0.35` at `-0.0224`, and combined `0.35/0.35` at `-0.0622`. No
+  default/code change was selected.
 
 ## See also
 

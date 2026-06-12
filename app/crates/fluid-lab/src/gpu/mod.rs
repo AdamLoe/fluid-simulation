@@ -21,6 +21,10 @@ use crate::scene::SceneConfig;
 use crate::settings::{self, Registry};
 use glam::{Mat4, Vec3};
 use std::cell::Cell;
+use std::sync::{
+    atomic::{AtomicU8, Ordering},
+    Arc,
+};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Offscreen scene-color format for the hero-water prepass: linear HDR so the
@@ -75,6 +79,42 @@ pub struct GpuMemoryStats {
     pub diffuse_bytes: u64,
     pub timing_bytes: u64,
     pub total_tracked_bytes: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum GpuDeviceStatus {
+    Ok = 0,
+    SurfaceLost = 1,
+    DeviceLost = 2,
+    ValidationError = 3,
+}
+
+impl GpuDeviceStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GpuDeviceStatus::Ok => "ok",
+            GpuDeviceStatus::SurfaceLost => "surface-lost",
+            GpuDeviceStatus::DeviceLost => "device-lost",
+            GpuDeviceStatus::ValidationError => "validation-error",
+        }
+    }
+
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => GpuDeviceStatus::SurfaceLost,
+            2 => GpuDeviceStatus::DeviceLost,
+            3 => GpuDeviceStatus::ValidationError,
+            _ => GpuDeviceStatus::Ok,
+        }
+    }
+
+    fn fatal(self) -> bool {
+        matches!(
+            self,
+            GpuDeviceStatus::DeviceLost | GpuDeviceStatus::ValidationError
+        )
+    }
 }
 
 thread_local! {
@@ -142,6 +182,7 @@ pub struct GpuContext {
     requested_particles: u32,
     estimated_particles: u32,
     scale_status: &'static str,
+    device_status: Arc<AtomicU8>,
 }
 
 impl GpuContext {
@@ -192,6 +233,11 @@ impl GpuContext {
             })
             .await
             .map_err(|e| format!("request_device: {e}"))?;
+        let device_status = Arc::new(AtomicU8::new(GpuDeviceStatus::Ok as u8));
+        let lost_status = device_status.clone();
+        device.set_device_lost_callback(move |_reason, _message| {
+            lost_status.store(GpuDeviceStatus::DeviceLost as u8, Ordering::Relaxed);
+        });
 
         let caps = GpuCaps {
             adapter_name: info.name.clone(),
@@ -430,6 +476,7 @@ impl GpuContext {
             requested_particles,
             estimated_particles,
             scale_status: "ok",
+            device_status,
         })
     }
 
@@ -598,7 +645,11 @@ impl GpuContext {
         let sim_buffers_bytes = self.fluid.buffer_memory_bytes();
         let render_targets_bytes = self.render_target_memory_bytes();
         let diffuse_bytes = self.diffuse.memory_bytes();
-        let timing_bytes = 0;
+        let timing_bytes = self
+            .timers
+            .as_ref()
+            .map(timing::GpuTimers::buffer_memory_bytes)
+            .unwrap_or(0);
         GpuMemoryStats {
             sim_buffers_bytes,
             render_targets_bytes,
@@ -634,6 +685,25 @@ impl GpuContext {
 
     pub fn scale_status(&self) -> &'static str {
         self.scale_status
+    }
+
+    pub fn device_status(&self) -> GpuDeviceStatus {
+        GpuDeviceStatus::from_u8(self.device_status.load(Ordering::Relaxed))
+    }
+
+    pub fn device_status_str(&self) -> &'static str {
+        self.device_status().as_str()
+    }
+
+    pub fn device_status_is_fatal(&self) -> bool {
+        self.device_status().fatal()
+    }
+
+    fn set_device_status(&self, status: GpuDeviceStatus) {
+        if self.device_status().fatal() && !status.fatal() {
+            return;
+        }
+        self.device_status.store(status as u8, Ordering::Relaxed);
     }
 
     pub fn max_compute_workgroups_per_dimension(&self) -> u32 {
@@ -755,6 +825,14 @@ impl GpuContext {
 
     pub fn set_pressure_iters(&mut self, n: u32) {
         self.fluid.set_pressure_iters(&self.queue, n);
+    }
+
+    pub fn set_pressure_warm_start(&mut self, enabled: bool) {
+        self.fluid.set_pressure_warm_start(&self.queue, enabled);
+    }
+
+    pub fn set_pressure_residual_tolerance(&mut self, tol: f32) {
+        self.fluid.set_pressure_residual_tolerance(&self.queue, tol);
     }
 
     pub fn apply_impulse(&self, dv: [f32; 3]) {
@@ -1098,6 +1176,7 @@ impl GpuContext {
         let frame = match self.surface.get_current_texture() {
             Cur::Success(t) | Cur::Suboptimal(t) => t,
             Cur::Outdated | Cur::Lost => {
+                self.set_device_status(GpuDeviceStatus::SurfaceLost);
                 self.surface.configure(&self.device, &self.config);
                 self.depth_view = create_depth(&self.device, self.config.width, self.config.height);
                 self.thickness_view = create_r16_target(
@@ -1167,8 +1246,14 @@ impl GpuContext {
                 return Ok(());
             }
             Cur::Timeout | Cur::Occluded => return Ok(()),
-            Cur::Validation => return Err("surface validation error".to_string()),
+            Cur::Validation => {
+                self.set_device_status(GpuDeviceStatus::ValidationError);
+                return Err("surface validation error".to_string());
+            }
         };
+        if self.device_status() == GpuDeviceStatus::SurfaceLost {
+            self.set_device_status(GpuDeviceStatus::Ok);
+        }
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());

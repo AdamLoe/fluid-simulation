@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-12
 ---
 
 # Decisions — Pressure
@@ -66,8 +66,9 @@ preconditioner.
 
 **Decision** — Pressure is solved only at Liquid cells. Air neighbours are Dirichlet
 `p = 0` (they count in the stencil contributing zero); Solid neighbours are Neumann
-(excluded from both the neighbour sum and the neighbour count). Runtime GPU pressure
-is zeroed each step (no warm-start). Determinism of the solve comes from fixed-order
+(excluded from both the neighbour sum and the neighbour count). The default runtime
+GPU solve is zero-started each step; optional warm-start must still zero non-Liquid
+pressure before gradient reads it. Determinism of the solve comes from fixed-order
 tree reductions in the CG dot products.
 
 **Why** — This is the standard free-surface/closed-tank treatment and keeps the
@@ -79,22 +80,26 @@ integer-P2G determinism invariant (see `decisions/simulation.md`).
 
 **Applies to** — `architecture/pressure-solver.md`, `architecture/simulation.md`.
 
-## Host warm-start and tolerance support stays internal until the GPU path is measured
+## Pressure residual gating and warm-start are default-off and GPU-native
 
-**Decision** — The host CG reference may expose an internal optional initial-pressure
-and relative-residual-tolerance helper, but public/default runtime behavior remains
-fixed-iteration zero-start CG until GPU warm-start or early-exit work is implemented
-and measured.
+**Decision** — The host CG reference may expose internal optional initial-pressure
+and relative-residual-tolerance helpers, while runtime GPU residual gating and
+warm-start are Live but default-off (`solver.pressure_residual_tolerance = 0`,
+`solver.pressure_warm_start = 0`) and keep the fixed dispatch loop.
 
-**Why** — The host helper proves the math and boundary convention without changing
-the shipped GPU loop, pressure-buffer clearing semantics, reset behavior, or the
-no-normal-frame-readback rule.
+**Why** — Relative residual gating can reduce shader math/memory after convergence
+without normal-frame readback. Warm-start can improve the initial CG guess without
+readback by preserving `pressure_a` and computing `r = b - A*p_old` on GPU. Both
+controls are default-off so baseline captures remain comparable, and neither reduces
+dispatch count.
 
 **Code anchors** — `app/crates/fluid-lab/src/sim/pressure.rs → cg_solve`;
-`app/crates/fluid-lab/src/sim/pressure.rs → cg_solve_with_options`.
+`app/crates/fluid-lab/src/sim/pressure.rs → cg_solve_with_options`;
+`app/crates/fluid-lab/src/gpu/fluid.rs → record_pressure`;
+`app/crates/fluid-lab/src/gpu/shaders/cg_*.wgsl`.
 
-**Revisit when** — GPU active gating, indirect dispatch, or pressure warm-start is
-wired behind settings and backed by profiler/capture evidence.
+**Revisit when** — Indirect dispatch lands, or profiler/capture evidence supports
+turning either pressure optimization on by default.
 
 **Applies to** — `architecture/pressure-solver.md`, `architecture/simulation.md`.
 

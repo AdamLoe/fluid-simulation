@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-07
+last_updated:  2026-06-12
 ---
 
 # Decisions — Simulation
@@ -158,6 +158,28 @@ be planned later if it earns the solver risk.
 
 **Applies to** — `architecture/app-shell.md`, `architecture/simulation.md`,
 `architecture/settings.md`.
+
+## Keep the current occupancy-bias defaults until a stronger volume metric exists
+
+**Decision** — Keep `physics.rest_density = 8`, `physics.volume_stiffness = 0.45`,
+and `physics.drift_clamp = 0.5` as the default volume-correction surface. Do not add
+PBF, particle spawning/deletion, source/drain behavior, or a new divergence formula
+from the current occupied-cell proxy alone.
+
+**Why** — The 2026-06-12 capture sweeps showed the existing one-sided,
+pressure-coupled occupancy bias is useful, but the proxy is not strong enough to
+justify a new formula. `volume_stiffness=0` lost occupied cells badly, stronger
+rest-density/stiffness candidates reduced drift only by inflating occupied-cell
+counts, and a narrow sweep around the defaults found the current default best:
+`34423 -> 34350` cells (`-0.0021`) versus softer/clamped candidates between
+`-0.0224` and `-0.0849`.
+
+**Tradeoffs** — The default is a pragmatic liveness/compactness correction, not
+physical mass conservation. Future volume work needs either a better physical-volume
+metric, a visual pulsing gate, or a separately scoped formula change with captures.
+
+**Applies to** — `architecture/simulation.md`, `architecture/pressure-solver.md`,
+`decisions/performance.md`.
 
 ## See also
 

@@ -16,6 +16,9 @@ struct Params {
 @group(0) @binding(1) var<storage, read> vecA: array<f32>;
 @group(0) @binding(2) var<storage, read> vecB: array<f32>;
 @group(0) @binding(3) var<storage, read_write> cg_partials: array<f32>;
+// cg_scalars layout:
+// 0 rs_old, 1 dot_scratch, 2 alpha, 3 beta, 4 rs_initial, 5 active, 6 tol_sq
+@group(0) @binding(4) var<storage, read> cg_scalars: array<f32>;
 
 var<workgroup> sdata: array<f32, 256>;
 
@@ -25,10 +28,11 @@ fn main(
     @builtin(local_invocation_index) li: u32,
     @builtin(workgroup_id) wid: vec3<u32>,
 ) {
+    let is_active = cg_scalars[5] != 0.0;
     let cells = params.gdim.x * params.gdim.y * params.gdim.z;
     let idx = gid.x;
     var prod = 0.0;
-    if (idx < cells) {
+    if (is_active && idx < cells) {
         prod = vecA[idx] * vecB[idx];
     }
     sdata[li] = prod;

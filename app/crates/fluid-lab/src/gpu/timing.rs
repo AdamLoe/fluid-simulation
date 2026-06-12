@@ -242,6 +242,12 @@ impl GpuTimers {
         self.alloc_iters
     }
 
+    /// Tracked timing-buffer bytes: timestamp resolve buffer + mapped readback
+    /// buffer. QuerySet driver memory is not exposed by wgpu and is not included.
+    pub fn buffer_memory_bytes(&self) -> u64 {
+        self.liquid_offset + self.diffuse_offset + 32
+    }
+
     /// Record how many substeps were actually submitted this frame so readback
     /// only sums the valid range (slots beyond it are stale/zero).
     pub fn set_frame_substeps(&self, n: u32) {

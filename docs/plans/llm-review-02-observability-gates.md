@@ -1,8 +1,8 @@
 ---
-status:        active
+status:        shipped
 owner:         codex
 last_updated:  2026-06-12
-okay_to_delete: false
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/profiler.md
@@ -80,11 +80,10 @@ Out of scope:
 
 ## Migration Notes
 
-Stage 1 implementation context has been migrated into the owner docs. The
-consolidated browser capture ran at `captures/llm-overhaul-cap2-smoke.png` and wrote
-the stats/trace sidecars, but the plan stays active because occupied-cell drift
-remains a harness-side proxy rather than a promoted Rust stat and timing-buffer byte
-accounting is still deferred.
+Implementation context has been migrated into the owner docs. No meaningful
+observability-gate code work remains in this plan. The worker did not run a browser
+capture in this pass because the orchestrator owns that consolidated real-GPU gate;
+the existing capture path is still the acceptance path for real GPU evidence.
 
 - Stats/profiler shape and tracked-memory honesty -> `architecture/profiler.md`.
 - GPU resource memory caveats -> `architecture/gpu-resources.md`.
@@ -93,12 +92,15 @@ accounting is still deferred.
   `agent-context/build-run.md`.
 - Source-honest capture gate policy -> `decisions/observability.md`.
 
-Deferred before shipping:
+Final pass notes:
 
-- Decide whether a dedicated assertion-mode browser smoke with intentionally clamped
-  settings is needed before closing this plan, beyond the consolidated capture that
-  proved sidecar output.
-- Decide whether occupied-cell baseline/drift should stay harness-side or be promoted
-  into Rust `stats_json`.
-- Fill exact timing-buffer memory accounting if the timing owner becomes in scope;
-  stage 1 exposes `timing_mb` as `null`.
+- Ordinary captures now poll `stats_json` during `MEASURE_WAIT`, so
+  `<out>.trace.ndjson` normally contains multiple samples when that env var is set.
+- Assertion failure behavior can be proved without Chrome via
+  `FLUID_ASSERT_TEST_STATS='<stats-json>'` plus the usual assertion env vars.
+- `timing_mb` now counts tracked `GpuTimers` buffers (timestamp resolve + mapped
+  readback). Hidden `QuerySet` driver memory is intentionally excluded because `wgpu`
+  does not expose an exact byte size.
+- Occupied-cell baseline/drift stays in the capture sidecar as
+  `occupied_cell_drift_proxy`; it is not promoted into Rust `stats_json` because it is
+  a harness-side liveness proxy, not a physical volume stat.

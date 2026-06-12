@@ -23,7 +23,7 @@ use crate::settings::Registry;
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Params {
-    dims: [u32; 4], // nx (legacy "n"), particle_count, pressure_iters, _
+    dims: [u32; 4], // nx (legacy "n"), particle_count, pressure_iters, pressure_warm_start
     geom: [f32; 4], // h, inv_h, dt, fixed_scale
     phys: [f32; 4], // gravity_y (legacy), rho, flip_blend, wall_friction
     origin: [f32; 4],
@@ -39,6 +39,13 @@ struct Params {
 const FIXED_SCALE: f32 = 65536.0; // 2^16 (see docs/p2g-strategy-note.md)
 pub(crate) const PARTICLE_WG: u32 = 64;
 const WG: u32 = PARTICLE_WG;
+const CG_SCALAR_COUNT: u32 = 7;
+const CG_TOL_SQ_SLOT: u64 = 6;
+
+fn pressure_tol_sq(tol: f32) -> f32 {
+    let clamped = tol.clamp(0.0, 0.1);
+    clamped * clamped
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct ParticleDispatchShape {
@@ -99,6 +106,7 @@ pub struct GpuFluid {
     v_count: u32,
     w_count: u32,
     pressure_iters: u32,
+    pressure_warm_start: bool,
     /// Total bytes of all storage buffers allocated in `new` (for the profiler).
     buffer_bytes: u64,
 
@@ -161,6 +169,7 @@ pub struct GpuFluid {
 
     // bind groups (built once; buffers are stable)
     clear_bg: Vec<(wgpu::BindGroup, u32)>, // (bind group, element count)
+    pressure_clear_bg: (wgpu::BindGroup, u32),
     mark_bg: wgpu::BindGroup,
     classify_bg: wgpu::BindGroup,
     scatter_bg: [wgpu::BindGroup; 3],
@@ -230,7 +239,12 @@ impl GpuFluid {
         let pressure_iters = settings.pressure_iterations().max(1);
 
         let params = Params {
-            dims: [nx, particle_count, pressure_iters, 0],
+            dims: [
+                nx,
+                particle_count,
+                pressure_iters,
+                u32::from(settings.pressure_warm_start()),
+            ],
             geom: [h, 1.0 / h, settings.fixed_dt(), FIXED_SCALE],
             phys: [
                 settings.gravity(),
@@ -299,7 +313,21 @@ impl GpuFluid {
         let cg_q = mk("cg_q", cell_count);
         let red_wgs = cell_count.div_ceil(256);
         let cg_partials = mk("cg_partials", red_wgs);
-        let cg_scalars = mk("cg_scalars", 4);
+        let cg_scalars = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cg_scalars"),
+            contents: bytemuck::cast_slice(&[
+                0.0f32,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                pressure_tol_sq(settings.pressure_residual_tolerance()),
+            ]),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        });
 
         // Sum of every storage buffer allocated above (for the profiler's GPU
         // buffer-memory readout). Each `mk()` buffer is `elems * 4`; particles is
@@ -314,7 +342,7 @@ impl GpuFluid {
             + 1                                           // stats
             + (cell_count as u64) * 2                     // cg_d, cg_q
             + (red_wgs as u64)                            // cg_partials
-            + 4; // cg_scalars
+            + (CG_SCALAR_COUNT as u64); // cg_scalars
         let buffer_bytes: u64 = storage_elems * 4 + (particle_count as u64) * 32;
 
         // --- pipelines ---
@@ -543,7 +571,7 @@ impl GpuFluid {
             })
         };
 
-        let clear_targets: [(&wgpu::Buffer, u32); 10] = [
+        let clear_targets: [(&wgpu::Buffer, u32); 9] = [
             (&u_num, u_count),
             (&u_den, u_count),
             (&v_num, v_count),
@@ -551,7 +579,6 @@ impl GpuFluid {
             (&w_num, w_count),
             (&w_den, w_count),
             (&occupancy, cell_count),
-            (&pressure_a, cell_count),
             (&pressure_b, cell_count),
             (&stats, 1),
         ];
@@ -559,6 +586,10 @@ impl GpuFluid {
             .iter()
             .map(|(b, c)| (bg("clear", &clear_pl, &[b]), *c))
             .collect();
+        let pressure_clear_bg = (
+            bg("clear_pressure_a", &clear_pl, &[&pressure_a]),
+            cell_count,
+        );
 
         let mark_bg = bg("mark", &mark_pl, &[&params_buf, &particles, &occupancy]);
         let classify_bg = bg(
@@ -717,12 +748,13 @@ impl GpuFluid {
                 &pressure_a,
                 &pressure_b,
                 &cg_d,
+                &cg_scalars,
             ],
         );
         let cg_spmv_bg = bg(
             "cg_spmv",
             &cg_spmv_pl,
-            &[&params_buf, &cell_type, &cg_d, &cg_q],
+            &[&params_buf, &cell_type, &cg_d, &cg_q, &cg_scalars],
         );
         // cg_reduce is used for two different vector pairs; create both bind groups from the SAME pipeline layout
         let cg_reduce_rr_bg = {
@@ -743,6 +775,10 @@ impl GpuFluid {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: cg_partials.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: cg_scalars.as_entire_binding(),
                 },
             ];
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -769,6 +805,10 @@ impl GpuFluid {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: cg_partials.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: cg_scalars.as_entire_binding(),
                 },
             ];
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -834,6 +874,7 @@ impl GpuFluid {
             v_count,
             w_count,
             pressure_iters,
+            pressure_warm_start: settings.pressure_warm_start(),
             buffer_bytes,
             particles,
             initial,
@@ -884,6 +925,7 @@ impl GpuFluid {
             cg_dir_pl,
             cg_set_rsold_pl,
             clear_bg,
+            pressure_clear_bg,
             mark_bg,
             classify_bg,
             scatter_bg,
@@ -965,9 +1007,10 @@ impl GpuFluid {
     ///                 per iter: spmv, reduce, reduce_final, alpha, update,
     ///                 reduce, reduce_final, beta, dir)
     ///   finish  = 7 (gradient×3, enforce×3, g2p) when pressure enabled
-    /// Total = 39 + 9*pressure_iters.
+    /// Total = 39 + 9*pressure_iters. Warm-start skips the pressure_a prep clear,
+    /// so its total is 38 + 9*pressure_iters.
     pub fn dispatches_per_substep(&self) -> u32 {
-        39 + 9 * self.pressure_iters
+        39 + 9 * self.pressure_iters - u32::from(self.pressure_warm_start)
     }
     /// Live CG iteration count (for sizing detailed timing slots).
     pub fn pressure_iters(&self) -> u32 {
@@ -1048,6 +1091,23 @@ impl GpuFluid {
         queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&self.params));
     }
 
+    /// Live toggle for using the previous pressure field as the CG initial guess.
+    pub fn set_pressure_warm_start(&mut self, queue: &wgpu::Queue, enabled: bool) {
+        self.pressure_warm_start = enabled;
+        self.params.dims[3] = u32::from(enabled);
+        queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&self.params));
+    }
+
+    /// Live update of CG relative residual gating. 0 disables gating.
+    pub fn set_pressure_residual_tolerance(&mut self, queue: &wgpu::Queue, tol: f32) {
+        let tol_sq = pressure_tol_sq(tol);
+        queue.write_buffer(
+            &self.cg_scalars,
+            CG_TOL_SQ_SLOT * 4,
+            bytemuck::cast_slice(&[tol_sq]),
+        );
+    }
+
     /// Apply a uniform velocity impulse to all particles (for the slosh mode).
     pub fn apply_impulse(&self, device: &wgpu::Device, queue: &wgpu::Queue, dv: [f32; 3]) {
         queue.write_buffer(
@@ -1083,6 +1143,8 @@ impl GpuFluid {
 
     pub fn reset(&mut self, queue: &wgpu::Queue) {
         queue.write_buffer(&self.particles, 0, bytemuck::cast_slice(&self.initial));
+        let zeros = vec![0.0f32; self.cell_count as usize];
+        queue.write_buffer(&self.pressure_a, 0, bytemuck::cast_slice(&zeros));
     }
 
     fn counts(&self) -> [u32; 3] {
@@ -1123,6 +1185,11 @@ impl GpuFluid {
     pub fn dispatch_clear(&self, pass: &mut wgpu::ComputePass<'_>) {
         pass.set_pipeline(&self.clear_pl);
         for (bgrp, count) in &self.clear_bg {
+            pass.set_bind_group(0, bgrp, &[]);
+            pass.dispatch_workgroups(count.div_ceil(WG), 1, 1);
+        }
+        if !self.pressure_warm_start {
+            let (bgrp, count) = &self.pressure_clear_bg;
             pass.set_bind_group(0, bgrp, &[]);
             pass.dispatch_workgroups(count.div_ceil(WG), 1, 1);
         }

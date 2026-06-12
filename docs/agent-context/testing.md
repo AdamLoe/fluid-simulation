@@ -43,6 +43,9 @@ CG-vs-Jacobi convergence
   `FLUID_ASSERT_REQUIRE_GPU_STATS`, and `FLUID_ASSERT_REQUIRE_GPU_TIMESTAMP`.
   GPU sim/render budgets are timestamp-only gates and fail when the final sample is
   not `gpu-timestamp`.
+- Assertion behavior can be checked without Chrome by setting
+  `FLUID_ASSERT_TEST_STATS='<stats-json>'` alongside the assertion env vars; the
+  harness exits before browser launch and returns non-zero when those stats fail.
 - A numerically-passing sim can still be visibly broken (volume loss, clumping,
   wall-stick). The cheap liveness gate is occupied-cell count staying within ~±10%
   over ~10 s — a single throttled counter, not a readback-heavy diagnostic or

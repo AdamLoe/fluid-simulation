@@ -14,21 +14,26 @@ struct Params {
 };
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> cg_partials: array<f32>;
+// cg_scalars layout:
+// 0 rs_old, 1 dot_scratch, 2 alpha, 3 beta, 4 rs_initial, 5 active, 6 tol_sq
 @group(0) @binding(2) var<storage, read_write> cg_scalars: array<f32>;
 
 var<workgroup> sdata: array<f32, 256>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(local_invocation_index) li: u32) {
+    let is_active = cg_scalars[5] != 0.0;
     let cells = params.gdim.x * params.gdim.y * params.gdim.z;
     let num_wg = (cells + 255u) / 256u;
 
     var acc = 0.0;
     var idx = li;
-    loop {
-        if (idx >= num_wg) { break; }
-        acc += cg_partials[idx];
-        idx += 256u;
+    if (is_active) {
+        loop {
+            if (idx >= num_wg) { break; }
+            acc += cg_partials[idx];
+            idx += 256u;
+        }
     }
     sdata[li] = acc;
     workgroupBarrier();

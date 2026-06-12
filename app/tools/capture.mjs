@@ -7,6 +7,8 @@
 //
 // Usage (from Windows node):
 //   node tools/capture.mjs <url> <out.png> [waitMs] [chromePath]
+// Assertion-only mode (no Chrome launch):
+//   FLUID_ASSERT_TEST_STATS='{"timing":"cpu-wallclock"}' FLUID_ASSERT_REQUIRE_GPU_TIMESTAMP=1 node tools/capture.mjs
 //
 // Output location: a BARE filename (e.g. `boot.png`) is written into the repo's
 // `captures/` dir (gitignored), anchored to THIS script's location — so it lands
@@ -17,7 +19,6 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import puppeteer from "puppeteer-core";
 
 // Repo `captures/` dir, resolved relative to this file (app/tools/ → ../../captures),
 // not the cwd. Keeps screenshots out of app/tools/ (which is tracked by git).
@@ -31,7 +32,6 @@ const outPng =
   isAbsolute(outArg) || outArg.includes("/") || outArg.includes("\\")
     ? outArg
     : join(CAPTURES_DIR, outArg);
-mkdirSync(dirname(outPng), { recursive: true });
 const waitMs = parseInt(process.argv[4] || "6000", 10);
 const chromePathArg = process.argv[5] && process.argv[5] !== '""' ? process.argv[5] : "";
 const chromePath =
@@ -57,10 +57,13 @@ const timingRank = {
   "gpu-timestamp": 2,
 };
 const assertions = readAssertions();
+const scaleMeasurementRequested = Boolean(process.env.PARTICLES || process.env.DETAILED === "1");
 
 const consoleLines = [];
 const pageErrors = [];
 const requestFailures = [];
+const webGpuValidationConsoleLines = [];
+const webGpuDeviceLossConsoleLines = [];
 const traceSamples = [];
 let liquidCellsBaseline = null;
 let latestOccupiedCellDrift = null;
@@ -68,6 +71,27 @@ let latestOccupiedCellDrift = null;
 function record(line) {
   consoleLines.push(line);
   console.log(line);
+}
+
+function isWebGpuValidationConsoleFailure(type, text) {
+  if (!["warning", "error", "assert"].includes(type)) return false;
+  return (
+    /Error while parsing WGSL/i.test(text) ||
+    /Invalid ShaderModule|Invalid ComputePipeline|Invalid CommandBuffer/i.test(text) ||
+    /CreateShaderModule|CreateComputePipeline/i.test(text) ||
+    /WebGPU: too many warnings/i.test(text) ||
+    /GPUValidationError|WGSL validation|WebGPU.*validation|validation.*WebGPU/i.test(text) ||
+    /WebGPU.*pipeline|pipeline.*WebGPU|createComputePipeline|createShaderModule/i.test(text) ||
+    /invalid command buffer/i.test(text)
+  );
+}
+
+function isWebGpuDeviceLossConsoleFailure(type, text) {
+  if (!["warning", "error", "assert"].includes(type)) return false;
+  return (
+    /device[- ]?lost|lost device|GPUDeviceLost|DeviceLost/i.test(text) ||
+    /gpu.*device.*lost|webgpu.*device.*lost/i.test(text)
+  );
 }
 
 function envFlag(name) {
@@ -104,9 +128,24 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function envDurationMs(name, defaultValue) {
+  const raw = process.env[name];
+  const n = parseInt(raw || `${defaultValue}`, 10);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`${name} must be a non-negative integer duration in ms`);
+  }
+  return n;
+}
+
 async function readPageStats(page) {
   return await page.evaluate(() =>
     window.__fluid ? JSON.parse(window.__fluid.stats_json()) : null,
+  );
+}
+
+async function readPageShellState(page) {
+  return await page.evaluate(() =>
+    window.__fluidShell?.state ? window.__fluidShell.state() : null,
   );
 }
 
@@ -236,6 +275,20 @@ function collectAssertionFailures(stats) {
   return failures;
 }
 
+if (process.env.FLUID_ASSERT_TEST_STATS) {
+  const stats = JSON.parse(process.env.FLUID_ASSERT_TEST_STATS);
+  const failures = collectAssertionFailures(stats);
+  if (failures.length > 0) {
+    console.error("[harness] assertion self-test failed: " + failures.join(", "));
+    process.exit(1);
+  }
+  console.log("[harness] assertion self-test passed");
+  process.exit(0);
+}
+
+mkdirSync(dirname(outPng), { recursive: true });
+const { default: puppeteer } = await import("puppeteer-core");
+
 const browser = await puppeteer.launch({
   executablePath: chromePath,
   headless: "new",
@@ -252,7 +305,18 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: viewportWidth, height: viewportHeight, deviceScaleFactor: 1 });
 
-  page.on("console", (msg) => record("[console:" + msg.type() + "] " + msg.text()));
+  page.on("console", (msg) => {
+    const type = msg.type();
+    const text = msg.text();
+    const line = "[console:" + type + "] " + text;
+    record(line);
+    if (isWebGpuValidationConsoleFailure(type, text)) {
+      webGpuValidationConsoleLines.push(line);
+    }
+    if (isWebGpuDeviceLossConsoleFailure(type, text)) {
+      webGpuDeviceLossConsoleLines.push(line);
+    }
+  });
   page.on("pageerror", (err) => {
     pageErrors.push(err.message);
     record("[pageerror] " + err.message);
@@ -270,7 +334,7 @@ try {
 
   // Repeatable scale/profiler measurement path. Keep this separate from EVAL so
   // Windows cmd.exe quoting cannot silently drop the requested configuration.
-  if (process.env.PARTICLES || process.env.DETAILED === "1") {
+  if (scaleMeasurementRequested) {
     if (process.env.PARTICLES && !/^\d+$/.test(process.env.PARTICLES)) {
       throw new Error("PARTICLES must be an integer");
     }
@@ -296,7 +360,7 @@ try {
     record("[harness] scale config -> " + JSON.stringify(applied));
     liquidCellsBaseline = null;
     latestOccupiedCellDrift = null;
-    await pollStatsDuring(page, parseInt(process.env.MEASURE_WAIT || "12000", 10), "measure");
+    await pollStatsDuring(page, envDurationMs("MEASURE_WAIT", 12000), "measure");
   }
 
   // Optional: run a JS snippet in the page (e.g. drive reset) then settle.
@@ -321,6 +385,10 @@ try {
     await page.mouse.up();
     record("[harness] performed orbit drag");
     await sleep(500);
+  }
+
+  if (!scaleMeasurementRequested && process.env.MEASURE_WAIT) {
+    await pollStatsDuring(page, envDurationMs("MEASURE_WAIT", 0), "measure");
   }
 
   // Optional: capture a frame sequence (for GIF encoding) into <outPng>.frames/.
@@ -348,8 +416,10 @@ try {
   record("[harness] navigator.gpu present: " + gpu.hasGpu);
   record("[harness] UA: " + gpu.ua);
   const stats = await readPageStats(page);
+  const shellState = await readPageShellState(page);
   traceSamples.push(compactTraceSample("final", Date.now() - captureStartMs, stats));
   record("[harness] stats_json: " + JSON.stringify(stats));
+  record("[harness] shell_state: " + JSON.stringify(shellState));
   if (latestOccupiedCellDrift) {
     record("[harness] occupied_cell_drift_proxy: " + JSON.stringify(latestOccupiedCellDrift));
   }
@@ -369,6 +439,7 @@ try {
         stats_poll_interval_ms: statsPollIntervalMs,
         sample_count: traceSamples.length,
         final_stats: stats,
+        final_shell_state: shellState,
         occupied_cell_drift_proxy: latestOccupiedCellDrift,
       },
       null,
@@ -381,6 +452,15 @@ try {
   if (stats == null) failures.push("stats_json unavailable");
   if (pageErrors.length > 0) failures.push(`${pageErrors.length} page error(s)`);
   if (requestFailures.length > 0) failures.push(`${requestFailures.length} failed request(s)`);
+  if (webGpuValidationConsoleLines.length > 0) {
+    failures.push(`${webGpuValidationConsoleLines.length} WebGPU validation/pipeline warning(s)`);
+  }
+  if (webGpuDeviceLossConsoleLines.length > 0) {
+    failures.push(`${webGpuDeviceLossConsoleLines.length} WebGPU device-loss warning(s)`);
+  }
+  if (["device-lost", "validation-error"].includes(shellState?.gpuDeviceStatus)) {
+    failures.push(`gpuDeviceStatus is ${shellState.gpuDeviceStatus}`);
+  }
   if (smokeFailed) failures.push("WebGPU smoke test failed");
   failures.push(...collectAssertionFailures(stats));
   if (failures.length > 0) {

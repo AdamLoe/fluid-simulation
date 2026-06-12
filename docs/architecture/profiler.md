@@ -83,7 +83,7 @@ Always-present keys additionally include measurement/scale facts:
 grid, dropped-time, dispatch, and GPU fields. `gpu_buffer_mb` remains the legacy
 simulation-buffer figure; categorized tracked-memory fields add `sim_buffers_mb`,
 `render_targets_mb`, `diffuse_mb`, `timing_mb`, and `total_tracked_mb`. `timing_mb`
-is `null` until timing-buffer byte accounting is plumbed through the timing owner.
+is `null` when timestamp timers are unavailable.
 
 The timestep block is flattened into the top-level object for panel compatibility:
 existing `substeps`, `substeps_this_frame`, `accumulated_before_ms`,
@@ -115,9 +115,11 @@ timestamp totals, so foam counter visibility must not be read as a timed cost.
 memory fields come from owners that know their allocation sizes:
 `app/crates/fluid-lab/src/gpu/fluid.rs → GpuFluid::buffer_memory_bytes`,
 `app/crates/fluid-lab/src/gpu/mod.rs → GpuContext::render_target_memory_bytes`,
-and `app/crates/fluid-lab/src/gpu/diffuse.rs → DiffuseSystem::memory_bytes`.
+`app/crates/fluid-lab/src/gpu/diffuse.rs → DiffuseSystem::memory_bytes`, and
+`app/crates/fluid-lab/src/gpu/timing.rs → GpuTimers::buffer_memory_bytes`.
 They do not include hidden driver allocations, pipeline caches, swapchain memory, or
-timing buffers while `timing_mb` is `null`.
+the `GpuTimers` `QuerySet` backing allocation because `wgpu` does not expose that
+driver memory as a byte count.
 
 **GPU readback is throttled, never per-frame.** `record_resolve_and_maybe_copy` → `app/crates/fluid-lab/src/gpu/timing.rs → GpuTimers::record_resolve_and_maybe_copy` copies to the mappable buffer only every 20 frames, and only when no map is already `pending`. Normal frames skip the copy. This is the only allowed readback class.
 

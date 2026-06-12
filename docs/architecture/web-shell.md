@@ -30,7 +30,8 @@ index.html -> main.js -> panels.js
   `?pressure=off`, `?paused=1`, `?flip=N`, `?slice=1`, and `?slicemode=N`.
 - Exposing `window.__fluidShell` helpers for captures:
   `openSettings`, `selectSettingsTab`, `selectProductMode`, `selectControlTarget`,
-  `reset`, and `state`, plus backward-compatible workspace aliases. `reset` returns
+  `reset`, `applySettings`, `importConfigPayload`, `exportConfig`, `shareUrl`,
+  `setting`, and `state`, plus backward-compatible workspace aliases. `reset` returns
   the underlying `FluidApp::reset` boolean.
 
 ## Canonical shell
@@ -67,6 +68,13 @@ to the bridge during restore/import; Rust owns legacy mapping/ignoring and repor
 `legacy_mapped` or `legacy_ignored`. Future saves walk visible non-default rows only,
 so removed ids disappear on the next save.
 
+Each config tab ends with compact portability actions: copy a share URL, export JSON,
+and import JSON. Export emits `{schema:"fluidlab.config.v1", settings:{id:value}}`
+over visible non-default rows. File import also accepts the older raw settings map,
+applies every entry through the same bridge-backed batch path as URL and
+localStorage restore, persists the resulting visible non-default settings, logs the
+structured outcomes, and shows a small applied/rejected/clamped/reset/reload summary.
+
 Shareable registry settings use repeated `set` URL params:
 
 ```
@@ -80,9 +88,21 @@ class entries are stored and warned about; the shell does not auto-reload the pa
 The old `pressure`, `paused`, `slice`, and `slicemode` params remain ad hoc shell
 controls for this stage.
 
+`window.__fluidShell.state().urlApplyResult` retains the boot `set` batch summary for
+browser smoke checks. `window.__fluidShell.setting(id)` returns the current registry
+row from `config_json()`, and the shell methods above expose the same import/export
+and share URL behavior without needing to click the panel.
+
 The Profiler tab polls `app.stats_json()` at 4 Hz while open. It reports foam
 particles/emitted/clamped only; legacy JSON keys for spray and bubble may be present
 as zeroes but are not shown as visible feature counts.
+
+GPU platform status is exposed through `app.gpu_device_status()` and mirrored in
+`window.__fluidShell.state().gpuDeviceStatus`. Current values are `ok`,
+`surface-lost`, `device-lost`, and `validation-error`. `surface-lost` is transient:
+the Rust side recreates swapchain-sized targets and continues. `device-lost` and
+`validation-error` stop the shell frame loop and show the existing WebGPU overlay
+with reload guidance; the app does not attempt in-place WebGPU device recovery.
 
 ## Bottom controls and pointer dispatch
 
@@ -104,23 +124,27 @@ node tools/capture.mjs <url> <out.png> [waitMs] [chromePath] [evalJs] [viewportW
 
 It launches real-GPU headless Chrome with WebGPU flags, records console output and
 page errors, writes a PNG plus `<out>.console.txt`, records `navigator.gpu`, and
-records final `stats_json`.
+records final `stats_json` plus final shell state.
 
 Useful environment hooks: `EVAL`, `EVAL_WAIT`, `VIEWPORT_WIDTH`,
 `VIEWPORT_HEIGHT`, `PARTICLES`, `DETAILED`, `DRAG`, `FRAMES`, `FRAME_INTERVAL`,
 and `SEQ_RESET`.
 
 The harness exits non-zero when WebGPU is unavailable, `stats_json` is missing, page
-errors/request failures occur, requested reset setup is rejected, or the boot smoke
-test reports failure. If `navigator.gpu` is false, the screenshot is the unsupported
-overlay and is not valid visual evidence.
+errors/request failures occur, requested reset setup is rejected, console output
+reports WebGPU validation/device-loss failures, final shell `gpuDeviceStatus` is
+`device-lost` or `validation-error`, or the boot smoke test reports failure. If
+`navigator.gpu` is false, the screenshot is the unsupported overlay and is not valid
+visual evidence.
 
 Every run also writes `<out>.trace.ndjson` and `<out>.stats.json`, including the raw
-final `stats_json` and occupied-cell drift proxy. Scale/detailed measurement runs poll
-during `MEASURE_WAIT`; otherwise the trace contains the final sample. Opt-in assertion
-env vars can fail the run on timing source, frame/GPU budgets, scale status, or
-missing GPU stats; GPU sim/render budget assertions are valid only when the final
-sample is `gpu-timestamp`.
+final `stats_json` and occupied-cell drift proxy. When `MEASURE_WAIT` is set, ordinary
+captures and scale/detailed measurement captures both poll during that window, so the
+trace normally contains multiple samples before the final row. Opt-in assertion env
+vars can fail the run on timing source, frame/GPU budgets, scale status, or missing
+GPU stats; GPU sim/render budget assertions are valid only when the final sample is
+`gpu-timestamp`. `FLUID_ASSERT_TEST_STATS='<json>'` runs those assertion checks against
+provided stats and exits before launching Chrome.
 
 ## Gotchas
 

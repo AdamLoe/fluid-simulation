@@ -350,6 +350,10 @@ impl FluidApp {
     /// timestep controller consumes it.
     #[wasm_bindgen]
     pub fn frame(&mut self, render_dt_ms: f64) {
+        if self.gpu.device_status_is_fatal() {
+            return;
+        }
+
         let render_dt_ms = finite_or_zero_f64(render_dt_ms).max(0.0);
         let render_dt_s = (render_dt_ms as f32) / 1000.0;
         self.profiler.begin_frame(render_dt_ms);
@@ -720,6 +724,17 @@ impl FluidApp {
                 self.gpu.set_pressure_iters(value as u32);
                 log(&format!("[fluid-lab] live pressure_iterations = {value}"));
             }
+            "solver.pressure_warm_start" => {
+                let enabled = value >= 0.5;
+                self.gpu.set_pressure_warm_start(enabled);
+                log(&format!("[fluid-lab] live pressure_warm_start = {enabled}"));
+            }
+            "solver.pressure_residual_tolerance" => {
+                self.gpu.set_pressure_residual_tolerance(value as f32);
+                log(&format!(
+                    "[fluid-lab] live pressure_residual_tolerance = {value}"
+                ));
+            }
             "render.particle_size" => {
                 self.gpu.set_particle_size(value as f32);
                 log(&format!("[fluid-lab] live particle_size = {value}"));
@@ -827,6 +842,11 @@ impl FluidApp {
                 "particles+NOpressure"
             },
         )
+    }
+
+    #[wasm_bindgen]
+    pub fn gpu_device_status(&self) -> String {
+        self.gpu.device_status_str().to_string()
     }
 
     // --- canvas sizing ---
@@ -996,8 +1016,20 @@ mod shader_contract_tests {
     fn cg_reduce_uses_branch_guard_before_tail_loads() {
         let src = include_str!("gpu/shaders/cg_reduce.wgsl");
 
-        assert!(src.contains("if (idx < cells)"));
+        assert!(src.contains("if (is_active && idx < cells)"));
         assert!(!src.contains("select(0.0, vecA[idx] * vecB[idx]"));
+    }
+
+    #[test]
+    fn wgsl_shaders_do_not_use_reserved_active_local() {
+        let shaders = [
+            include_str!("gpu/shaders/cg_reduce.wgsl"),
+            include_str!("gpu/shaders/cg_reduce_final.wgsl"),
+        ];
+
+        for src in shaders {
+            assert!(!src.contains("let active"));
+        }
     }
 
     #[test]
@@ -1009,5 +1041,63 @@ mod shader_contract_tests {
         assert!(beta.contains("if (rs_old > 1e-30)"));
         assert!(!alpha.contains("select("));
         assert!(!beta.contains("select("));
+    }
+
+    #[test]
+    fn cg_scalar_layout_includes_residual_gating_slots() {
+        let init = include_str!("gpu/shaders/cg_init.wgsl");
+        let set_rsold = include_str!("gpu/shaders/cg_set_rsold.wgsl");
+
+        let layout = "0 rs_old, 1 dot_scratch, 2 alpha, 3 beta, 4 rs_initial, 5 active, 6 tol_sq";
+        assert!(init.contains(layout));
+        assert!(set_rsold.contains(layout));
+        assert!(set_rsold.contains("cg_scalars[4] = cg_scalars[1]"));
+        assert!(set_rsold.contains("cg_scalars[5] = 1.0"));
+    }
+
+    #[test]
+    fn cg_init_supports_default_off_pressure_warm_start() {
+        let init = include_str!("gpu/shaders/cg_init.wgsl");
+
+        assert!(init.contains("let warm_start = params.dims.w != 0u"));
+        assert!(init.contains("p_initial = pressure_a[c]"));
+        assert!(init.contains("ap = apply_pressure(c, p_initial)"));
+        assert!(init.contains("let rc = rhs - ap"));
+        assert!(init.contains("pressure_a[c] = 0.0"));
+        assert!(!init.contains("pressure_a[c] = p_initial"));
+    }
+
+    #[test]
+    fn cg_reductions_do_not_return_before_workgroup_barriers() {
+        let reduce = include_str!("gpu/shaders/cg_reduce.wgsl");
+        let reduce_final = include_str!("gpu/shaders/cg_reduce_final.wgsl");
+
+        for src in [reduce, reduce_final] {
+            let before_first_barrier = src
+                .split("workgroupBarrier()")
+                .next()
+                .expect("reduction shader should contain a workgroup barrier");
+            assert!(!before_first_barrier.contains("return;"));
+            assert!(src.contains("let is_active = cg_scalars[5] != 0.0"));
+        }
+    }
+
+    #[test]
+    fn cg_residual_gating_is_default_off_and_shader_gated() {
+        let beta = include_str!("gpu/shaders/cg_beta.wgsl");
+        let spmv = include_str!("gpu/shaders/cg_spmv.wgsl");
+        let reduce = include_str!("gpu/shaders/cg_reduce.wgsl");
+        let reduce_final = include_str!("gpu/shaders/cg_reduce_final.wgsl");
+        let update = include_str!("gpu/shaders/cg_update.wgsl");
+        let dir = include_str!("gpu/shaders/cg_dir.wgsl");
+
+        assert!(beta.contains("if (tol_sq > 0.0 && rs_new <= tol_sq * rs_initial)"));
+        assert!(beta.contains("cg_scalars[5] = 0.0"));
+        for src in [spmv, update, dir] {
+            assert!(src.contains("if (cg_scalars[5] == 0.0)"));
+        }
+        for src in [reduce, reduce_final] {
+            assert!(src.contains("let is_active = cg_scalars[5] != 0.0"));
+        }
     }
 }

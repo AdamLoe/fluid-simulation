@@ -102,10 +102,14 @@ function applySettingEntries(app, entries, source = "settings") {
   let applied = 0;
   let rejected = 0;
   let clamped = 0;
+  let resetApplied = false;
+  let resetRejected = false;
+  const results = [];
 
   for (const [id, value] of entries) {
     const numericValue = typeof value === "number" ? value : Number(value);
     const result = setSetting(app, id, numericValue);
+    results.push(result);
     if (result.ok) {
       applied += 1;
       needsReset = needsReset || !!result.needs_reset;
@@ -117,14 +121,32 @@ function applySettingEntries(app, entries, source = "settings") {
     }
   }
 
-  if (needsReset && !app.reset()) {
-    console.warn(`[panels] ${source} reset-class settings were stored, but reset was rejected`);
+  if (needsReset) {
+    resetApplied = !!app.reset();
+    resetRejected = !resetApplied;
+    if (resetRejected) {
+      console.warn(`[panels] ${source} reset-class settings were stored, but reset was rejected`);
+    } else {
+      console.info(`[panels] ${source} reset-class settings applied via reset`);
+    }
   }
   if (needsReload) {
     console.warn(`[panels] ${source} reload-class settings were stored; reload required`);
   }
 
-  return { applied, rejected, clamped, needsReset, needsReload };
+  const summary = {
+    source,
+    applied,
+    rejected,
+    clamped,
+    needsReset,
+    needsReload,
+    resetApplied,
+    resetRejected,
+    results,
+  };
+  console.info(`[panels] ${source} settings import summary`, summary);
+  return summary;
 }
 
 function fmt(n, decimals) {
@@ -206,12 +228,7 @@ function loadStoredConfig() {
 
 function saveStoredConfig(settings) {
   try {
-    const map = {};
-    for (const s of settings) {
-      if (!HIDDEN_SETTING_IDS.has(s.id) && !isDefaultValue(s)) {
-        map[s.id] = s.value;
-      }
-    }
+    const map = nonDefaultSettingsMap(settings);
     localStorage.setItem(LS_KEY, JSON.stringify(map));
   } catch (e) {
     console.warn("[panels] localStorage write failed:", e);
@@ -223,6 +240,63 @@ function isDefaultValue(s) {
     return s.value === s.default;
   }
   return Math.abs(s.value - s.default) <= 1.0e-6;
+}
+
+function nonDefaultSettingsMap(settings) {
+  const map = {};
+  for (const s of settings) {
+    if (!HIDDEN_SETTING_IDS.has(s.id) && !isDefaultValue(s)) {
+      map[s.id] = s.value;
+    }
+  }
+  return map;
+}
+
+function exportConfigPayload(app) {
+  return {
+    schema: LS_KEY,
+    settings: nonDefaultSettingsMap(safeConfigJson(app)),
+  };
+}
+
+function entriesFromImportPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Config import must be a JSON object.");
+  }
+
+  if ("schema" in payload) {
+    if (payload.schema !== LS_KEY) {
+      throw new Error(`Unsupported config schema: ${payload.schema}`);
+    }
+    if (!payload.settings || typeof payload.settings !== "object" || Array.isArray(payload.settings)) {
+      throw new Error("Config payload is missing a settings object.");
+    }
+    return Object.entries(payload.settings);
+  }
+
+  const settings = payload;
+  return Object.entries(settings);
+}
+
+function buildShareUrl(app) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("set");
+  for (const [id, value] of Object.entries(exportConfigPayload(app).settings)) {
+    url.searchParams.append("set", `${id}:${value}`);
+  }
+  return url.toString();
+}
+
+function formatImportSummary(result) {
+  const parts = [`${result.applied} applied`];
+  if (result.clamped) parts.push(`${result.clamped} clamped`);
+  const unknown = result.results.filter((r) => r.status === "unknown_id").length;
+  if (unknown) parts.push(`${unknown} unknown`);
+  if (result.rejected && result.rejected !== unknown) parts.push(`${result.rejected} rejected`);
+  if (result.resetApplied) parts.push("reset applied");
+  if (result.resetRejected) parts.push("reset failed");
+  if (result.needsReload) parts.push("reload needed");
+  return parts.join(", ");
 }
 
 const APPLY_DOT = {
@@ -332,6 +406,94 @@ function appendResetDefaultsAction(container, app, tabId, tabSettings) {
 
   actions.appendChild(resetBtn);
   container.appendChild(actions);
+  appendShareImportActions(container, app);
+}
+
+function appendShareImportActions(container, app) {
+  const actions = document.createElement("div");
+  actions.className = "cfg-actions cfg-share-actions";
+
+  const status = document.createElement("div");
+  status.className = "cfg-share-status";
+  status.setAttribute("aria-live", "polite");
+
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "panel-btn";
+  copyBtn.type = "button";
+  copyBtn.textContent = "Copy Share URL";
+  copyBtn.title = "Copy a URL with visible non-default settings";
+
+  const exportBtn = document.createElement("button");
+  exportBtn.className = "panel-btn";
+  exportBtn.type = "button";
+  exportBtn.textContent = "Export JSON";
+  exportBtn.title = "Download visible non-default settings as JSON";
+
+  const importBtn = document.createElement("button");
+  importBtn.className = "panel-btn";
+  importBtn.type = "button";
+  importBtn.textContent = "Import JSON";
+  importBtn.title = "Import a settings JSON file";
+
+  const importInput = document.createElement("input");
+  importInput.type = "file";
+  importInput.accept = "application/json,.json";
+  importInput.hidden = true;
+
+  function setStatus(text, isError = false) {
+    status.textContent = text;
+    status.classList.toggle("cfg-share-error", isError);
+  }
+
+  copyBtn.addEventListener("click", async () => {
+    const url = buildShareUrl(app);
+    try {
+      await navigator.clipboard.writeText(url);
+      setStatus("Share URL copied.");
+    } catch (e) {
+      console.warn("[panels] clipboard write failed:", e);
+      setStatus("Copy failed; share URL is in the console.", true);
+    }
+    console.info("[panels] share URL", url);
+  });
+
+  exportBtn.addEventListener("click", () => {
+    const payload = exportConfigPayload(app);
+    const blob = new Blob([JSON.stringify(payload, null, 2) + "\n"], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "fluidlab-config.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setStatus(`Exported ${Object.keys(payload.settings).length} settings.`);
+    console.info("[panels] export config", payload);
+  });
+
+  importBtn.addEventListener("click", () => importInput.click());
+  importInput.addEventListener("change", async () => {
+    const file = importInput.files && importInput.files[0];
+    importInput.value = "";
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text());
+      const result = applySettingEntries(app, entriesFromImportPayload(payload), "file import");
+      persistCurrentSettings(app);
+      setStatus(formatImportSummary(result), result.rejected > 0);
+    } catch (e) {
+      console.warn("[panels] import failed:", e);
+      setStatus("Import failed; see console.", true);
+    }
+  });
+
+  actions.appendChild(copyBtn);
+  actions.appendChild(exportBtn);
+  actions.appendChild(importBtn);
+  actions.appendChild(importInput);
+  container.appendChild(actions);
+  container.appendChild(status);
 }
 
 function appendCategorySections(parent, settings, rowEls, app, pendingApplyIds = new Set()) {
@@ -942,15 +1104,20 @@ export function initPanels(app) {
       if (isOpen) renderActiveTab();
       return result;
     },
+    importConfigPayload(payload, source = "import") {
+      const result = applySettingEntries(app, entriesFromImportPayload(payload), source);
+      persistCurrentSettings(app);
+      if (isOpen) renderActiveTab();
+      return result;
+    },
+    exportConfig() {
+      return exportConfigPayload(app);
+    },
     shareUrl() {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("set");
-      for (const s of safeConfigJson(app)) {
-        if (!HIDDEN_SETTING_IDS.has(s.id) && !isDefaultValue(s)) {
-          url.searchParams.append("set", `${s.id}:${s.value}`);
-        }
-      }
-      return url.toString();
+      return buildShareUrl(app);
+    },
+    setting(id) {
+      return safeConfigJson(app).find((s) => s.id === id) || null;
     },
     isOpen() {
       return isOpen;

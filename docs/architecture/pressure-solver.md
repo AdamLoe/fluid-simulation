@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-12
 okay_to_delete: false
 long_lived:    true
 ---
@@ -16,8 +16,8 @@ algorithm can be swapped without touching the surrounding sim loop.
 ## What it owns
 
 - The MAC-Poisson operator and its RHS (`b_c = −scale·div_c`).
-- The CG iteration state buffers (r, d, q, p, and the scalar slots for rs_old, alpha,
-  beta).
+- The CG iteration state buffers (r, d, q, p, and the scalar slots for rs_old,
+  dot scratch, alpha, beta, initial residual, active flag, and tolerance).
 - The `cg_*.wgsl` kernel set and its dispatch sequencing in `record_pressure`.
 - The host reference implementation and tests (`app/crates/fluid-lab/src/sim/pressure.rs`).
 
@@ -48,7 +48,7 @@ initial field is provided it is copied only for Liquid cells, the residual start
 one algebraic step. Dispatch sequence in `app/crates/fluid-lab/src/gpu/fluid.rs → record_pressure`:
 
 ```
-init (p=0, r=b, d=b)
+init (default p=0, or warm p=previous pressure; r=b-Ap; d=r)
  ↓ reduce+reduce_final+set_rsold  [rs_old = dot(r,r)]
  ↓─────────── repeat pressure_iters times ────────────
  │  spmv    q = A·d
@@ -66,13 +66,32 @@ single scalar slot. Fixed dispatch order → fixed-order floating-point summatio
 run-to-run deterministic on a given GPU. The tail of `cg_reduce` must branch before
 loading vector buffers; do not rely on WGSL `select` to mask out-of-range lanes.
 
+**Residual active gating.** Runtime exposes
+`solver.pressure_residual_tolerance` (Live, default `0`) as an optional relative
+residual tolerance. `0` disables gating and preserves the fixed-iteration behavior.
+When nonzero, `cg_set_rsold` stores the initial residual and marks the solve active;
+`cg_beta` clears the active flag after `rs_new <= tolerance² · rs_initial`. The
+fixed dispatch loop is still recorded every substep. Inactive solves no-op inside the
+heavy SpMV, reduction, update, and direction kernels, so this reduces shader
+math/memory work after convergence without reducing dispatch count or adding CPU
+readback.
+
+**Pressure warm-start.** Runtime exposes `solver.pressure_warm_start` (Live,
+default `0`). Default-off keeps the historical zero-start path and still clears
+`pressure_a` in prep before `cg_init`. When enabled, prep skips that clear so
+`cg_init` can reuse the previous `pressure_a` field for Liquid cells, compute
+`r = b - A*p_old` on GPU, and seed `d = r`. `cg_init` writes `0` into
+non-Liquid pressure entries before the gradient pass can read them. Reset clears
+`pressure_a`, and rebuilds allocate a fresh pressure buffer, so scene/rebuild
+changes do not carry stale pressure.
+
 ## Non-obvious invariants and gotchas
 
-**GPU pressure is zeroed each step — no runtime warm-start.** `cg_init` sets `p = 0`
-before the first iteration every step. The result is deterministic; the previous
-frame's pressure field is discarded. The host reference has an internal warm-initial
-and tolerance helper for GPU-prep tests, but the shipped GPU path still runs the
-fixed `solver.pressure_iterations` loop with no early-exit dispatch gating.
+**GPU warm-start is opt-in.** Default captures use the zero-initial pressure solve:
+prep clears `pressure_a`, `cg_init` starts from `p = 0`, and the previous frame's
+pressure field is discarded. The warm-start setting changes only initialization; it
+does not add CPU readback, indirect dispatch, preconditioning, or a different
+iteration loop.
 
 **Participation is cell-type gated.** Only Liquid cells hold a meaningful pressure.
 Air cells are Dirichlet `p = 0` (they count as neighbours, pushing `n_c` up but
@@ -83,8 +102,8 @@ is the stencil used by both `apply_poisson` and `cg_spmv`.
 The settled-pool residual plateau at ~19.2 k liquid cells (64³) is FLIP volume loss,
 not solver under-convergence — brute-force Jacobi at 400 iters reaches the same
 ceiling. Raising iterations past ~30 has no visible effect on fluid volume.
-The runtime GPU loop is still fixed-count; host-side tolerance support is not a
-performance claim until the GPU path and profiler evidence exist.
+The runtime GPU loop is still fixed-count; residual active gating is not a reduced
+dispatch-count claim.
 
 **Scale consistency.** Relative divergence reduction is independent of ρ. Host tests
 use `ρ = dt = h = 1` (`ProjectionParams::unit`). Runtime uses a hardcoded
@@ -114,6 +133,7 @@ needed inside the pressure or SpMV kernels.
 - The operator stencil changes (e.g. variable-density, ghost-fluid free surface).
 - Preconditioning is added (changes the kernel set and the CG loop structure).
 - `pressure_iters` default changes (verify `cg_beats_jacobi_16cubed` still holds).
+- The default value or reset semantics of `solver.pressure_warm_start` changes.
 - The two-level dot-product reduction workgroup size changes (determinism anchor).
 - Air/Solid boundary conventions change (must stay consistent between `apply_poisson`
   and `cg_spmv`).

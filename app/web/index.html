@@ -499,6 +499,18 @@
         padding: 10px 12px 4px;
         flex-wrap: wrap;
       }
+      .cfg-share-actions {
+        padding-top: 4px;
+      }
+      .cfg-share-status {
+        min-height: 16px;
+        padding: 2px 12px 8px;
+        color: var(--text-muted);
+        font-size: 11px;
+      }
+      .cfg-share-status.cfg-share-error {
+        color: var(--warning);
+      }
       .panel-btn {
         flex: 1;
         background: #1b2130;
@@ -818,7 +830,7 @@
 
     <div id="unsupported">
       <div class="card">
-        <h1>WebGPU is not available</h1>
+        <h1 id="unsupported-title">WebGPU is not available</h1>
         <p>This 3D fluid lab runs entirely on the GPU via <strong>WebGPU</strong>, which
            this browser doesn't expose. Try a recent <strong>Chrome or Edge</strong>
            (desktop) with <code>navigator.gpu</code> available.</p>

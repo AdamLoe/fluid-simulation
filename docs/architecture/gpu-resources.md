@@ -27,6 +27,8 @@ render targets, sub-renderers, timers, caps, and `GpuFluid` simulation state.
   layout changes.
 - Particle-scale preflight/status - requested, estimated, actual, dispatch shape,
   storage limits, and `scale_status`.
+- Device/surface status - `gpu_device_status` values reported as `ok`,
+  `surface-lost`, `device-lost`, or `validation-error`.
 
 Removed render feature ownership lives in `rendering.md`; `GpuContext` only owns
 targets and passes for the current renderer set.
@@ -68,6 +70,16 @@ CG workspace   cg_d / cg_q / cg_partials / cg_scalars
 Grid scalar    divergence / occupancy / cell_type / stats
 ```
 
+`cg_scalars` is a tiny seven-`f32` storage buffer shared by the CG scalar kernels:
+`rs_old`, dot scratch, alpha, beta, initial residual, active flag, and tolerance
+squared. The tolerance slot is updated through a Live queue write; the active flag is
+GPU-owned during each pressure solve.
+
+`pressure_a` is the pressure field read by gradient. With the default
+`solver.pressure_warm_start = 0`, prep clears it before each solve. With warm-start
+enabled, prep preserves it so `cg_init` can form the initial residual from the
+previous pressure; reset clears it explicitly before the next solve.
+
 The tank is rectangular with uniform cell size and per-axis counts. Reset-class grid
 or particle changes rebuild `GpuFluid` and renderers that bind sim buffers.
 
@@ -85,14 +97,17 @@ particles. `GpuTimers` is also rebuilt when timestamp queries are available.
 ## Surface loss and device loss
 
 `GpuContext::render` treats `CurrentSurfaceTexture::Lost` and
-`CurrentSurfaceTexture::Outdated` as recoverable surface events: it reconfigures the
-surface, recreates the swapchain-sized target views, rebinds composite/smoothing
-views, skips that frame, and lets the next frame continue. `Timeout` and `Occluded`
-also skip the frame. `Validation` returns an error to the caller.
+`CurrentSurfaceTexture::Outdated` as recoverable surface events: it sets
+`gpu_device_status` to `surface-lost`, reconfigures the surface, recreates the
+swapchain-sized target views, rebinds composite/smoothing views, skips that frame,
+and lets the next frame continue. The next successful surface acquisition returns
+the status to `ok`. `Timeout` and `Occluded` skip the frame without changing status.
+`Validation` sets `validation-error` and returns an error to the caller.
 
-This is not full WebGPU device-loss recovery. The current app does not recreate the
-adapter/device/queue, rebuild every GPU owner after true device loss, or expose a
-status/reload path in the shell.
+wgpu's device-lost callback sets `gpu_device_status` to `device-lost`. This is not
+full WebGPU device-loss recovery: the app does not recreate the adapter/device/queue
+or rebuild every GPU owner after true device loss. The shell treats `device-lost` and
+`validation-error` as fatal statuses and asks the user to reload.
 
 ## Readbacks and counters
 
@@ -113,8 +128,10 @@ slots for spray/bubble. The profiler reports foam only while preserving the JSON
 - `gpu_buffer_mb` reports simulation buffers for legacy consumers. `stats_json`
   also reports tracked categories (`sim_buffers_mb`, `render_targets_mb`,
   `diffuse_mb`, `timing_mb`, `total_tracked_mb`), but those are allocation math
-  from known owners, not total driver-resident VRAM. `timing_mb` is `null` until
-  exact timing-buffer byte accounting is plumbed through the timing owner.
+  from known owners, not total driver-resident VRAM. When timers exist, `timing_mb`
+  counts the timestamp resolve buffer plus the mapped readback buffer; it does not
+  include hidden `QuerySet` driver memory because `wgpu` does not expose that byte
+  size.
 - Timestamp-query is optional; timing paths guard on `Option<GpuTimers>`.
 
 ## Update when

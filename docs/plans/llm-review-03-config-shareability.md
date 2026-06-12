@@ -1,8 +1,8 @@
 ---
-status:        active
+status:        shipped
 owner:         codex
 last_updated:  2026-06-12
-okay_to_delete: false
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/settings.md
@@ -81,14 +81,15 @@ Out of scope:
 
 ## Migration Notes
 
-Stage 1 migration (2026-06-12):
+Migration (2026-06-12):
 
 - Bridge/result surface and registry URL shape -> `architecture/settings.md`.
-- Web-shell URL workflow and legacy ad hoc compatibility -> `architecture/web-shell.md`.
-- Honesty/clamping policy -> `decisions/observability.md`.
-- Preset/export/import UI scope deferral -> `decisions/scope.md`.
+- Web-shell URL workflow, portability controls, smoke hooks, and legacy ad hoc
+  compatibility -> `architecture/web-shell.md`.
+- Honesty/clamping/import policy -> `decisions/observability.md`.
+- Portable config scope and preset-management deferral -> `decisions/scope.md`.
 
-Stage 1 implemented:
+Implemented:
 
 - `Registry::set_value_f64_result` reports accepted/stored/rejected/legacy outcomes,
   requested value, stored value, clamp status, and apply class. The old
@@ -101,13 +102,28 @@ Stage 1 implemented:
 - URL and localStorage registry imports apply all entries first, then trigger one
   reset if any accepted setting needs reset. Reload-class settings are stored and
   warned, not auto-reloaded.
+- Settings tabs expose compact `Copy Share URL`, `Export JSON`, and `Import JSON`
+  controls. Export uses `{schema:"fluidlab.config.v1", settings:{id:value}}` over
+  visible non-default registry settings; import also accepts the older raw settings
+  map and routes entries through the same bridge-backed batch path.
+- `panelApi.shareUrl()` and `window.__fluidShell.shareUrl()` encode visible
+  non-default registry settings as repeated `set=id:value` params. Shell smoke hooks
+  expose `applySettings`, `importConfigPayload`, `exportConfig`, `setting(id)`, and
+  `state().urlApplyResult`.
 - JS localStorage restore no longer mirrors the Rust legacy-id list, fixing
   `render.particle_alpha` replay drift by letting the bridge report
   `legacy_ignored`.
 
 Deferred:
 
-- Visible preset/export/import controls and named preset management.
+- Named preset management, cloud sync, and account-level saved configs.
 - Sunset/removal of existing legacy ad hoc URL params.
 - Stable enum slug import/export; current URL/import values are numeric registry
   values.
+
+Gate evidence:
+
+- `cd app && node --check web/main.js` — passed.
+- `cd app && node --check web/panels.js` — passed.
+- `cd app && cargo test --lib` — passed, 47 tests.
+- `cd app && cargo build --target wasm32-unknown-unknown` — passed.

@@ -1,5 +1,5 @@
 // Update search direction: d = r + beta*d
-// scalars[3] = beta
+// scalars[3] = beta, scalars[5] = active
 
 struct Params {
     dims: vec4<u32>,
@@ -18,6 +18,10 @@ struct Params {
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (cg_scalars[5] == 0.0) {
+        return;
+    }
+
     let cells = params.gdim.x * params.gdim.y * params.gdim.z;
     let c = gid.x;
     if (c >= cells) { return; }
