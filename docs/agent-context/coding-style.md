@@ -1,7 +1,7 @@
 # Coding style — fluid-lab
 
 The universal principles **and** the generic per-language idioms live in
-`~/.claude/agent-docs/v1/rules/coding-style.md` — read that first. This file lists
+`~/agent-docs/v1/rules/coding-style.md` — read that first. This file lists
 only this app's specifics, named patterns, and the invariants a casual edit can break.
 
 ## When does this apply

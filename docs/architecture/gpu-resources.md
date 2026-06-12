@@ -28,9 +28,9 @@ render targets, sub-renderers, timers, caps, and `GpuFluid` simulation state.
 - Particle-scale preflight/status - requested, estimated, actual, dispatch shape,
   storage limits, and `scale_status`.
 
-Phase 2 removed the GPU owners for caustics, temporal stabilization, wet walls, and
-dense wall fill. `GpuContext` no longer has fields for those systems, no longer
-allocates their targets/buffers, and no longer schedules their passes.
+The current runtime has no GPU owners for caustics, temporal stabilization, wet
+walls, or dense wall fill. `GpuContext` has no fields for those systems, does not
+allocate their targets/buffers, and does not schedule their passes.
 
 ## Render targets
 
@@ -80,7 +80,7 @@ Rebuilding `DiffuseSystem` clears foam particles. `GpuTimers` is also rebuilt wh
 timestamp queries are available.
 
 `resize` recreates the surface-sized targets and rebinds smoothing/composite views.
-There are no temporal or caustic stable-view rebinding paths after Phase 2.
+There are no temporal or caustic stable-view rebinding paths.
 
 ## Readbacks and counters
 

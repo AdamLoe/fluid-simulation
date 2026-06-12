@@ -16,18 +16,17 @@ particle/liquid-cell visual direction. This plan holds future direction that doe
 belong in current-state architecture. It is `long_lived`; active implementation
 coordination lives in disposable versioned plans.
 
-The current active implementation map is
-[`v1.x-particle-scale-orchestrator.md`](v1.x-particle-scale-orchestrator.md). That hub
-records MC removal, scale/profiler work, wall/volume quality, settings
-help/compactness, and low-risk interactive forces.
+The active implementation hub for this archived period was the deleted
+`v1.x-particle-scale-orchestrator.md` plan. That hub recorded MC removal,
+scale/profiler work, wall/volume quality, settings help/compactness, and low-risk
+interactive forces.
 
 ## Current direction: particle and voxel scale
 
 Particles and liquid-cell/voxel inspection are the product surface. Marching cubes is
-not a deferred polish target anymore; the active plan removes it completely in
-[`v1.2.0-marching-cubes-removal.md`](v1.2.0-marching-cubes-removal.md). Any future
-surface idea must be a ground-up design that earns its place after scale work, not a
-return to the old MC path.
+not a deferred polish target anymore; the deleted `v1.2.0-marching-cubes-removal.md`
+plan removed it completely. Any future surface idea must be a ground-up design that
+earns its place after scale work, not a return to the old MC path.
 
 Scale is the headline: use the profiler and real-GPU capture output to find how much
 water the user's high-end PC can run at about 30 FPS. Performance claims stay
@@ -85,7 +84,7 @@ Tier A**:
 
 ## See also
 
-- [`index.md`](index.md) — plans landing + lifecycle.
-- [`v1.x-particle-scale-orchestrator.md`](v1.x-particle-scale-orchestrator.md) — active implementation map.
-- [`../decisions/scope.md`](../decisions/scope.md) — product scope.
-- [`../architecture/rendering.md`](../architecture/rendering.md) · [`../architecture/simulation.md`](../architecture/simulation.md)
+- [`../../index.md`](../../index.md) — plans landing + lifecycle.
+- `v1.x-particle-scale-orchestrator.md` — deleted implementation map for this archived period.
+- [`../../../decisions/scope.md`](../../../decisions/scope.md) — product scope.
+- [`../../../architecture/rendering.md`](../../../architecture/rendering.md) · [`../../../architecture/simulation.md`](../../../architecture/simulation.md)

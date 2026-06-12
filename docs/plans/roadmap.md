@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-08
+last_updated:  2026-06-12
 okay_to_delete: false
 long_lived:    true
 owning_docs:
@@ -19,99 +19,34 @@ owning_docs:
 
 # Roadmap - current coordination map
 
-This is the current coordination map for the presentation, particle-scale, and
-water-look work. It is a plan router, not canonical architecture. Architecture and
-decisions docs should be updated only while the implementation plan is in progress or
-at ship time; research agents update the relevant plan/research docs first.
+This is the long-lived coordination page for work that still needs ordering or
+cross-cutting judgment. It is not a stash for raw source plans or shipped handoff
+records. Those belong in versioned plans while work is in flight, then in
+`architecture/` and `decisions/` once shipped.
 
-The orchestrator may run read-only research in parallel. Code-touching work should be
-serialized unless the orchestrator has explicit file ownership boundaries, because the
-UI work shares `web/main.js`, `web/panels.js`, and `web/index.html`, and particle work
-shares GPU shader/runtime contracts.
+The active implementation layer is intentionally small right now:
 
-## Current implementation map
+- New implementation work should start as a versioned plan.
+- Code-touching work that shares GPU/runtime files should stay serialized unless a
+  specific ownership boundary is documented.
+- `future-roadmap.md` holds deferred ideas that are not ready to become current work.
+- Historical shipped plans belong in `archive/`.
 
-| Order | Doc | Purpose | Start condition |
-|---|---|---|---|
-| v1.7.0 | [`v1.7.0-ui-shell-reorganization.md`](v1.7.0-ui-shell-reorganization.md) | Combined toolbar/header cleanup, right-side tabbed workspace, and bottom product-mode launcher. | Ready. |
-| Planning | [`particle-dispatch-audit.md`](particle-dispatch-audit.md) | Audit particle-linear paths and update the dispatch plan if needed. | Can run before or alongside v1.7.0. |
-| v1.8.0 | [`v1.8.0-particle-dispatch-tiling.md`](v1.8.0-particle-dispatch-tiling.md) | Raise the legal particle dispatch ceiling, preserve preflight safety, and measure the new scale facts. | After the audit is good enough, or as the first phase of this plan. |
-| v1.9.0 | [`v1.9.0-particle-performance-followup.md`](v1.9.0-particle-performance-followup.md) | Optimize the measured bottleneck from v1.8.0. | Blocked on v1.8.0 evidence. |
-| Research | [`water-rendering-research.md`](water-rendering-research.md) | Choose the water rendering direction and update the water implementation plan. | Can run in parallel with non-rendering work. |
-| v1.10.0 | [`v1.10.0-water-rendering-optical-depth.md`](v1.10.0-water-rendering-optical-depth.md) | Implement the selected water-look change after research sharpens the plan. | Blocked on the research doc updating the plan. |
+## Current status
 
-## Hero-water series (v1.12 → v1.18)
+No versioned implementation plans are active in this layer right now.
 
-Seven sequential plans decomposed from [`chatgpt_plan.md`](chatgpt_plan.md), each
-shippable on its own and capture-gated against the simple-particle baseline. They
-**evolve the existing screen-space composite** into a hero water path rather than adding a
-parallel renderer; the cross-cutting decisions live in the v1.12 plan and the rest inherit
-them. Workflow per plan: detailed rewrite, then implementation.
+## What to keep here
 
-| Order | Plan | Depends on | Note |
-|---|---|---|---|
-| v1.12.0 | [`v1.12.0-hero-water-refraction.md`](v1.12.0-hero-water-refraction.md) | — | Refraction **+ shared foundation** (RenderMode enum, Water tab, scene-color prepass, refractable environment). Build first. |
-| v1.13.0 | [`v1.13.0-hero-water-foam.md`](v1.13.0-hero-water-foam.md) | v1.12 (loose) | Persistent diffuse particles. Most independent; order with v1.14 is flexible. |
-| v1.14.0 | [`v1.14.0-hero-water-marching-cubes.md`](v1.14.0-hero-water-marching-cubes.md) | v1.12 | **Reverses the removed-surface decision.** Gated by a de-risk experiment (occupancy quads vs the v1.12 composite) — may exit without building MC. |
-| v1.15.0 | [`v1.15.0-hero-water-environment-reflection.md`](v1.15.0-hero-water-environment-reflection.md) | v1.12 | Reflected procedural sky/room (distinct from v1.12's refracted background). |
-| v1.16.0 | [`v1.16.0-hero-water-caustics.md`](v1.16.0-hero-water-caustics.md) | v1.12 | Needs the v1.12 floor/wall receivers + a light dir (shared with v1.15). |
-| v1.17.0 | [`v1.17.0-hero-water-wet-walls.md`](v1.17.0-hero-water-wet-walls.md) | v1.12 (v1.13 helps) | Wet walls + meniscus; needs rendered walls + waterline. |
-| v1.18.0 | [`v1.18.0-hero-water-temporal.md`](v1.18.0-hero-water-temporal.md) | v1.12–v1.17 | History-blend + camera-reset (NOT reprojection — no motion-vector infra). Lands last. |
+- Current coordination that affects multiple future plans.
+- Ordering notes that are still relevant before a new versioned plan is written.
+- Routing that helps people pick the right plan-layer document.
 
-**RESOLVED (2026-06-09) — does v1.14 marching cubes beat the v1.12 screen-space
-composite?** No. The v1.14 de-risk gate (occupancy-boundary quads vs the v1.12 composite on
-DamBreak / DoubleSplash / thin tongue) showed the extracted-surface proxy clearly *losing*
-to screen-space at the 64³ grid resolution — worst on thin sheets, which shattered into
-noise. Marching cubes was **not** built; screen-space stays the hero surface and the
-"removed surface path" decision is re-affirmed. v1.14 plan → `abandoned`. See
-[`hero-water-delivery-hub.md`](hero-water-delivery-hub.md) for the captures + the reusable
-capture-EVAL invocation discovered during the gate.
+## Migration rule
 
-## Locked user decisions
-
-- The initial bottom product mode is **Auto Rotate**.
-- Reset preserves the selected bottom mode; page reload does not. The bottom mode is
-  not saved to localStorage.
-- Auto Rotate and Waves are mutually exclusive. Manual exposes the existing pointer
-  modes.
-- Raw auto-roll and wave enable toggles should not be exposed as user config controls.
-  Mode-specific values can remain visible, grouped under the mode they affect.
-- Number keys target manual pointer modes only; they are not product-mode shortcuts.
-- The config/profiler workspace moves to the **right** side only.
-- The workspace always opens on **General**; no last-active tab restore and no tab
-  routing metadata.
-- Panels/tabs should be closed on initial load. Fix the load/init bug where panels
-  appear open during startup.
-- Remove or neutralize existing panel auto-open query behavior. Do not add query params
-  for opening a specific tab. Capture defaults should be Auto Rotate mode with tabs
-  closed.
-- The top title should read its version from `web/package.json` or the package source
-  that feeds that file.
-- Remove the Copy Config JSON product affordance, including copy-specific plumbing;
-  do not remove the `config_json` bridge needed by the rendered config panel.
-- No high-count presets are planned. Render decimation/LOD is future work unless a
-  later measured plan promotes it.
-- Water rendering should prioritize configurable controls and improve both low-count
-  density and high-count beauty where practical.
-
-## Orchestration rules
-
-- Treat v1.7.0 as one UI stream unless the orchestrator explicitly assigns non-
-  overlapping files.
-- Treat v1.8.0 as correctness first, measurement second. Do not fold the measured
-  optimization into the dispatch-tiling pass unless the win is trivial and evidenced.
-- Treat v1.9.0 as a placeholder until v1.8.0 produces the measurement table.
-- Treat v1.10.0 as blocked until `water-rendering-research.md` records the visual
-  target and chosen implementation direction.
-- Research/planning docs may update versioned plans. They should not update
-  architecture or decisions docs before implementation starts.
-
-## Migration notes
-
-When each version ships, migrate only the durable current-state facts and still-valid
-decisions into the owning architecture/decisions docs. Keep raw research evidence in
-the research doc or archive it; do not force screenshots and scratch comparisons into
-architecture docs.
+Once a versioned plan ships, move durable facts and still-valid decisions into the
+owning architecture/decisions docs, then delete the plan when it is marked
+`okay_to_delete: true`.
 
 ## See also
 

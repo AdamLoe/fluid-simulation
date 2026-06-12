@@ -23,25 +23,19 @@ do not turn observation into the dominant frame cost.
 ## Screen-space water and inspection views are the product rendering surface
 
 **Decision** - The product rendering surface is the screen-space water composite,
-optical/simple particle views, tank wireframe, and liquid-cell/grid inspection; there
-is no extracted-surface compatibility path.
+optical/simple particle views, tank wireframe, and liquid-cell/grid inspection. There
+is no extracted-surface compatibility path in the current product.
 
 **Why** - These views make scale, motion, and solver state legible without carrying a
-second heavyweight representation that distracts from the fluid-lab direction. A v1.14
-de-risk re-evaluated this: a throwaway occupancy-boundary-quad extracted surface was
-built and A/B-captured against the screen-space composite on dam-break, double-splash,
-and a thin mid-flight tongue. The extracted surface **lost in all three** (worst on the
-thin tongue, which disintegrated into stippled noise) — at 64³ the occupancy surface is
-too coarse for thin features, and dense marching cubes on top of an already
-over-budget frame was not justified by a clear win. So screen-space stays and marching
-cubes was **not** built; this re-affirms the decision rather than reversing it.
+second heavyweight representation. A reconstructed surface has not earned a runtime
+slot because the current inspection views already cover the solver's behavior.
 
 **Tradeoffs** - The default water view hides some per-particle detail in exchange for
 a more coherent liquid body; the optical and simple particle views remain selectable
 for motion, solver inspection, and fallback comparison.
 
-**Revisit when** - A higher render-grid resolution makes a reconstructed surface beat
-screen-space on thin features (the v1.14 design record for full marching cubes is in git).
+**Revisit when** - A reconstructed surface clearly beats screen-space on thin
+features without pushing the frame budget out of range.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/mod.rs -> GpuContext::render`;
 `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer`;
@@ -54,34 +48,32 @@ screen-space on thin features (the v1.14 design record for full marching cubes i
 
 ## Water rendering uses a measured multi-pass screen-space path
 
-**Decision** - In the hero Water mode a scene prepass renders the environment +
-wireframe into offscreen `scene_color`/`scene_depth` targets; water accumulates
-thickness, speed-weighted whitewater, and nearest depth into R16 screen-space targets;
-smoothing filters the front depth; and the composite (opaque) samples `scene_color` at
-a refracted UV and writes the final pixel. The optional grid slice remains an overlay.
-The optical/simple particle modes keep the older direct-to-swapchain opaque pass.
+**Decision** - In Water mode a scene prepass renders the environment and wireframe
+into offscreen `scene_color`/`scene_depth` targets; water accumulates thickness,
+speed-weighted whitewater, and nearest depth into R16 screen-space targets; smoothing
+filters the front depth; and the composite samples `scene_color` at a refracted UV
+before writing the final pixel. The optional grid slice remains an overlay. The
+optical/simple particle modes keep the direct opaque pass.
 
 **Why** - Same-pass transparent billboards cannot accumulate path length or produce a
 coherent lit front surface for deep water. The multi-pass path pays explicit render
 memory and pass cost for an order-independent thickness signal and smoothed surface
-normal. As of v1.12, sampling an offscreen scene-color prepass lets the water refract
-the background instead of merely tinting the swapchain.
+normal.
 
 **Tradeoffs** - Render timing and memory are less trivial than a single swapchain
-pass, and the hero path adds two more swapchain-sized targets. The public profiler
-still reports one `gpu.render_ms` total for the whole render path rather than per-pass
-water timing. (Measured: `gpu.render_ms` ≈ 0.27 ms at 1280×800 with refraction on — the
-prepass + refraction cost is negligible against the pressure solve.)
+pass, and the Water path adds more swapchain-sized targets. The public profiler still
+reports one `gpu.render_ms` total for the whole render path rather than per-pass water
+timing.
 
 **Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`.
 
 ## Hero water features are Live sub-features of the Water view, not new render modes
 
-**Decision** - The hero-water series (v1.12 refraction onward) evolves the existing
-screen-space composite into the hero path rather than adding a parallel `HeroWater`
-render mode. `RenderMode { Water, OpticalParticles, SimpleParticles }` replaces the bare
-`u32 particle_view` dispatch; hero features are Live-toggleable settings under the
-`Water` category with their own controls, mirrored into one `HeroParams` uniform.
+**Decision** - The Water mode keeps hero-water controls as Live-toggleable sub-features
+of the existing render path rather than as a separate top-level render mode.
+`RenderMode { Water, OpticalParticles, SimpleParticles }` remains the mode switch;
+hero features are Live settings under `Water` and mirror into one `HeroParams`
+uniform.
 
 **Why** - The composite already does most of the material (thickness, smoothed front
 depth, reconstructed normal, Fresnel, Beer-Lambert absorption). A second top-level mode
@@ -104,10 +96,10 @@ unrelated effects.
 ## Weak hero-water add-ons are removed until they earn a new case
 
 **Decision** - Caustics, temporal stabilization, wet walls, and dense wall fill are
-not shipped runtime feature groups after Phase 2. Their modules, shaders, pass
-scheduling, visible settings, debug views, and resource allocations are removed. Old
-persisted ids replay safely as hidden compatibility no-ops. The cheap wall-contact
-normal/depth snap remains.
+not shipped runtime feature groups. Their modules, shaders, pass scheduling, visible
+settings, debug views, and resource allocations are removed. Old persisted ids replay
+safely as hidden compatibility no-ops. The cheap wall-contact normal/depth snap
+remains.
 
 **Why** - Default Water should be a coherent liquid body with a small, understandable
 control surface. The removed add-ons had cost, artifacts, or weak visual value without
@@ -152,11 +144,11 @@ system is render-only.
 
 ## The reflected environment is procedural-only and world-fixed
 
-**Decision** - The hero water reflects a *procedural* sky/room (`gpu/shaders/env.wgsl ->
-env_sample`, v1.15), not an image-based cubemap/HDRI and not screen-space reflections of
-the actual tank/particles. The same function also draws the world background as a
-fullscreen skybox. Both are sampled in **world space via a camera-only rotation**, so they
-follow the camera but stay fixed when the box rotates.
+**Decision** - The hero water reflects a *procedural* sky/room
+(`gpu/shaders/env.wgsl -> env_sample`), not an image-based cubemap/HDRI and not
+screen-space reflections of the actual tank/particles. The same function also draws
+the world background as a fullscreen skybox. Both are sampled in **world space via a
+camera-only rotation**, so they follow the camera but stay fixed when the box rotates.
 
 **Why** - A procedural environment costs no texture memory or asset pipeline and gives the
 water believable Fresnel edges and a plausible reflected room/sky for near-zero render
@@ -167,7 +159,7 @@ the world. SSR and real IBL are a heavier, separate project and out of this seri
 **Tradeoffs** - The reflection is a stylized environment, not a true mirror of the scene;
 it cannot show the tank's own geometry reflected. Roughness softening blends toward an
 averaged sky rather than a true pre-filtered mip. Micro-normals can shimmer, so they
-default off unless a future stabilizer is reintroduced.
+default off unless a future stabilizer returns.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/shaders/env.wgsl -> env_sample`;
 `crates/fluid-lab/src/gpu/skybox.rs -> SkyboxRenderer`;
@@ -179,9 +171,8 @@ default off unless a future stabilizer is reintroduced.
 ## Removed add-ons keep only compatibility decisions
 
 **Decision** - Caustics, wet-wall material cues, dense wall fill, and temporal history
-blend are not active product decisions after Phase 2. Their old design notes remain
-history in git, but current docs should describe only their removed status and legacy
-replay compatibility.
+blend are not active product decisions. Their old design notes remain history in git,
+but current docs describe only their removed status and legacy replay compatibility.
 
 **Why** - Keeping stale runtime decisions in active docs makes future implementers
 rebuild deleted systems by accident.
@@ -256,11 +247,10 @@ thickness was smoothed. **Limitation:** sparse *airborne* water (spray thrown by
 slosh/crash) is still individual particles, so it renders as discrete soft billboards, not
 a smooth sheet — a known screen-space-particle limit, distinct from the speckle this fixed.
 
-**Tradeoffs** - Absorption-over-thickness stays the opacity model even now that
-refraction landed in v1.12: refraction samples an offscreen scene-color prepass and
-distorts the background, but opacity is still normalized screen-space thickness, not
-particle alpha. (Refraction was deferred until there was a scene-color target and
-visible scene detail to justify the cost — both added in v1.12.)
+**Tradeoffs** - Absorption-over-thickness stays the opacity model. Refraction samples
+an offscreen scene-color prepass and distorts the background, but opacity is still
+normalized screen-space thickness, not particle alpha. The scene-color target and
+visible scene detail make the cost legible.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer`;
 `crates/fluid-lab/src/gpu/shaders/particles.wgsl`;

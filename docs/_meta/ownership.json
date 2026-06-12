@@ -4,97 +4,97 @@
   "concepts": [
     {
       "id": "app-shell",
-      "summary": "WASM/JS boundary, FluidApp, the rAF frame loop and its ownership, the fixed/clamped timestep accumulator, orbit camera + interactive tank pointer modes (orbit/rotate/roll/slosh), reset semantics, typed scene config",
+      "summary": "WASM/JS boundary, app loop, camera, pointer modes, and scene reset behavior.",
       "owner": "architecture/app-shell.md",
       "references": ["architecture/simulation.md", "architecture/rendering.md", "architecture/settings.md"]
     },
     {
       "id": "mac-simulation",
-      "summary": "hybrid FLIP/PIC MAC-grid sim: grid/face indexing, cell typing, fixed-point i32-atomic P2G (FIXED_SCALE 2^16) + determinism invariant, wall-aware G2P PIC/FLIP blend, body forces, advection, particle recovery, volume-correction/friction/impulse knobs, the per-substep loop (except the pressure solve)",
+      "summary": "Hybrid FLIP/PIC MAC-grid simulation and the per-substep loop.",
       "owner": "architecture/simulation.md",
       "references": ["architecture/pressure-solver.md", "architecture/gpu-resources.md", "architecture/app-shell.md", "architecture/fluid-system-llm-brief.md"]
     },
     {
       "id": "tank-grid-dims",
-      "summary": "rectangular-tank geometry: three independent per-axis cell counts nx,ny,nz (Reset-class settings grid.res_x/y/z, default 64 each => the [-1,1]^3 cube) at a single uniform scalar cell size h = 2/64, carried in Params.gdim vec4<u32> = [nx,ny,nz,0]; all-equal counts give a cube, unequal give a box; pressure operator stays isotropic",
+      "summary": "Rectangular tank geometry with per-axis cell counts and uniform cell size.",
       "owner": "architecture/simulation.md",
       "references": ["architecture/gpu-resources.md", "architecture/rendering.md", "architecture/pressure-solver.md", "architecture/settings.md"]
     },
     {
       "id": "pressure-solver",
-      "summary": "incompressibility / pressure projection: unpreconditioned Conjugate Gradient on the SPD MAC-Poisson operator, the cg_*.wgsl kernels + deterministic tree-reduction dot products, host reference, air-Dirichlet/solid-Neumann boundary conventions, replaceable solver interface",
+      "summary": "CG pressure projection, boundary conventions, and host reference.",
       "owner": "architecture/pressure-solver.md",
       "references": ["architecture/simulation.md", "architecture/gpu-resources.md", "architecture/profiler.md"]
     },
     {
       "id": "gpu-resources",
-      "summary": "wgpu device/surface init, GpuCaps adapter-limit probe, SoA buffer layout, ping-pong, bind-group strategy, the maxStorageBuffersPerShaderStage pass-split constraint, the recreate_fluid Reset path, the boot atomic/timestamp smoke test, naga unused-binding gotcha",
+      "summary": "wgpu init, SoA buffers, pass-split constraints, recreate path, and smoke test.",
       "owner": "architecture/gpu-resources.md",
       "references": ["architecture/simulation.md", "architecture/pressure-solver.md", "architecture/rendering.md", "architecture/profiler.md"]
     },
     {
       "id": "rendering",
-      "summary": "GPU-native scene + inspection rendering: the typed RenderMode enum (Water/OpticalParticles/SimpleParticles) + wireframe tank + grid slice, the hero-water screen-space path (scene_color/scene_depth prepass, refractable environment, scene-color refraction composite, HeroParams Water-tab controls + debug views), water thickness/whitewater/composite ownership, the hero finishing systems (approximate normal-gradient caustics, the per-wall-texel wetness field + meniscus + contact shadow, temporal history-blend + camera-reset stabilization), the no-normal-frame-readback invariant, the tank model matrix, and the removed extracted-surface compatibility path",
+      "summary": "GPU-native inspection rendering, hero water path, and no-readback rule.",
       "owner": "architecture/rendering.md",
       "references": ["architecture/simulation.md", "architecture/gpu-resources.md", "architecture/app-shell.md", "architecture/fluid-system-llm-brief.md"]
     },
     {
       "id": "profiler",
-      "summary": "hierarchical nested profiler scopes, rolling p50/p95/p99, config-snapshot tagging, the timing-source-honesty rule (GPU timestamp / coarse fence / CPU fallback / unavailable), GPU timestamp-query QuerySet, configurable thresholds, liveness counter",
+      "summary": "Hierarchical profiler, timing sources, and threshold policy.",
       "owner": "architecture/profiler.md",
       "references": ["architecture/gpu-resources.md", "architecture/settings.md", "architecture/web-shell.md"]
     },
     {
       "id": "settings-registry",
-      "summary": "the single typed schema-driven config registry (id/label/category/panel_group/type/default/validation/optional tooltip/optional technical_tooltip), apply classes (live/reset/reload), the config_json/set_setting/stats_json JS bridge surface",
+      "summary": "Typed config registry, apply classes, and JS bridge surface.",
       "owner": "architecture/settings.md",
       "references": ["architecture/app-shell.md", "architecture/web-shell.md", "architecture/profiler.md", "architecture/gpu-resources.md"]
     },
     {
       "id": "web-shell",
-      "summary": "thin TS/HTML front-end, the two entry paths (canonical static vs stale Vite/TS), the rendered config + profiler panels, per-setting reset buttons, the simplified header/toolbar (title + Pause/Reset/Config/Profiler, no extra chrome), the #unsupported WebGPU overlay, the headless real-GPU capture harness (tools/capture.mjs)",
+      "summary": "Thin TS/HTML shell, canonical static path, panels, and capture harness.",
       "owner": "architecture/web-shell.md",
       "references": ["architecture/app-shell.md", "architecture/settings.md", "architecture/profiler.md"]
     },
     {
       "id": "dec-simulation",
-      "summary": "true 3D grid, hybrid FLIP/PIC, staggered MAC grid, fixed-point integer-atomic P2G + determinism invariant, fixed/clamped timestep",
+      "summary": "True 3D staggered MAC-grid simulation with fixed-point P2G.",
       "owner": "decisions/simulation.md",
       "references": []
     },
     {
       "id": "dec-pressure",
-      "summary": "pressure projection is core, replaceable solver, CG over Jacobi (with the FLIP-volume-loss plateau caveat), air-Dirichlet/solid-Neumann boundary conventions",
+      "summary": "Pressure projection, CG preference, and boundary conventions.",
       "owner": "decisions/pressure.md",
       "references": []
     },
     {
       "id": "dec-rendering",
-      "summary": "GPU-native no-readback inspection views, screen-space water plus optical/simple particle and liquid-cell inspection, multi-pass render policy (now with a scene-color refraction prepass), hero features as Live sub-features of the Water view rather than new render modes, the removed extracted-surface path re-affirmed by the v1.14 de-risk, approximate normal-gradient caustics (not projected photons), wet walls as a procedural render-only cue (not simulated drainage), temporal stabilization as history-blend + camera-reset (not reprojection), separate particle/grid representations, visual realism subordinate to observability",
+      "summary": "GPU-native inspection views, screen-space water, and render-policy choices.",
       "owner": "decisions/rendering.md",
       "references": []
     },
     {
       "id": "dec-performance",
-      "summary": "32³/64³/128³ resolution targets, measured scale limits, per-stage storage-buffer pass-split, SoA/fixed/ping-pong buffers, profile-before-optimize, dispatch-shape particle ceiling, screen-space render-cost/memory policy",
+      "summary": "Scale targets, buffer strategy, and performance policy.",
       "owner": "decisions/performance.md",
       "references": []
     },
     {
       "id": "dec-observability",
-      "summary": "observability-first (instrumentation early, rendered panels late), schema-driven config registry, apply classes, hierarchical timing-honest profiler, configurable thresholds",
+      "summary": "Observability-first config and profiling policy.",
       "owner": "decisions/observability.md",
       "references": []
     },
     {
       "id": "dec-platform",
-      "summary": "Rust+WASM+WebGPU, single crate not workspace, tiny disposable CPU reference, React optional, the no-bundler static web path as canonical",
+      "summary": "Rust/WASM/WebGPU stack, single crate, canonical static web path.",
       "owner": "decisions/platform.md",
       "references": []
     },
     {
       "id": "dec-scope",
-      "summary": "bounded tank vs ocean, fluid-lab is the direction not first-version scope, visible pipeline as product, static scenes before dynamic solids, source/drain deferred as mass-mutation work, optional features are not blockers, replay/scrub deferred, portfolio honesty",
+      "summary": "Bounded-tank scope and deferred feature policy.",
       "owner": "decisions/scope.md",
       "references": []
     }

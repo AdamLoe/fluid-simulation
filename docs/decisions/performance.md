@@ -8,8 +8,8 @@ last_updated:  2026-06-12
 
 ## Dense wall fill is removed until profiler data justifies a new implementation
 
-**Decision** — Dense wall fill no longer ships as a runtime feature after Phase 2. The
-cheaper wall-contact normal/depth snap remains the default near-wall aid.
+**Decision** — Dense wall fill no longer ships as a runtime feature. The cheaper
+wall-contact normal/depth snap remains the default near-wall aid.
 
 **Why** — Wall fill owns a large supersampled occupancy atlas and per-frame splat +
 injection work. Without capture/profiler evidence that it improves the startup view more
@@ -46,9 +46,8 @@ exchange for developing against real GPU constraints sooner.
 
 ## Run exactly one preset until the human-facing pass; tiers are 1.5 work
 
-**Decision** — Until the 1.5 scale/quality pass there is exactly one preset (whatever
-runs). The low/default/high tier system is a 1.5 *output* set from measurements, not a
-running concern.
+**Decision** — There is one active preset path; low/default/high tier labels are
+measurement outputs, not a runtime system.
 
 **Why** — Tiers are only meaningful once measurements exist and a human is choosing.
 Building a tier system earlier serves no consumer.
@@ -139,10 +138,9 @@ one coordinated indexing model across every particle-linear path; loosening pref
 before those paths agree would trade a truthful rejection for invalid GPU work.
 
 **Tradeoffs** — This raises the legal submission ceiling, not the measured frame-rate
-ceiling. The measured v1.8 scale matrix now records 2M as `30,586 x 1 x 1`, 4M as
-`61,396 x 1 x 1`, and 8M as `65,535 x 2 x 1`; that 8M row proves the old common
-one-dimensional dispatch ceiling is no longer the blocker, but it does not make 8M a
-practical frame-time target by itself.
+ceiling. The scale matrix shows the old one-dimensional dispatch ceiling is no longer
+the blocker, but that does not make the largest seeded counts a practical
+frame-time target by itself.
 
 **Code anchors** — `crates/fluid-lab/src/gpu/fluid.rs → particle_dispatch_shape`;
 `crates/fluid-lab/src/gpu/mod.rs → validate_particle_scale`;
@@ -151,23 +149,20 @@ practical frame-time target by itself.
 `crates/fluid-lab/src/gpu/shaders/g2p.wgsl → particle_index`;
 `crates/fluid-lab/src/gpu/shaders/impulse.wgsl → particle_index`.
 
-**Revisit when** — the v1.8 real-GPU scale matrix exists and identifies whether the
-next bottleneck is dispatch legality no longer, transfer/G2P/render cost, or storage.
+**Revisit when** — the current real-GPU scale matrix identifies whether the next
+bottleneck is dispatch legality no longer, transfer/G2P/render cost, or storage.
 
 **Applies to** — `architecture/gpu-resources.md`, `architecture/simulation.md`, `architecture/profiler.md`.
 
 ## Prefer narrow arithmetic wins in particle-linear transfer paths before broader rewrites
 
-**Decision** — The first v1.9 follow-up optimization is the narrow `inv_h`
-transfer-path change: use the precomputed inverse cell size in scatter and G2P
+**Decision** — The narrow `inv_h` transfer-path change is the right first arithmetic
+win: use the precomputed inverse cell size in scatter and G2P
 particle-to-grid/grid-to-particle coordinate conversion instead of dividing by `h`
 per particle.
 
-**Why** — It removed redundant per-particle divide work without changing dispatch
+**Why** — It removes redundant per-particle divide work without changing dispatch
 shape, fixed-point scatter semantics, wall-aware G2P invariants, or advection logic.
-The measured before/after captures justified the change: at 4M, scatter sum fell
-`13.694 -> 7.211 ms` and frame p95 fell `41.7 -> 29.2 ms`; at 8M, scatter sum fell
-`22.604 -> 17.014 ms` and frame p95 fell `66.7 -> 45.8 ms`.
 
 **Tradeoffs** — This does not eliminate transfer cost, and it does not solve the
 remaining high-scale render cost. Render remains a separate decision surface rather
@@ -187,9 +182,8 @@ composite, as long as captures keep reporting one honest `gpu.render_ms` total a
 docs name the extra render memory.
 
 **Why** — Per-billboard particle shading could not make deep volumes read as a coherent
-lit body. The default screen-space capture measured `gpu.render_ms` around `0.62 ms`; the
-requested 32k capture settled around `0.053 ms`; the requested 2M capture accepted
-1,957,500 particles and reported `1.915 ms` in the final `stats_json` sample.
+lit body. Screen-space thickness and smoothing give the water a readable body without
+forcing a second surface representation.
 
 **Tradeoffs** — The path now owns persistent screen-sized render targets in addition
 to simulation buffers, and render timing is a coarse multi-pass total rather than one

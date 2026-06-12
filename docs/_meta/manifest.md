@@ -1,7 +1,7 @@
 # Agent-docs manifest — fluid-lab
 
 App-specific bindings for the global agent-docs kit. The generic skills and rules in
-`~/.claude/agent-docs/<agent_docs_version>/` read the slots below; everything
+`~/agent-docs/<agent_docs_version>/` read the slots below; everything
 app-specific lives here, nothing generic does.
 
 ```yaml
@@ -53,6 +53,7 @@ doc Y." Code paths are relative to `code_root` (`app/`).
 | `app/crates/fluid-lab/src/gpu/wetwall.rs`, `app/crates/fluid-lab/src/gpu/wallfill.rs`, `app/crates/fluid-lab/src/gpu/shaders/{wetwall_update,wallfill}.wgsl` (wet-wall field and dense wall-fill sheet) | `architecture/rendering.md`; `architecture/gpu-resources.md` (buffer/memory/recreate); `architecture/settings.md` (the `render.hero.wet_wall.*` / `render.hero.flat_water.*` blocks); `decisions/rendering.md` if the render-only wall cue policy changes |
 | `app/crates/fluid-lab/src/profiler/mod.rs`, `app/crates/fluid-lab/src/gpu/timing.rs` | `architecture/profiler.md`; `decisions/observability.md` if the timing-honesty/threshold policy changes |
 | `app/crates/fluid-lab/src/settings/mod.rs` (registry, ApplyClass, defaults, validation) | `architecture/settings.md`; `decisions/observability.md` if the apply-class policy changes |
+| `app/cf-build.sh`, `app/web/pkg/{fluid_lab.js,fluid_lab_bg.wasm}`, `app/web/dist`, `app/web/_headers` | `agent-context/deploy.md` |
 | `web/*` (main.js, panels.js, index.html, the orphaned Vite/TS stub), `tools/capture.mjs` | `architecture/web-shell.md`; `agent-context/build-run.md` if the build/serve/verify flow changes |
 | `app/Cargo.toml` deps or toolchain pins | `overview.md` (toolchain facts), `agent-context/build-run.md` |
 | Repository directory layout (new/renamed dir) | `repository-layout.md` |
@@ -60,7 +61,7 @@ doc Y." Code paths are relative to `code_root` (`app/`).
 | A new/removed/re-routed decisions domain | `decisions/index.md`, and `_meta/ownership.json` |
 | A new procedural workflow doc, or a changed "when it applies" | `agent-context/index.md` and `docs/index.md` |
 | A concept gets a new canonical owner, or a cross-doc ownership conflict appears | `_meta/ownership.json` (+ `ownership.md` if the prose pointer changes) |
-| Plan lifecycle / status-metadata shape | `~/.claude/agent-docs/v1/plan-lifecycle.md` + `plan-template.md` (generic); `plans/index.md` only if app routing changes |
+| Plan lifecycle / status-metadata shape | `~/agent-docs/v1/plan-lifecycle.md` + `plan-template.md` (generic); `plans/index.md` only if app routing changes |
 
 ## Slot: drift-verification (high-risk surfaces for fix-docs-drift-all)
 
@@ -86,7 +87,7 @@ high-risk invariants against code:
 ## Notes
 
 - The generic agent-docs kit (authoring rules, coding-style, repo-rules, orchestrating
-  rules) lives at `~/.claude/agent-docs/v1/rules/`. The workflow commands are global
+  rules) lives at `~/agent-docs/v1/rules/`. The workflow commands are global
   skills in `~/.claude/skills/`. This manifest is the only app-specific binding the kit
   reads.
 - `agent-context/maintaining-docs.md` and `ownership.md` are thin in-repo stubs kept so

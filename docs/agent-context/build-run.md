@@ -3,7 +3,8 @@
 ## When does this apply
 
 You want to compile the WASM, serve the web shell, or browser-verify a change with the
-capture harness. Inner-loop operations.
+capture harness. Inner-loop operations only. For release packaging and Cloudflare Pages
+deploy, see [`deploy.md`](deploy.md).
 
 ## Which shell am I in? (read first)
 
@@ -133,62 +134,6 @@ expression against `window.__fluid`; `FRAMES` / `FRAME_INTERVAL` capture a seque
 `#unsupported` overlay, not the sim — a healthy boot instead logs `navigator.gpu present:
 true`, the smoke-test PASS, and `fluid init: n=64 …`.
 
-## Deploy (Cloudflare Pages)
-
-Production hosting is **Cloudflare Pages**, auto-deploying from the GitHub repo on every
-push to the production branch. **Cloudflare does not compile** — the release WASM is built
-locally and committed, and CF just assembles + serves it. This keeps deploys to seconds
-(no Rust toolchain install on CI, which otherwise added ~5 min/push).
-
-- **`app/cf-build.sh`** has two modes, both assembling a **clean** deploy dir at
-  `app/web/dist` (only `index.html` + `main.js` + `panels.js` +
-  `pkg/{fluid_lab.js,fluid_lab_bg.wasm}` + `_headers` — none of the dev cruft like
-  `node_modules`, the orphaned Vite `src/`, or `*.d.ts`):
-  - `--prebuilt` (what **Cloudflare runs**) — skips compilation, uses the committed
-    release pkg; errors loudly if it's missing.
-  - default (no flag) — release-compiles the WASM from source (bootstrapping rustup +
-    wasm-pack if absent). Used **locally** to refresh the committed pkg.
-- **The committed artifact:** `app/web/pkg/{fluid_lab.js,fluid_lab_bg.wasm}` are
-  force-tracked (the rest of `pkg/` stays gitignored). The release WASM is ~355 KB
-  (wasm-opt'd); the deployed bundle is ~480 KB. `app/web/dist` is gitignored (regenerated
-  each build). ⚠️ `run.sh` overwrites `web/pkg` with a **dev** build, so always re-run the
-  release compile before committing for deploy (the workflow below).
-- **`app/rust-toolchain.toml`** pins the channel (1.95.0) + wasm target so a from-source
-  compile matches local dev. rustup reads it from any ancestor of the build cwd.
-- **`app/web/_headers`** sets CSP `frame-ancestors` (allows `self` + `adamloe.com`) so the
-  page embeds in an `<iframe>` on adamloe.com while the standalone `*.pages.dev` URL keeps
-  working; `frame-ancestors` restricts framing only, not direct loads. Also
-  `X-Content-Type-Options` and short cache for `pkg/`, `no-cache` for `index.html`.
-
-**Cloudflare Pages dashboard settings** (Settings → Builds & deployments):
-
-| Field | Value |
-|---|---|
-| Root directory | *(blank — repo root)* |
-| Build command | `bash app/cf-build.sh --prebuilt` |
-| Build output directory | `app/web/dist` |
-
-No COOP/COEP cross-origin-isolation headers are needed (single-threaded WASM, no
-`SharedArrayBuffer`). Cloudflare serves `.wasm` as `application/wasm` automatically, which
-the wasm-bindgen `--target web` streaming init requires.
-
-**To ship a Rust change** (HTML/JS-only changes skip the rebuild — just commit & push):
-
-```
-bash app/cf-build.sh                                    # release-compile → app/web/pkg
-git add -f app/web/pkg/fluid_lab.js app/web/pkg/fluid_lab_bg.wasm
-git commit -m "…" && git push                           # CF copies, deploys in seconds
-```
-
-Preview the exact production bundle locally:
-
-```
-bash app/cf-build.sh && python3 -m http.server 5184 -d app/web/dist
-```
-
-(then browser-verify at the bare `http://localhost:5184/` as below). This is distinct from
-`run.sh`, which serves the source `web/` dir with a **dev** WASM build for the inner loop.
-
 ## Toolchain (pinned)
 
 wgpu 29 · wasm-pack 0.15 · rustc/cargo ~1.95 · node 20 (WSL) / 24 (Windows). Chrome at
@@ -211,5 +156,6 @@ wgpu 29 · wasm-pack 0.15 · rustc/cargo ~1.95 · node 20 (WSL) / 24 (Windows). 
 ## See also
 
 - [`../architecture/web-shell.md`](../architecture/web-shell.md) — the two entry paths + capture harness.
+- [`deploy.md`](deploy.md) — release packaging and Cloudflare Pages.
 - [`../architecture/gpu-resources.md`](../architecture/gpu-resources.md) — boot diagnostics/limits.
 - [`testing.md`](testing.md) — host tests + acceptance honesty.

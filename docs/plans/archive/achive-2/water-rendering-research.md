@@ -16,10 +16,9 @@ owning_docs:
 
 ## Mission
 
-Choose a water-look direction and update
-[`v1.10.0-water-rendering-optical-depth.md`](v1.10.0-water-rendering-optical-depth.md)
-so it is implementable. This is a research/planning doc for agents. It should not
-update architecture or decisions docs before implementation starts.
+Choose a water-look direction for the deleted `v1.10.0-water-rendering-optical-depth.md`
+implementation plan. This is an archived research/planning doc for agents. It should
+not update architecture or decisions docs before implementation starts.
 
 ## User constraints
 
@@ -161,8 +160,8 @@ the implementation plan must name the new resource and timing changes before cod
 
 ## See also
 
-- [`v1.10.0-water-rendering-optical-depth.md`](v1.10.0-water-rendering-optical-depth.md)
-- [`water-rendering-optical-depth.md`](water-rendering-optical-depth.md) - superseded source draft
-- [`future-roadmap.md`](future-roadmap.md)
-- [`../architecture/rendering.md`](../architecture/rendering.md)
-- [`../decisions/rendering.md`](../decisions/rendering.md)
+- `v1.10.0-water-rendering-optical-depth.md` - deleted implementation plan
+- `water-rendering-optical-depth.md` - deleted superseded source draft
+- [`future-roadmap.md`](../../future-roadmap.md)
+- [`../../../architecture/rendering.md`](../../../architecture/rendering.md)
+- [`../../../decisions/rendering.md`](../../../decisions/rendering.md)

@@ -23,8 +23,9 @@ fresh measurement/design evidence makes it the next practical move.
 ## Future ideas
 
 - **Render decimation / LOD for very high particle counts.** This may become useful
-  after tiled dispatch makes larger simulations legal, but it should not ship as part
-  of v1.8.0. It changes visual truthfulness and needs measured before/after evidence.
+  after tiled dispatch makes larger simulations legal, but it should stay out of the
+  current dispatch work. It changes visual truthfulness and needs measured
+  before/after evidence.
 - **High-count presets.** There should be no low/default/high preset system for now.
   If presets return, they should come from measurement and have honest labels.
 - **Source/drain.** Still future mass-mutation work. It should create and destroy

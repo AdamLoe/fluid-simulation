@@ -4,7 +4,7 @@
 
 You're driving multi-step fluid-lab work, especially across sub-agents. The generic
 orchestration discipline is in the global kit
-([`~/.claude/agent-docs/v1/rules/orchestrating.md`](~/.claude/agent-docs/v1/rules/orchestrating.md));
+([`~/agent-docs/v1/rules/orchestrating.md`](~/agent-docs/v1/rules/orchestrating.md));
 this doc holds what's specific to this app.
 
 ## Canonical truth
@@ -50,6 +50,6 @@ bookkeeping.
 
 ## See also
 
-- [`~/.claude/agent-docs/v1/rules/orchestrating.md`](~/.claude/agent-docs/v1/rules/orchestrating.md) — the generic rule.
+- [`~/agent-docs/v1/rules/orchestrating.md`](~/agent-docs/v1/rules/orchestrating.md) — the generic rule.
 - [`../decisions/index.md`](../decisions/index.md) · [`../architecture/index.md`](../architecture/index.md)
 - [`../plans/index.md`](../plans/index.md) — staging in-flight work.

@@ -45,9 +45,9 @@ SimpleParticles mode:
 optional grid slice overlay
 ```
 
-Removed Phase 2 systems are not scheduled, allocated, rebound, or drawn: caustics,
-temporal stabilization, wet walls, and dense wall fill. Their old setting ids are
-accepted only for legacy replay compatibility.
+The current runtime does not schedule, allocate, rebind, or draw caustics, temporal
+stabilization, wet walls, or dense wall fill. Their old setting ids are accepted only
+for legacy replay compatibility.
 
 ## Views
 
@@ -108,7 +108,7 @@ compatibility, while visible profiler text reports foam only.
 
 ## Removed features
 
-The following files are intentionally absent after Phase 2:
+The following files are intentionally absent from the current runtime:
 
 - `gpu/caustics.rs`, `gpu/shaders/caustics_{generate,composite}.wgsl`
 - `gpu/temporal.rs`, `gpu/shaders/temporal_blend.wgsl`
@@ -122,7 +122,7 @@ diffuse spray/bubble/wall-impact ids are accepted and ignored during restore.
 ## Update when
 
 - Render pass order, target formats, view modes, or debug-view ids change.
-- A removed feature is reintroduced or a new render subsystem allocates targets.
+- A removed feature returns or a new render subsystem allocates targets.
 - Surface-foam spawning, update, render, profiler, or settings semantics change.
 
 ## See also

@@ -14,7 +14,7 @@ Load only the subsystem doc that matches the task. For rationale, follow the doc
 |---|---|
 | WASM/JS boundary, the per-frame loop, the fixed/clamped timestep accumulator, orbit camera + interactive tank pointer modes, the typed scene config | [`app-shell.md`](app-shell.md) |
 | The hybrid FLIP/PIC MAC-grid sim — indexing, cell typing, fixed-point integer-atomic P2G, G2P blend, forces, advection, recovery, the per-substep loop | [`simulation.md`](simulation.md) |
-| Shareable explanation of the current particle/grid solver and water rendering constraints for external LLMs or rendering research | [`fluid-system-llm-brief.md`](fluid-system-llm-brief.md) |
+| External-LLM handoff for solver and rendering questions; start with the canonical owners | [`fluid-system-llm-brief.md`](fluid-system-llm-brief.md) |
 | The Conjugate-Gradient pressure solve (SPD MAC-Poisson), the `cg_*.wgsl` kernels, boundary conventions, host reference | [`pressure-solver.md`](pressure-solver.md) |
 | wgpu device/surface init, adapter-limit probe, SoA buffer layout, bind-group strategy, the per-stage storage-buffer constraint, the recreate path | [`gpu-resources.md`](gpu-resources.md) |
 | GPU-native screen-space water, optical/simple particle rendering, tank-wireframe, and grid-slice views; water pass order and no-normal-frame-readback rules | [`rendering.md`](rendering.md) |

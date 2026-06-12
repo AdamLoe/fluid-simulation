@@ -41,8 +41,8 @@ The visible tabs are:
 - Sun & Reflection
 - Foam
 
-The web shell appends Profiler as a non-config tab. Phase 2 removed visible
-Caustics, Temporal, Wet Wall, Wall Fill, and Diffuse Water tabs.
+The web shell appends Profiler as a non-config tab. Caustics, Temporal, Wet Wall,
+Wall Fill, and Diffuse Water are not visible tabs.
 
 ## Render controls
 

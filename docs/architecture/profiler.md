@@ -8,7 +8,11 @@ long_lived:    true
 
 # Profiler
 
-The profiler is core infrastructure, not late polish. It owns a hierarchical, config-tagged, timing-source-honest view of every frame — console logging now, the rendered panel consuming the same `stats_json` data in 1.2. Every performance number it emits is uninterpretable without knowing what was measured and how, so timing-source honesty is the single load-bearing design rule.
+The profiler is core infrastructure, not late polish. It owns a hierarchical,
+config-tagged, timing-source-honest view of every frame — console logging and the
+rendered panel consume the same `stats_json` data. Every performance number it emits
+is uninterpretable without knowing what was measured and how, so timing-source honesty
+is the single load-bearing design rule.
 
 ## What it owns
 
@@ -78,7 +82,14 @@ Always-present keys additionally include measurement/scale facts:
 `pressure_iterations`, and `render_mode`, alongside the existing frame percentile,
 grid, memory, dropped-time, dispatch, and GPU fields.
 
-The `gpu` sub-object always carries: `sim_ms`, `prep_ms`, `pressure_ms`, `finish_ms`, `render_ms`, `liquid_cells`, `substeps`, `detailed`. When `detailed` is true it also carries `sections` (name→ms map) and `cg` (`total_ms`, `avg_ms_per_iter`, `spmv_ms`, `reductions_ms`, `updates_ms`, `scalars_ms`, `iters`). Fine fields are only present when real timestamps and the dev toggle are both active — never fabricated. When timestamp readback includes foam counters, `gpu.diffuse` carries `alive`, `foam`, `spray`, `bubble`, `emitted`, and `clamped`; `spray` and `bubble` are compatibility zeroes after Phase 2.
+The `gpu` sub-object always carries: `sim_ms`, `prep_ms`, `pressure_ms`,
+`finish_ms`, `render_ms`, `liquid_cells`, `substeps`, `detailed`. When `detailed` is
+true it also carries `sections` (name→ms map) and `cg` (`total_ms`,
+`avg_ms_per_iter`, `spmv_ms`, `reductions_ms`, `updates_ms`, `scalars_ms`, `iters`).
+Fine fields are only present when real timestamps and the dev toggle are both active
+— never fabricated. When timestamp readback includes foam counters, `gpu.diffuse`
+carries `alive`, `foam`, `spray`, `bubble`, `emitted`, and `clamped`; `spray` and
+`bubble` stay as compatibility zeroes.
 
 ## Non-obvious invariants and gotchas
 
@@ -133,6 +144,6 @@ with legacy spray/bubble slots forced to zero.
 
 - `gpu-resources.md` — buffer layout for `stats_buf` (liveness counter) that `GpuTimers` reads back
 - `settings.md` — config snapshot format passed to `end_frame_and_maybe_log`
-- `web-shell.md` — the 1.2 rendered profiler panel that consumes `stats_json`
-- `../decisions/observability.md` — why data model and logging are early infrastructure, rendered panel deferred to 1.2
+- `web-shell.md` — the rendered profiler panel that consumes `stats_json`
+- `../decisions/observability.md` — why data model and logging are early infrastructure, rendered panel stays separate
 - `../agent-context/maintaining-docs.md`

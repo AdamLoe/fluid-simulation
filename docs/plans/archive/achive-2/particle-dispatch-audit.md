@@ -16,9 +16,9 @@ owning_docs:
 ## Mission
 
 Create the path inventory and indexing design needed before tiled particle dispatch is
-implemented. This is a planning/research doc for agents to update
-[`v1.8.0-particle-dispatch-tiling.md`](v1.8.0-particle-dispatch-tiling.md), not a
-request to update architecture or decisions docs.
+implemented. This archived planning/research doc fed the deleted
+`v1.8.0-particle-dispatch-tiling.md` plan; it is not a request to update architecture
+or decisions docs.
 
 ## Scope
 
@@ -187,14 +187,12 @@ scale. Include requested 2M, 4M, and 8M when the adapter can safely attempt them
 
 - Do not remove preflight safety as a shortcut.
 - Do not treat 8M as a preset or a promise.
-- Do not move render decimation/LOD into v1.8.0; put it in
-  [`future-roadmap.md`](future-roadmap.md) unless the user promotes it.
+- Do not move render decimation/LOD into dispatch work; put it in
+  [`future-roadmap.md`](../../future-roadmap.md) unless the user promotes it.
 - Do not update architecture or decisions docs from this audit alone.
 
 ## See also
 
-- [`v1.8.0-particle-dispatch-tiling.md`](v1.8.0-particle-dispatch-tiling.md)
-- [`v1.9.0-particle-performance-followup.md`](v1.9.0-particle-performance-followup.md)
 - [`v1.3.0-scale-measurements.md`](v1.3.0-scale-measurements.md)
-- [`../architecture/gpu-resources.md`](../architecture/gpu-resources.md)
-- [`../architecture/simulation.md`](../architecture/simulation.md)
+- [`../../../architecture/gpu-resources.md`](../../../architecture/gpu-resources.md)
+- [`../../../architecture/simulation.md`](../../../architecture/simulation.md)

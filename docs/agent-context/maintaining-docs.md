@@ -11,7 +11,7 @@ this.
 The doc-authoring rules (the recoverability test, `path → symbol` pointers instead of
 line numbers, describe-what-IS, single-owner, ~1–2k-token leaves, the decisions field
 spec) are **generic** and live in the global kit:
-[`~/.claude/agent-docs/v1/rules/authoring-rules.md`](~/.claude/agent-docs/v1/rules/authoring-rules.md).
+[`~/agent-docs/v1/rules/authoring-rules.md`](~/agent-docs/v1/rules/authoring-rules.md).
 Read that — it is the authority. This stub exists so `See also` links resolve and to
 point you at the app bindings.
 
@@ -25,6 +25,6 @@ point you at the app bindings.
 
 ## See also
 
-- [`~/.claude/agent-docs/v1/rules/authoring-rules.md`](~/.claude/agent-docs/v1/rules/authoring-rules.md) — the authority.
+- [`~/agent-docs/v1/rules/authoring-rules.md`](~/agent-docs/v1/rules/authoring-rules.md) — the authority.
 - [`../_meta/manifest.md`](../_meta/manifest.md) — change-to-doc table, drift gates.
 - [`../ownership.md`](../ownership.md) — how to use the ownership data.
