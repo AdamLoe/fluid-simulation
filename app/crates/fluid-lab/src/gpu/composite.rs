@@ -34,8 +34,6 @@ struct HeroUniform {
     spec: [f32; 4], // x = specular strength, yzw = unused
     // --- Surface normal quality (v1.19 round-2) ---
     norm: [f32; 4], // x = normal_stencil (as f32), y = normal_smooth_strength, zw = unused
-    // --- Wall-fill-only composite controls ---
-    wallfill: [f32; 4], // x=color strength, y=reflection multiplier, z=roughness, w=absorption strength
 }
 
 /// Per-frame camera uniform for composite.wgsl.
@@ -132,12 +130,6 @@ fn hero_uniform(hero: &HeroParams) -> HeroUniform {
             0.0,
             0.0,
         ],
-        wallfill: [
-            hero.flat_water_fill_color_strength.clamp(0.0, 1.0),
-            hero.flat_water_fill_reflection_strength.max(0.0),
-            hero.flat_water_fill_roughness.clamp(0.0, 1.0),
-            hero.flat_water_fill_absorption_strength.clamp(0.0, 1.0),
-        ],
     }
 }
 
@@ -166,7 +158,6 @@ impl CompositeRenderer {
         thickness_view: &wgpu::TextureView,
         whitewater_view: &wgpu::TextureView,
         smoothed_z_view: &wgpu::TextureView,
-        wallfill_mask_view: &wgpu::TextureView,
         scene_color_view: &wgpu::TextureView,
         scene_depth_view: &wgpu::TextureView,
         hero: &HeroParams,
@@ -331,17 +322,6 @@ impl CompositeRenderer {
                     },
                     count: None,
                 },
-                // wall-fill coverage mask.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 9,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
             ],
         });
         let bind_group = create_bind_group(
@@ -351,7 +331,6 @@ impl CompositeRenderer {
             thickness_view,
             whitewater_view,
             smoothed_z_view,
-            wallfill_mask_view,
             &uniform_buf,
             &hero_buf,
             scene_color_view,
@@ -420,7 +399,6 @@ impl CompositeRenderer {
         thickness_view: &wgpu::TextureView,
         whitewater_view: &wgpu::TextureView,
         smoothed_z_view: &wgpu::TextureView,
-        wallfill_mask_view: &wgpu::TextureView,
         scene_color_view: &wgpu::TextureView,
         scene_depth_view: &wgpu::TextureView,
     ) {
@@ -431,37 +409,6 @@ impl CompositeRenderer {
             thickness_view,
             whitewater_view,
             smoothed_z_view,
-            wallfill_mask_view,
-            &self.uniform_buf,
-            &self.hero_buf,
-            scene_color_view,
-            scene_depth_view,
-            &self.cam_buf,
-        );
-    }
-
-    /// Rebind only the temporal-sourced texture views (thickness, whitewater,
-    /// smooth_z), leaving scene_color / scene_depth unchanged.  Call this each
-    /// frame after the temporal system's draw() flips ping-pong parity so the
-    /// composite pass reads the freshly-stabilized textures.
-    pub fn rebind_temporal_views(
-        &mut self,
-        device: &wgpu::Device,
-        thickness_view: &wgpu::TextureView,
-        whitewater_view: &wgpu::TextureView,
-        smoothed_z_view: &wgpu::TextureView,
-        wallfill_mask_view: &wgpu::TextureView,
-        scene_color_view: &wgpu::TextureView,
-        scene_depth_view: &wgpu::TextureView,
-    ) {
-        self.bind_group = create_bind_group(
-            device,
-            &self.bind_group_layout,
-            &self.sampler,
-            thickness_view,
-            whitewater_view,
-            smoothed_z_view,
-            wallfill_mask_view,
             &self.uniform_buf,
             &self.hero_buf,
             scene_color_view,
@@ -592,7 +539,6 @@ fn create_bind_group(
     thickness_view: &wgpu::TextureView,
     whitewater_view: &wgpu::TextureView,
     smoothed_z_view: &wgpu::TextureView,
-    wallfill_mask_view: &wgpu::TextureView,
     uniform_buf: &wgpu::Buffer,
     hero_buf: &wgpu::Buffer,
     scene_color_view: &wgpu::TextureView,
@@ -638,10 +584,6 @@ fn create_bind_group(
             wgpu::BindGroupEntry {
                 binding: 8,
                 resource: cam_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 9,
-                resource: wgpu::BindingResource::TextureView(wallfill_mask_view),
             },
         ],
     })

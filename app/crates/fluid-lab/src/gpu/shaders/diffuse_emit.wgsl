@@ -1,6 +1,6 @@
-// Diffuse-water emission (v1.13). One invocation per grid cell. Liquid cells at a
-// fast/breaking surface or a hard wall impact stochastically spawn a persistent
-// diffuse particle (foam / spray / bubble) into a shared ring buffer.
+// Surface-foam emission. One invocation per grid cell. Liquid cells touching air
+// at sufficient speed stochastically spawn a persistent foam particle into a
+// shared ring buffer.
 //
 // Render-only: this never touches the sim particle buffer, conserves no mass, and
 // affects no pressure. Spawning is deterministic per (cell, frame, seed) via an
@@ -20,11 +20,11 @@ struct Params {
 
 struct DiffuseU {
     f0: vec4<f32>,  // dt, emit_rate, radius, alpha
-    f1: vec4<f32>,  // surf_thresh, surf_gain, wall_thresh, wall_gain
-    f2: vec4<f32>,  // foam_life, spray_life, bubble_life, bubble_buoyancy
-    f3: vec4<f32>,  // spray_drag, _, _, _
+    f1: vec4<f32>,  // surf_thresh, surf_gain, _, _
+    f2: vec4<f32>,  // foam_life, _, _, _
+    f3: vec4<f32>,  // _, _, _, _
     u0: vec4<u32>,  // frame_index, max_particles, emit_budget, random_seed
-    u1: vec4<u32>,  // enabled, debug_view, _, _
+    u1: vec4<u32>,  // enabled, _, _, _
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -33,11 +33,11 @@ struct DiffuseU {
 @group(0) @binding(3) var<storage, read> u_vel: array<f32>;
 @group(0) @binding(4) var<storage, read> v_vel: array<f32>;
 @group(0) @binding(5) var<storage, read> w_vel: array<f32>;
-// pos_type (xyz pos, w = type: 0 foam / 1 spray / 2 bubble; <0 dead),
+// pos_type (xyz pos, w = type: 0 foam; <0 dead),
 // vel_age (xyz vel, w = age), life (x = lifetime, y = per-particle random, zw _).
 @group(0) @binding(6) var<storage, read_write> particles: array<vec4<f32>>;
 // 0 ring cursor (persistent), 1 emitted this frame, 2 clamped this frame,
-// 3..6 alive foam/spray/bubble (written by the update pass).
+// 3 alive foam; 4/5 are legacy-zero spray/bubble counters.
 @group(0) @binding(7) var<storage, read_write> counters: array<atomic<u32>>;
 
 const LIQUID: u32 = 1u;
@@ -151,38 +151,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let vel = vec3<f32>(sample_u(center), sample_v(center), sample_w(center));
     let spd = length(vel);
 
-    // Surface = a liquid cell touching Air. Wall impact = velocity component
-    // directed into a Solid neighbor.
+    // Surface = a liquid cell touching Air. Foam is not born from interior flow,
+    // bubbles, ballistic spray, or hard wall impacts.
     var is_surface = false;
-    var impact = 0.0;
     if (cell_at(i + 1, j, k) == AIR || cell_at(i - 1, j, k) == AIR ||
         cell_at(i, j + 1, k) == AIR || cell_at(i, j - 1, k) == AIR ||
         cell_at(i, j, k + 1) == AIR || cell_at(i, j, k - 1) == AIR) { is_surface = true; }
-    if (cell_at(i + 1, j, k) == SOLID) { impact = max(impact,  vel.x); }
-    if (cell_at(i - 1, j, k) == SOLID) { impact = max(impact, -vel.x); }
-    if (cell_at(i, j + 1, k) == SOLID) { impact = max(impact,  vel.y); }
-    if (cell_at(i, j - 1, k) == SOLID) { impact = max(impact, -vel.y); }
-    if (cell_at(i, j, k + 1) == SOLID) { impact = max(impact,  vel.z); }
-    if (cell_at(i, j, k - 1) == SOLID) { impact = max(impact, -vel.z); }
+    if (!is_surface) { return; }
 
     let surf_thresh = du.f1.x; let surf_gain = du.f1.y;
-    let wall_thresh = du.f1.z; let wall_gain = du.f1.w;
 
-    // Pick the strongest signal → one spawn attempt this cell/frame.
-    var p = 0.0;
-    var ptype = 0u;
-    if (is_surface) {
-        let ps = max(spd - surf_thresh, 0.0) * surf_gain;
-        if (ps > p) { p = ps; ptype = select(0u, 1u, spd > 2.0 * surf_thresh); }
-    } else {
-        // Bubbles are rare: only genuinely fast interior flow, heavily attenuated.
-        let pb = max(spd - surf_thresh * 2.0, 0.0) * surf_gain * 0.06;
-        if (pb > p) { p = pb; ptype = 2u; }
-    }
-    if (impact > wall_thresh) {
-        let pw = (impact - wall_thresh) * wall_gain;
-        if (pw > p) { p = pw; ptype = 0u; }
-    }
+    var p = max(spd - surf_thresh, 0.0) * surf_gain;
     p = p * du.f0.y * du.f0.x;        // * emit_rate * dt
     if (p <= 0.0) { return; }
 
@@ -196,30 +175,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let max_p = max(du.u0.y, 1u);
     let slot = atomicAdd(&counters[0], 1u) % max_p;
 
-    // Spawn. Jitter within the cell; velocity seeded from the flow plus a type kick.
+    // Spawn. Jitter within the cell; velocity is damped toward the local flow so
+    // foam stays on the liquid surface.
     let jx = (hash01(seed ^ 0x1111u) - 0.5);
     let jy = (hash01(seed ^ 0x2222u) - 0.5);
     let jz = (hash01(seed ^ 0x3333u) - 0.5);
     let pos = center + vec3<f32>(jx, jy, jz) * h;
     let rlife = 0.4 + 0.6 * hash01(seed ^ 0x4444u);
 
-    var pvel = vel;
-    var life = du.f2.x;               // foam
-    if (ptype == 1u) {
-        // Spray: launch along the flow with an upward kick (against gravity).
-        let up = select(vec3<f32>(0.0, 1.0, 0.0), -normalize(params.grav.xyz),
-                        length(params.grav.xyz) > 1e-4);
-        pvel = vel + up * spd * 0.4;
-        life = du.f2.y;
-    } else if (ptype == 2u) {
-        // Bubble: nearly at rest in the flow, buoyancy lifts it later.
-        pvel = vel * 0.5;
-        life = du.f2.z;
-    } else {
-        pvel = vel * 0.6;             // foam clings to the surface flow
-    }
+    let pvel = vel * 0.55;
+    let life = du.f2.x;
 
-    particles[slot * 3u + 0u] = vec4<f32>(pos, f32(ptype));
+    particles[slot * 3u + 0u] = vec4<f32>(pos, 0.0);
     particles[slot * 3u + 1u] = vec4<f32>(pvel, 0.0);
     particles[slot * 3u + 2u] = vec4<f32>(life * rlife, hash01(seed ^ 0x5555u), 0.0, 0.0);
 }

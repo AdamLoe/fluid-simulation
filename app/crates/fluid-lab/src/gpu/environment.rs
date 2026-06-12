@@ -4,10 +4,6 @@
 //! (linear HDR) + `scene_depth` (linear eye distance) targets, ahead of the water
 //! passes. Refraction in [`super::composite`] samples these so the floor/backdrop
 //! visibly bend through the liquid.
-//!
-//! v1.17: wetness buffer + WetWallUniform bound to group 1 so the wall FS can
-//! read per-texel wetness for darkening/gloss/meniscus/contact-shadow. World
-//! position is now threaded VS→FS for the index mapping.
 
 use crate::settings::HeroParams;
 use glam::Vec3;
@@ -29,21 +25,19 @@ struct EnvVertex {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct EnvUniform {
-    view_proj:  [[f32; 4]; 4],
+    view_proj: [[f32; 4]; 4],
     // x = floor_pattern_scale, y = floor_pattern_strength,
     // z = backdrop_strength, w = wall_visibility
-    params:     [f32; 4],
+    params: [f32; 4],
     // xyz = camera world eye position in BOX-LOCAL space, w = unused.
     // Stored box-local so that `view_dir = normalize(p - eye_world)` is
     // geometrically correct when p is a box-local wall position.
-    eye_world:  [f32; 4],
+    eye_world: [f32; 4],
     // x = env_rotation (rad), y = env_mode (0=Sky,1=Room,2=Studio),
     // z = env_brightness, w = unused
-    env_ctrl:   [f32; 4],
+    env_ctrl: [f32; 4],
     // xyz = world sun direction (unnormalized from settings), w = sun_intensity
-    sun:        [f32; 4],
-    // x = wet_reflectivity, y = wet_specular, zw = unused
-    wet_refl:   [f32; 4],
+    sun: [f32; 4],
     // Box-local → world rotation: the three columns of the 3x3 rotation matrix
     // (from_quat(box_orient)).  w of each is padding.  Used to rotate the
     // box-local reflection direction into world space before env_sample.
@@ -58,8 +52,6 @@ pub struct EnvironmentRenderer {
     vertex_count: u32,
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    /// Bind group for the wetness buffer + WetWallUniform (group 1).
-    wetwall_bind_group: wgpu::BindGroup,
 }
 
 impl EnvironmentRenderer {
@@ -70,12 +62,10 @@ impl EnvironmentRenderer {
         depth_format: wgpu::TextureFormat,
         lo: [f32; 3],
         hi: [f32; 3],
-        wetwall_uniform_buf: &wgpu::Buffer,
-        wetwall_wetness_buf: &wgpu::Buffer,
     ) -> Self {
         // env.wgsl (shared procedural environment) is concatenated ahead of the
-        // environment shader so the wet-wall reflectivity uses the same sky/room
-        // function as the composite and skybox.
+        // environment shader so the backdrop uses the same sky/room function as
+        // the composite and skybox.
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("environment shader"),
             source: wgpu::ShaderSource::Wgsl(
@@ -95,7 +85,7 @@ impl EnvironmentRenderer {
         });
 
         // Buffer is sized to the full EnvUniform struct (view_proj + params +
-        // eye_world + env_ctrl + sun + wet_refl + box_rot = 64+16+16+16+16+16+48 = 192 bytes).
+        // eye_world + env_ctrl + sun + box_rot = 64+16+16+16+16+48 = 176 bytes).
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("environment uniform"),
             size: std::mem::size_of::<EnvUniform>() as u64,
@@ -127,51 +117,9 @@ impl EnvironmentRenderer {
             }],
         });
 
-        // Group 1: wetwall uniform (binding 0) + wetness buffer (binding 1)
-        let bgl1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("environment bgl1 (wetwall)"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        let wetwall_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("environment bind group 1 (wetwall)"),
-            layout: &bgl1,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wetwall_uniform_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wetwall_wetness_buf.as_entire_binding(),
-                },
-            ],
-        });
-
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("environment layout"),
-            bind_group_layouts: &[Some(&bgl0), Some(&bgl1)],
+            bind_group_layouts: &[Some(&bgl0)],
             immediate_size: 0,
         });
 
@@ -230,7 +178,6 @@ impl EnvironmentRenderer {
             vertex_count: verts.len() as u32,
             uniform_buf,
             bind_group,
-            wetwall_bind_group,
         }
     }
 
@@ -256,7 +203,7 @@ impl EnvironmentRenderer {
         //   eye_world  at  80 (16 bytes)
         //   env_ctrl   at  96 (16 bytes)
         //   sun        at 112 (16 bytes)
-        //   wet_refl   at 128 (16 bytes)
+        //   box_rot    at 128 (48 bytes)
         // env_ctrl: rotation, mode, brightness.
         let env_ctrl: [f32; 4] = [
             hero.environment_rotation,
@@ -273,14 +220,6 @@ impl EnvironmentRenderer {
             hero.sun_intensity.max(0.0),
         ];
         queue.write_buffer(&self.uniform_buf, 112, bytemuck::cast_slice(&sun));
-        // wet_refl: reflectivity + specular.
-        let wet_refl: [f32; 4] = [
-            hero.wet_wall_reflectivity.clamp(0.0, 1.0),
-            hero.wet_wall_specular.max(0.0),
-            0.0,
-            0.0,
-        ];
-        queue.write_buffer(&self.uniform_buf, 128, bytemuck::cast_slice(&wet_refl));
     }
 
     /// Push the box-local camera eye position and the box-local→world rotation.
@@ -294,23 +233,27 @@ impl EnvironmentRenderer {
     /// `box_rot` is the box-local→world 3×3 rotation matrix (from_quat(box_orient)).
     /// Used in the FS to rotate the box-local reflection direction into world space
     /// before sampling the environment.
-    pub fn set_eye_world(&self, queue: &wgpu::Queue, eye_world_local: glam::Vec3, box_rot: glam::Mat3) {
+    pub fn set_eye_world(
+        &self,
+        queue: &wgpu::Queue,
+        eye_world_local: glam::Vec3,
+        box_rot: glam::Mat3,
+    ) {
         // eye_world at byte 80: view_proj(64) + params(16) = 80.
         let data: [f32; 4] = [eye_world_local.x, eye_world_local.y, eye_world_local.z, 0.0];
         queue.write_buffer(&self.uniform_buf, 80, bytemuck::cast_slice(&data));
-        // box_rot columns at bytes 144, 160, 176 (after wet_refl at 128+16=144).
+        // box_rot columns at bytes 128, 144, 160.
         let c0: [f32; 4] = [box_rot.x_axis.x, box_rot.x_axis.y, box_rot.x_axis.z, 0.0];
         let c1: [f32; 4] = [box_rot.y_axis.x, box_rot.y_axis.y, box_rot.y_axis.z, 0.0];
         let c2: [f32; 4] = [box_rot.z_axis.x, box_rot.z_axis.y, box_rot.z_axis.z, 0.0];
-        queue.write_buffer(&self.uniform_buf, 144, bytemuck::cast_slice(&c0));
-        queue.write_buffer(&self.uniform_buf, 160, bytemuck::cast_slice(&c1));
-        queue.write_buffer(&self.uniform_buf, 176, bytemuck::cast_slice(&c2));
+        queue.write_buffer(&self.uniform_buf, 128, bytemuck::cast_slice(&c0));
+        queue.write_buffer(&self.uniform_buf, 144, bytemuck::cast_slice(&c1));
+        queue.write_buffer(&self.uniform_buf, 160, bytemuck::cast_slice(&c2));
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_bind_group(1, &self.wetwall_bind_group, &[]);
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.draw(0..self.vertex_count, 0..1);
     }
@@ -362,9 +305,29 @@ fn environment_mesh(lo: [f32; 3], hi: [f32; 3]) -> Vec<EnvVertex> {
 
 /// Append two triangles (a,b,c,d wound as a quad) with planar [0,1]^2 uv.
 fn push_quad(v: &mut Vec<EnvVertex>, kind: f32, a: Vec3, b: Vec3, c: Vec3, d: Vec3) {
-    let va = EnvVertex { pos: a.to_array(), kind, uv: [0.0, 0.0], _pad: [0.0, 0.0] };
-    let vb = EnvVertex { pos: b.to_array(), kind, uv: [1.0, 0.0], _pad: [0.0, 0.0] };
-    let vc = EnvVertex { pos: c.to_array(), kind, uv: [1.0, 1.0], _pad: [0.0, 0.0] };
-    let vd = EnvVertex { pos: d.to_array(), kind, uv: [0.0, 1.0], _pad: [0.0, 0.0] };
+    let va = EnvVertex {
+        pos: a.to_array(),
+        kind,
+        uv: [0.0, 0.0],
+        _pad: [0.0, 0.0],
+    };
+    let vb = EnvVertex {
+        pos: b.to_array(),
+        kind,
+        uv: [1.0, 0.0],
+        _pad: [0.0, 0.0],
+    };
+    let vc = EnvVertex {
+        pos: c.to_array(),
+        kind,
+        uv: [1.0, 1.0],
+        _pad: [0.0, 0.0],
+    };
+    let vd = EnvVertex {
+        pos: d.to_array(),
+        kind,
+        uv: [0.0, 1.0],
+        _pad: [0.0, 0.0],
+    };
     v.extend_from_slice(&[va, vb, vc, va, vc, vd]);
 }

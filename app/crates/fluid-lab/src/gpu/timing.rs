@@ -99,7 +99,7 @@ pub struct Readout {
     pub cg_cats: [f32; CG_CATS_LEN],
     /// CG iterations that were actually timed (== allocated iters, possibly clamped).
     pub cg_iters: u32,
-    /// Diffuse-water (v1.13) alive counts [foam, spray, bubble] at sample time.
+    /// Surface-foam alive count in slot 0. Slots 1/2 are legacy zeroes for JSON shape.
     pub diffuse_alive: [u32; 3],
     /// Diffuse particles emitted on the sampled frame.
     pub diffuse_emitted: u32,
@@ -344,7 +344,7 @@ impl GpuTimers {
         }
         encoder.copy_buffer_to_buffer(&self.ts_resolve, 0, &self.read_buf, 0, self.liquid_offset);
         encoder.copy_buffer_to_buffer(stats_buf, 0, &self.read_buf, self.liquid_offset, 4);
-        // Diffuse counters [0..6]: cursor, emitted, clamped, alive foam/spray/bubble.
+        // Diffuse counters [0..6]: cursor, emitted, clamped, alive foam, legacy zeroes.
         encoder.copy_buffer_to_buffer(diffuse_counters, 0, &self.read_buf, self.diffuse_offset, 24);
         self.pending.set(true);
         true
@@ -374,15 +374,14 @@ impl GpuTimers {
                 };
                 let liquid =
                     u32::from_le_bytes(data[liquid_offset..liquid_offset + 4].try_into().unwrap());
-                let du32 = |o: usize| -> u32 {
-                    u32::from_le_bytes(data[o..o + 4].try_into().unwrap())
-                };
-                // Diffuse counters: [0]=cursor, [1]=emitted, [2]=clamped, [3..6]=alive.
+                let du32 =
+                    |o: usize| -> u32 { u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) };
+                // Diffuse counters: [0]=cursor, [1]=emitted, [2]=clamped, [3]=alive foam.
                 let d_emitted = du32(diffuse_offset + 4);
                 let d_clamped = du32(diffuse_offset + 8);
                 let d_foam = du32(diffuse_offset + 12);
-                let d_spray = du32(diffuse_offset + 16);
-                let d_bubble = du32(diffuse_offset + 20);
+                let d_spray = 0;
+                let d_bubble = 0;
                 let span = |a: u64, b: u64| -> f32 {
                     if b > a {
                         (b - a) as f32 * period * 1e-6

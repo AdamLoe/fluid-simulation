@@ -13,7 +13,6 @@
         --chrome-border: rgba(78, 92, 120, 0.55);
         --chrome-hover: rgba(31, 38, 54, 0.92);
         --panel-bg: rgba(15, 18, 25, 0.92);
-        --panel-header: rgba(24, 29, 40, 0.95);
         --panel-border: #2a3142;
         --control-bg: #0f1219;
         --control-hover: #232b3d;
@@ -187,7 +186,7 @@
       .settings-panel {
         position: relative;
         flex: 0 0 var(--panel-width);
-        margin: 12px 12px 12px 0;
+        margin: 0;
         min-width: 0;
         display: flex;
         flex-direction: column;
@@ -203,24 +202,6 @@
 
       .settings-panel[hidden] {
         display: none;
-      }
-
-      .settings-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--space-2);
-        padding: 9px 10px;
-        background: var(--panel-header);
-        border-bottom: 1px solid var(--panel-border);
-      }
-
-      .settings-title {
-        color: var(--text-strong);
-        font-size: 12px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
       }
 
       .settings-content {
@@ -280,32 +261,6 @@
 
       .tab-btn.tab-experimental {
         border-color: rgba(251, 191, 36, 0.28);
-      }
-
-      .settings-panel.nav-collapsed .settings-content {
-        grid-template-columns: 48px minmax(0, 1fr);
-      }
-
-      .settings-panel.nav-collapsed .tab-group-label {
-        display: none;
-      }
-
-      .settings-panel.nav-collapsed .tab-btn {
-        height: 30px;
-        padding: 0;
-        font-size: 0;
-      }
-
-      .settings-panel.nav-collapsed .tab-btn::before {
-        content: attr(data-tab);
-        display: block;
-        color: inherit;
-        font-size: 10px;
-        font-weight: 700;
-        text-align: center;
-        text-transform: uppercase;
-        white-space: nowrap;
-        overflow: hidden;
       }
 
       .settings-body {
@@ -782,19 +737,6 @@
           text-align: center;
         }
 
-        .settings-panel.nav-collapsed .settings-content {
-          display: flex;
-        }
-
-        .settings-panel.nav-collapsed .tab-btn {
-          font-size: 11px;
-          padding: 6px 8px;
-        }
-
-        .settings-panel.nav-collapsed .tab-btn::before {
-          content: none;
-        }
-
         .launcher-shell {
           justify-content: stretch;
           width: 100%;
@@ -866,15 +808,6 @@
         </main>
 
         <aside id="settings-panel" class="settings-panel" aria-label="Settings" hidden>
-          <div class="settings-header">
-            <div class="settings-title">Settings</div>
-            <button id="settings-nav-toggle" class="icon-btn" type="button" aria-label="Collapse settings navigation" title="Collapse settings navigation" aria-pressed="false">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M6 6h12M6 12h12M6 18h12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
-              </svg>
-              <span class="visually-hidden">Toggle settings navigation</span>
-            </button>
-          </div>
           <div class="settings-content">
             <div id="settings-tabs" class="settings-tabs" role="tablist" aria-label="Settings sections"></div>
             <div id="settings-body" class="settings-body"></div>

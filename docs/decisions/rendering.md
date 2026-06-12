@@ -101,17 +101,21 @@ unrelated effects.
 **Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
 `architecture/gpu-resources.md`.
 
-## Weak hero-water add-ons are opt-in, not startup defaults
+## Weak hero-water add-ons are removed until they earn a new case
 
-**Decision** - Caustics, temporal stabilization, diffuse particles, wet walls, and
-dense wall fill remain shipped feature groups but default off in the normal Water path.
+**Decision** - Caustics, temporal stabilization, wet walls, and dense wall fill are
+not shipped runtime feature groups after Phase 2. Their modules, shaders, pass
+scheduling, visible settings, debug views, and resource allocations are removed. Old
+persisted ids replay safely as hidden compatibility no-ops. The cheap wall-contact
+normal/depth snap remains.
 
-**Why** - The default view should first read as a coherent liquid body; weak or expensive
-optional cues should not add cost or artifacts unless the user explicitly enables them.
+**Why** - Default Water should be a coherent liquid body with a small, understandable
+control surface. The removed add-ons had cost, artifacts, or weak visual value without
+enough evidence to justify runtime ownership.
 
-**Tradeoffs** - The UI still exposes the feature groups for deliberate tuning, so the
-renderer keeps their pass wiring and buffer ownership. This is not a decision to remove
-or abandon those features.
+**Tradeoffs** - Reintroducing any of those effects requires a fresh plan, measured
+captures, runtime ownership, settings, docs, and profiler evidence. Legacy replay is
+kept so old localStorage payloads do not break startup.
 
 **Code anchors** - `crates/fluid-lab/src/settings/mod.rs -> Registry`;
 `crates/fluid-lab/src/gpu/mod.rs -> GpuContext::render`.
@@ -119,15 +123,13 @@ or abandon those features.
 **Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
 `architecture/gpu-resources.md`.
 
-## Whitewater is persistent diffuse particles, not a speed mask
+## Whitewater foam is conservative surface particles, not spray/bubbles
 
-**Decision** - Whitewater can use a persistent, render-only GPU particle system (foam,
-spray, bubbles) that is born at fast/breaking surfaces and wall impacts, advects, and
-decays over seconds (`gpu/diffuse.rs -> DiffuseSystem`, v1.13). The original
-speed-weighted thickness mask in the composite remains the shipped fallback while
-diffuse particles default off to keep glass walls clean. Diffuse particles **do not**
-conserve mass, affect pressure, or feed back into the solver — they are render state,
-explicitly decoupled from the simulation's determinism contract.
+**Decision** - Whitewater can use persistent, render-only surface foam particles born
+only at moving liquid-air cells. There is no spray, no bubbles, no wall-impact spawn,
+no airborne confetti, and no wall decals. The original speed-weighted whitewater
+target remains the fallback signal. Foam particles do not conserve mass, affect
+pressure, or feed back into the solver.
 
 **Why** - A fast-water mask alone reads as a white *tint* that flashes only while
 water is moving; it cannot show foam that lingers a second or more after an impact and
@@ -136,13 +138,10 @@ fades. Persistent diffuse state is what makes churn read as foam (see the
 fixed-point P2G determinism invariant (`../architecture/simulation.md`).
 
 **Tradeoffs** - A fixed-capacity particle buffer (~12.6 MB) and two extra compute
-passes per frame when enabled; emission is bounded by an integer-atomic per-frame
-budget, and over-budget frames are reported (`stats_json.gpu.diffuse.clamped`) rather
-than silently dropping foam. Wall impacts are intentionally biased toward brief spray
-and away from long-lived vertical-wall foam; diffuse particles near vertical glass are
-retired before they can read as wall decals, and persistent wall wetness is owned by the
-wet-wall material. Determinism of *which slot* a spawn lands in is not guaranteed
-(atomic ring cursor), which is acceptable because the system is render-only.
+passes per enabled frame. Emission is bounded by an integer-atomic per-frame budget,
+and over-budget frames are reported (`stats_json.gpu.diffuse.clamped`). Slot choice is
+not deterministic because of the atomic ring cursor, which is acceptable because the
+system is render-only.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/diffuse.rs -> DiffuseSystem`;
 `crates/fluid-lab/src/gpu/shaders/diffuse_emit.wgsl`;
@@ -168,7 +167,7 @@ the world. SSR and real IBL are a heavier, separate project and out of this seri
 **Tradeoffs** - The reflection is a stylized environment, not a true mirror of the scene;
 it cannot show the tank's own geometry reflected. Roughness softening blends toward an
 averaged sky rather than a true pre-filtered mip. Micro-normals can shimmer, so they
-default off until temporal stabilization lands.
+default off unless a future stabilizer is reintroduced.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/shaders/env.wgsl -> env_sample`;
 `crates/fluid-lab/src/gpu/skybox.rs -> SkyboxRenderer`;
@@ -177,101 +176,18 @@ default off until temporal stabilization lands.
 
 **Applies to** - `architecture/rendering.md`, `architecture/settings.md`.
 
-## Caustics are approximate normal-gradient focusing, not projected photons
+## Removed add-ons keep only compatibility decisions
 
-**Decision** - Hero-water caustics are a screen-space **normal-gradient** model: a
-half-res pass focuses the sun by the convergence of the water surface normal × thickness
-visibility, then composites additively into `scene_color` on the floor/back/left receivers
-before the water composite (`gpu/caustics.rs`, v1.16). They are **not** physically
-projected/refracted photon splatting and use no shadow map.
+**Decision** - Caustics, wet-wall material cues, dense wall fill, and temporal history
+blend are not active product decisions after Phase 2. Their old design notes remain
+history in git, but current docs should describe only their removed status and legacy
+replay compatibility.
 
-**Why** - Real projected caustics need a photon/light-transport pass and a receiver
-shadow map — a much heavier system for a tank lab. The normal-gradient model reuses the
-surface normal the composite already reconstructs and the existing sun direction, reads as
-"light focusing on the floor through transparent water" for near-zero extra cost, and stays
-coherent with the refraction it feeds (same normal). Compositing into `scene_color` *before*
-the water composite is what lets refraction bend the lit caustics through the liquid.
-
-**Tradeoffs** - The pattern is a plausible focusing cue, not a physically correct caustic;
-receivers are reconstructed from `scene_depth` along the eye ray (no kind G-buffer), so the
-floor/wall gate is a world-position tolerance band rather than an exact surface id. Default
-off.
-
-**Code anchors** - `crates/fluid-lab/src/gpu/caustics.rs -> CausticsSystem`;
-`crates/fluid-lab/src/gpu/shaders/caustics_{generate,composite}.wgsl`.
+**Why** - Keeping stale runtime decisions in active docs makes future implementers
+rebuild deleted systems by accident.
 
 **Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`,
 `architecture/settings.md`.
-
-**Revisit when** - A projected-photon mode is wanted.
-
-## Wet walls are a procedural render-only cue, not simulated drainage
-
-**Decision** - The wet-wall look — darken/streak/reflect/gloss on touched walls, a thin
-meniscus band at the waterline, a contact shadow at the floor/wall join — is driven by a
-persistent supersampled per-wall-texel wetness field written each frame from the
-**current** cell-type classification (Liquid adjacent to Solid, sampled as fractional
-coverage on the supersampled wall axes) and decay-blended over time, then read by the
-wall material (`gpu/wetwall.rs` + `environment.wgsl`). The wall-fill sheet is likewise
-render-only: `gpu/wallfill.rs` writes a supersampled dense occupancy atlas from near-wall
-particle splats, injects the sheet into the screen-space water MRTs before smoothing on
-the rendered back/left glass faces, applies a local repair at their shared corner, and
-writes a screen-space `wallfill_mask` that lets composite apply fill-only color,
-absorption, reflection, and roughness controls. These cues do **not** simulate thin-film
-drainage or per-droplet rivulets, and they never touch the sim buffers.
-
-**Why** - A real thin-film/drainage simulation is its own physics project; the cell-type
-adjacency signal already marks every wall contact (the same signal that spawns spray), so a
-decaying procedural wetness field gives believable lingering wet streaks for almost nothing
-and keeps the sim's determinism contract untouched. Streaks are a cheap procedural cue.
-
-**Tradeoffs** - Wetness is render state only (clears on Reset, persists across frames); it
-cannot show flow direction or true rivulets. Supersampling and bilinear coverage reduce
-visible blocks, but wetness still originates from grid classification rather than
-individual droplets. Direct particle/spray→wetness coupling is registered
-(`wetness_spray_gain`) but stubbed at 0 — airborne spray re-wetting a wall above the
-waterline is a follow-up. The dense wall-fill mask is a screen-space visual sheet rather
-than additional simulated water mass, and it follows the open viewing-corner policy by
-not projecting hidden sheets onto the front/right faces. Wet walls and dense wall fill
-default off so the startup path favors the cheaper flat-water contact correction until
-the optional effects are explicitly enabled.
-
-**Code anchors** - `crates/fluid-lab/src/gpu/wetwall.rs -> WetWallSystem`;
-`crates/fluid-lab/src/gpu/shaders/wetwall_update.wgsl`; the wall reads in
-`crates/fluid-lab/src/gpu/shaders/environment.wgsl`; `crates/fluid-lab/src/gpu/wallfill.rs
--> WallOccupancySystem`.
-
-**Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`,
-`architecture/settings.md`.
-
-## Temporal stabilization is history-blend + camera-reset, not reprojection
-
-**Decision** - Hero-water temporal stabilization is per-target exponential **history
-blending** of the screen-space thickness / smooth-Z (→ normal) / whitewater targets plus
-a **hard camera reset** when camera motion exceeds a threshold (`gpu/temporal.rs`, v1.18).
-It is deliberately **not** motion-vector reprojection, neighborhood variance clamping, or
-TAA jitter. The v1.16 caustics in-shader blend is unified under this one control.
-
-**Why** - The app bakes the box model matrix into `view_proj` and rotates billboards to
-compensate; there is **no motion-vector / history-reprojection infrastructure**, and
-building it (motion vectors, disocclusion, neighborhood clamping) is its own project. The
-achievable, useful version is exponential blend + reset-on-camera-move, which kills most of
-the hero-stack shimmer without smearing on orbits. The reset metric uses the model-free
-`eye_to_world` (camera-only) so box rotation/translation does not trigger spurious resets.
-
-**Tradeoffs** - Content motion under a static camera (fast water) is **not** stabilized —
-only camera-move ghosting is guarded, by the reset threshold. Each stabilized full-res
-target doubles (ping-pong) — the series' largest memory add (`gpu-resources.md`).
-
-**Code anchors** - `crates/fluid-lab/src/gpu/temporal.rs -> TemporalSystem`;
-`crates/fluid-lab/src/gpu/shaders/temporal_blend.wgsl`;
-`crates/fluid-lab/src/gpu/mod.rs -> camera_motion`.
-
-**Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`,
-`architecture/settings.md`.
-
-**Revisit when** - True motion-vector reprojection (with `jitter_enabled` / TAA) is built
-to stabilize content motion under a static camera.
 
 ## The tank has an open viewing corner
 

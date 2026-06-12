@@ -70,11 +70,7 @@ pub enum SettingsTab {
     WaterColor,
     Environment,
     SunReflection,
-    WallFill,
-    WetWall,
-    Caustics,
-    Temporal,
-    DiffuseWater,
+    Foam,
 }
 
 impl SettingsTab {
@@ -88,11 +84,7 @@ impl SettingsTab {
             SettingsTab::WaterColor => "water-color",
             SettingsTab::Environment => "environment",
             SettingsTab::SunReflection => "sun-reflection",
-            SettingsTab::WallFill => "wall-fill",
-            SettingsTab::WetWall => "wet-wall",
-            SettingsTab::Caustics => "caustics",
-            SettingsTab::Temporal => "temporal",
-            SettingsTab::DiffuseWater => "diffuse-water",
+            SettingsTab::Foam => "foam",
         }
     }
 
@@ -106,11 +98,7 @@ impl SettingsTab {
             SettingsTab::WaterColor => "Water Color",
             SettingsTab::Environment => "Environment",
             SettingsTab::SunReflection => "Sun & Reflection",
-            SettingsTab::WallFill => "Wall Fill",
-            SettingsTab::WetWall => "Wet Wall",
-            SettingsTab::Caustics => "Caustics",
-            SettingsTab::Temporal => "Temporal",
-            SettingsTab::DiffuseWater => "Diffuse Water",
+            SettingsTab::Foam => "Foam",
         }
     }
 
@@ -124,11 +112,7 @@ impl SettingsTab {
             SettingsTab::WaterColor => 60,
             SettingsTab::Environment => 70,
             SettingsTab::SunReflection => 80,
-            SettingsTab::WallFill => 90,
-            SettingsTab::WetWall => 100,
-            SettingsTab::Caustics => 110,
-            SettingsTab::Temporal => 120,
-            SettingsTab::DiffuseWater => 130,
+            SettingsTab::Foam => 90,
         }
     }
 
@@ -139,22 +123,13 @@ impl SettingsTab {
             | SettingsTab::WaterSurface
             | SettingsTab::WaterColor
             | SettingsTab::Environment
-            | SettingsTab::SunReflection => "Core",
-            SettingsTab::WallFill
-            | SettingsTab::WetWall
-            | SettingsTab::Caustics
-            | SettingsTab::Temporal
-            | SettingsTab::DiffuseWater => "Optional Effects",
+            | SettingsTab::SunReflection
+            | SettingsTab::Foam => "Core",
         }
     }
 
     pub fn variant(self) -> &'static str {
         match self {
-            SettingsTab::WallFill
-            | SettingsTab::WetWall
-            | SettingsTab::Caustics
-            | SettingsTab::Temporal
-            | SettingsTab::DiffuseWater => "experimental",
             _ => "normal",
         }
     }
@@ -295,56 +270,6 @@ pub struct HeroParams {
     pub micro_normal_strength: f32,
     pub micro_normal_scale: f32,
     pub micro_normal_velocity_scale: f32,
-    // --- Approximate caustics (v1.16) ---
-    pub caustics_enabled: bool,
-    pub caustics_intensity: f32,
-    pub caustics_focus_strength: f32,
-    pub caustics_thickness_scale: f32,
-    pub caustics_floor_enabled: bool,
-    pub caustics_back_wall_enabled: bool,
-    pub caustics_side_walls_enabled: bool,
-    pub caustics_temporal_enabled: bool,
-    pub caustics_temporal_alpha: f32,
-    pub caustics_motion_scale: f32,
-    pub caustics_max_intensity: f32,
-    // --- Wet walls + meniscus + contact shadow (v1.17) ---
-    pub wet_wall_enabled: bool,
-    pub wet_wall_wetness_decay: f32,
-    pub wet_wall_contact_gain: f32,
-    /// Spray gain is registered but defaults to 0 (stubbed in v1.17; no particle
-    /// coupling yet). A follow-up will scatter spray particle positions into wetness.
-    pub wet_wall_spray_gain: f32,
-    pub wet_wall_darkening_strength: f32,
-    pub wet_wall_gloss_strength: f32,
-    pub wet_wall_streak_strength: f32,
-    pub wet_wall_meniscus_enabled: bool,
-    pub wet_wall_meniscus_width: f32,
-    pub wet_wall_meniscus_strength: f32,
-    pub wet_wall_meniscus_fresnel_boost: f32,
-    pub wet_wall_contact_shadow_enabled: bool,
-    pub wet_wall_contact_shadow_strength: f32,
-    pub wet_wall_contact_shadow_radius: f32,
-    /// Debug view: 0 = off, 1 = wet-wall wetness overlay, 2 = meniscus mask.
-    pub wet_wall_debug_view: u32,
-    // --- Temporal stabilization (v1.18) ---
-    /// Master toggle for all temporal history blends (thickness, smooth_z, whitewater, caustics).
-    pub temporal_enabled: bool,
-    /// Gate: blend thickness_view with its history.
-    pub temporal_thickness_history: bool,
-    /// Gate: blend smooth_z_view (and thus derived normals) with its history.
-    pub temporal_normal_history: bool,
-    /// Gate: pass caustics in-shader blend through the unified temporal control.
-    pub temporal_caustic_history: bool,
-    /// Gate: blend whitewater_view with its history.
-    pub temporal_foam_history: bool,
-    /// mix(current, history, alpha): 0 = all-current, 1 = frozen. Default 0.15.
-    pub temporal_history_alpha: f32,
-    /// Camera rotation/translation delta above which history is dropped for one frame.
-    pub temporal_camera_motion_reset_threshold: f32,
-    /// Eye-space depth delta above which smooth_z blend is suppressed.
-    pub temporal_depth_reject_threshold: f32,
-    /// 1 - N·N' above which smooth_z blend is suppressed.
-    pub temporal_normal_reject_threshold: f32,
     // --- Screen-space surface quality (v1.19 polish) ---
     /// Number of bilateral smooth X+Y iterations. Default 2.
     pub smooth_iterations: u32,
@@ -359,20 +284,6 @@ pub struct HeroParams {
     /// Optional normal blur strength (0–1). Blends the raw reconstructed normal toward
     /// an averaged normal sampled over a small offset cross, further smoothing.
     pub normal_smooth_strength: f32,
-    // --- Wet wall round-2: reflectivity + specular + supersample (v1.19 polish) ---
-    /// Environment reflection blend scaled by wetness (0–1). Makes wet areas mirror
-    /// the skybox/env instead of (only) darkening — visible on the near-black wall.
-    pub wet_wall_reflectivity: f32,
-    /// Sun specular sheen scaled by wetness (0–1). Adds a sun glint on wet areas.
-    pub wet_wall_specular: f32,
-    /// Wetness buffer supersample factor (1–32). Multiplies the per-axis texel count
-    /// so the wetness field has more detail than one texel per sim cell.
-    /// Reset-class: buffer size changes. Default 8.
-    pub wet_wall_supersample: u32,
-    // --- Wet wall round-3: read-side blur (v1.20) ---
-    /// Blur radius in supersampled texels applied when reading wetness in environment.wgsl.
-    /// Larger values smooth blocky wetness patterns at the cost of slight spread. Live. Default 1.0.
-    pub wet_wall_blur: f32,
     // --- Flat-water-against-walls (v1.20) ---
     /// Blend strength for snapping water surface normals flat against tank walls/floor.
     /// At 1.0, water pressed against glass renders as a flat sheet. Live. Default 0.8.
@@ -384,39 +295,11 @@ pub struct HeroParams {
     /// At 1.0 the depth is fully coplanar with the glass for near-wall pixels, eliminating
     /// bumpy sphere silhouettes at the glass. Live. Default 0.8.
     pub flat_water_depth_strength: f32,
-    // --- Gap-filled flat water sheet (v1.21) ---
-    /// Master toggle for the gap-filled flat wall-sheet fill pass. When on, the wall
-    /// occupancy buffer is computed each frame and a flat sheet is injected into the
-    /// thickness/nearest_z MRT targets before bilateral smoothing. Live. Default true.
-    pub flat_water_fill_enabled: bool,
-    /// Overall opacity/weight of the injected flat water sheet (0–1). Scales the
-    /// final slab contribution, including softened row edges. Live. Default 0.45.
-    pub flat_water_fill_strength: f32,
-    /// Thickness slab (box-local/world units) added by the fill pass into the thickness
-    /// target. Gives the flat sheet enough body to be visible in the composite. Live. Default 0.018.
-    pub flat_water_fill_slab: f32,
-    /// Supersample factor for the wall-fill occupancy atlas. Reset-class because it
-    /// changes storage buffer dimensions. Default 8; exposed max 32 for ultra testing.
-    pub flat_water_fill_supersample: u32,
-    /// Composite-time optical strength for wall-fill pixels (0=no color/absorption,
-    /// 1=same as normal water). Live. Default 0.35.
-    pub flat_water_fill_color_strength: f32,
-    /// Composite-time reflection multiplier for wall-fill pixels. Live. Default 0.65.
-    pub flat_water_fill_reflection_strength: f32,
-    /// Composite-time roughness target for wall-fill pixels. Live. Default 0.22.
-    pub flat_water_fill_roughness: f32,
-    /// Composite-time absorption multiplier for wall-fill pixels. Live. Default 0.45.
-    pub flat_water_fill_absorption_strength: f32,
-    /// Smoothstep width (fraction of tank height) for wall-fill wet/dry transitions.
-    /// The shader samples the atlas continuously in wall UV space and smooths coverage
-    /// instead of snapping to one atlas row. Live. Default 0.04.
-    pub flat_water_waterline_softness: f32,
 }
 
-/// A flat snapshot of the diffuse-water (foam/spray/bubble) settings (v1.13). Like
-/// [`HeroParams`] these all live under the Water tab and are Live: the renderer
-/// mirrors this into the diffuse emit/update/render uniform whenever a
-/// `render.diffuse.*` slider changes, so there is no per-setting GPU plumbing.
+/// A flat snapshot of the surface-foam settings. Like [`HeroParams`] these are
+/// Live: the renderer mirrors this into the foam emit/update/render uniform
+/// whenever a `render.diffuse.*` slider changes.
 /// `max_particles` is an active cap within a fixed buffer capacity, not a realloc.
 #[derive(Clone, Copy, Debug)]
 pub struct DiffuseParams {
@@ -426,16 +309,9 @@ pub struct DiffuseParams {
     pub emit_budget_per_frame: u32,
     pub surface_speed_threshold: f32,
     pub surface_speed_gain: f32,
-    pub wall_impact_threshold: f32,
-    pub wall_impact_gain: f32,
     pub foam_lifetime: f32,
-    pub spray_lifetime: f32,
-    pub bubble_lifetime: f32,
     pub radius: f32,
     pub alpha: f32,
-    pub bubble_buoyancy: f32,
-    pub spray_drag: f32,
-    pub debug_view: u32,
     pub random_seed: u32,
 }
 
@@ -939,7 +815,7 @@ impl Default for Registry {
                 value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
                 tooltip: Some("Flatten near-wall water normals and depth so water pressed against glass reads as a sheet."),
-                technical_tooltip: Some("Live enum. Gates the cheap flat_water normal/depth correction independently of the dense wall-fill sheet."),
+                technical_tooltip: Some("Live enum. Gates the cheap flat_water normal/depth correction."),
                 apply: ApplyClass::Live,
             },
             Setting {
@@ -948,9 +824,9 @@ impl Default for Registry {
                 category: Category::Water,
                 default: Value::U32(0),
                 value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 13 },
+                validation: Validation::U32Range { min: 0, max: 11 },
                 tooltip: Some("Routes an intermediate hero-water buffer to the screen for debugging."),
-                technical_tooltip: Some("Live enum. 0 = normal composite; other values blit a single stage (scene color/depth, thickness, refraction offset, Fresnel, absorption, water-only, caustics, nearest_z, whitewater, wallfill_mask) to the swapchain."),
+                technical_tooltip: Some("Live enum. 0 = normal composite; other values blit a single stage (scene color/depth, thickness, refraction offset, Fresnel, absorption, water-only, reflection/env, nearest_z, whitewater) to the swapchain."),
                 apply: ApplyClass::Live,
             },
             Setting {
@@ -1282,7 +1158,7 @@ impl Default for Registry {
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
                 tooltip: Some("Add fine surface 'tooth' that perturbs the reflection (off by default; can shimmer)."),
-                technical_tooltip: Some("Live enum. Adds procedural high-frequency normal perturbation before the reflection/Fresnel taps. Keep conservative until temporal stabilization (v1.18)."),
+                technical_tooltip: Some("Live enum. Adds procedural high-frequency normal perturbation before the reflection/Fresnel taps. Keep conservative to avoid shimmer."),
                 apply: ApplyClass::Live,
             },
             Setting {
@@ -1318,320 +1194,6 @@ impl Default for Registry {
                 technical_tooltip: Some("Live. Scales the micro-normal amplitude by the speed-weighted whitewater fraction."),
                 apply: ApplyClass::Live,
             },
-            // --- Approximate caustics (v1.16). All Live under render.hero.caustics.*
-            // so they ride the existing `if id.starts_with("render.hero.")` batch route. ---
-            Setting {
-                id: "render.hero.caustics.enabled",
-                label: "Caustics",
-                category: Category::Water,
-                default: Value::U32(0),
-                value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Enable approximate screen-space caustics: bright light-focusing patterns cast by the water onto the floor and walls."),
-                technical_tooltip: Some("Live enum. Off by default. When on, a half-res generation pass (A) computes caustic intensity from surface curvature + sun N·L + water thickness, then a composite pass (B) paints it additively onto scene_color before the water composite reads it via refract_uv."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.caustics.intensity",
-                label: "Caustics intensity",
-                category: Category::Water,
-                default: Value::F32(1.0),
-                value: Value::F32(1.0),
-                validation: Validation::F32Range { min: 0.0, max: 5.0 },
-                tooltip: Some("Overall brightness of the caustic patterns on the floor and walls."),
-                technical_tooltip: Some("Live. Scales the final caustic scalar before clamping to max_intensity."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.caustics.focus_strength",
-                label: "Caustics focus",
-                category: Category::Water,
-                default: Value::F32(2.0),
-                value: Value::F32(2.0),
-                validation: Validation::F32Range { min: 0.0, max: 8.0 },
-                tooltip: Some("How strongly curved (concave) water surface regions focus the light into bright caustic patches."),
-                technical_tooltip: Some("Live. Multiplies the surface-curvature Laplacian into the focusing term."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.caustics.thickness_scale",
-                label: "Caustics thickness gate",
-                category: Category::Water,
-                default: Value::F32(3.0),
-                value: Value::F32(3.0),
-                validation: Validation::F32Range { min: 0.0, max: 16.0 },
-                tooltip: Some("How fast caustics ramp up with water thickness; thin edges produce little caustic."),
-                technical_tooltip: Some("Live. Exponent of the Beer-Lambert thickness visibility term 1-exp(-thickness*scale)."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.caustics.floor_enabled",
-                label: "Caustics on floor",
-                category: Category::Water,
-                default: Value::U32(1),
-                value: Value::U32(1),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Paint caustics on the tank floor."),
-                technical_tooltip: Some("Live enum. Receiver gate: accepts pixels whose world y ≈ tank_lo.y."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.caustics.back_wall_enabled",
-                label: "Caustics on back wall",
-                category: Category::Water,
-                default: Value::U32(1),
-                value: Value::U32(1),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Paint caustics on the back wall of the tank."),
-                technical_tooltip: Some("Live enum. Receiver gate: accepts pixels whose world z ≈ tank_lo.z."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.caustics.side_walls_enabled",
-                label: "Caustics on side walls",
-                category: Category::Water,
-                default: Value::U32(0),
-                value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Paint caustics on the left and right side walls of the tank."),
-                technical_tooltip: Some("Live enum. Receiver gate: accepts pixels whose world x ≈ tank_lo.x or tank_hi.x."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.caustics.motion_scale",
-                label: "Caustics motion",
-                category: Category::Water,
-                default: Value::F32(0.5),
-                value: Value::F32(0.5),
-                validation: Validation::F32Range { min: 0.0, max: 2.0 },
-                tooltip: Some("How much the caustic pattern slides along the water surface normal as the surface moves."),
-                technical_tooltip: Some("Live. Scales the UV shift applied along normal.xy in the generation pass."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.caustics.max_intensity",
-                label: "Caustics max brightness",
-                category: Category::Water,
-                default: Value::F32(2.5),
-                value: Value::F32(2.5),
-                validation: Validation::F32Range { min: 0.0, max: 8.0 },
-                tooltip: Some("Caps how bright a single caustic pixel can get; prevents blown-out highlights."),
-                technical_tooltip: Some("Live. Upper clamp on the caustic scalar before it is added to scene_color."),
-                apply: ApplyClass::Live,
-            },
-            // --- Wet walls + meniscus + contact shadow (v1.17). Live sliders
-            // rebuild the HeroParams uniform via the existing render.hero.* batch
-            // route; supersample is Reset-class because it reallocates the wetness
-            // buffer. Wetness persists across frames and is cleared on Reset.
-            Setting {
-                id: "render.hero.wet_wall.enabled",
-                label: "Wet walls",
-                category: Category::Water,
-                default: Value::U32(0),
-                value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Master toggle for wet-wall darkening, gloss, meniscus, and contact shadow. Off by default."),
-                technical_tooltip: Some("Live enum. When on, environment.wgsl reads the wetness buffer to modulate wall material; when off, record_step updates uniforms but skips the wetwall compute dispatch."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.wetness_decay",
-                label: "Wetness decay",
-                category: Category::Water,
-                default: Value::F32(0.97),
-                value: Value::F32(0.97),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("How quickly wet streaks fade per frame (0 = instant dry, 1 = permanent). Applied as pow(decay, dt*60) for framerate independence."),
-                technical_tooltip: Some("Live. Framerate-corrected: pow(decay, dt*60) so that decay=0.97 gives 0.97x per frame at 60 fps, 0.97^2 at 30 fps."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.wetness_contact_gain",
-                label: "Contact gain",
-                category: Category::Water,
-                default: Value::F32(1.0),
-                value: Value::F32(1.0),
-                validation: Validation::F32Range { min: 0.0, max: 4.0 },
-                tooltip: Some("Multiplier on new wetness from liquid-cell contact (how quickly walls saturate)."),
-                technical_tooltip: Some("Live. Scales the new_contact signal (0..1 fractional liquid coverage per texel) before the max(new*gain, prev*decay) update."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.wetness_spray_gain",
-                label: "Spray wetness gain",
-                category: Category::Water,
-                default: Value::F32(0.0),
-                value: Value::F32(0.0),
-                validation: Validation::F32Range { min: 0.0, max: 4.0 },
-                tooltip: Some("Wetness gain from diffuse spray particles (reserved — not yet wired; always 0 in v1.17)."),
-                technical_tooltip: Some("Stubbed in v1.17. Registered for the follow-up that scatters spray positions into the wetness buffer. Has no effect."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.darkening_strength",
-                label: "Wall darkening",
-                category: Category::Water,
-                default: Value::F32(0.05),
-                value: Value::F32(0.05),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("How much wet walls darken (water-soaked look)."),
-                technical_tooltip: Some("Live. Wet texels darken by mix(1.0, 1.0-darkening_strength, wetness) in the WALL FS branch."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.gloss_strength",
-                label: "Wall gloss",
-                category: Category::Water,
-                default: Value::F32(0.08),
-                value: Value::F32(0.08),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("Specular gloss added to wet wall regions."),
-                technical_tooltip: Some("Live. Adds a Blinn-Phong-ish specular highlight scaled by wetness*gloss_strength in the WALL branch."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.streak_strength",
-                label: "Vertical streaks",
-                category: Category::Water,
-                default: Value::F32(0.0),
-                value: Value::F32(0.0),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("Subtle vertical drip-streak texture on wet walls."),
-                technical_tooltip: Some("Live procedural: a vertical sinusoidal streak at world-x/z frequency modulates wetness darkening."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.meniscus_enabled",
-                label: "Meniscus",
-                category: Category::Water,
-                default: Value::U32(0),
-                value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Thin highlight band at the wet/dry waterline where water meets the wall."),
-                technical_tooltip: Some("Live. The meniscus is computed from the vertical wetness gradient (wet below, dry above)."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.meniscus_width",
-                label: "Meniscus width",
-                category: Category::Water,
-                default: Value::F32(0.04),
-                value: Value::F32(0.04),
-                validation: Validation::F32Range { min: 0.001, max: 0.5 },
-                tooltip: Some("Vertical extent of the meniscus highlight band in world units."),
-                technical_tooltip: Some("Live. The band is centred on the wetness edge (dW/dy peak) and has half-width = meniscus_width."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.meniscus_strength",
-                label: "Meniscus strength",
-                category: Category::Water,
-                default: Value::F32(0.15),
-                value: Value::F32(0.15),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("Brightness of the meniscus highlight."),
-                technical_tooltip: Some("Live. Scales the additive highlight term in the WALL FS branch."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.meniscus_fresnel_boost",
-                label: "Meniscus Fresnel",
-                category: Category::Water,
-                default: Value::F32(0.12),
-                value: Value::F32(0.12),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("Extra reflective shimmer at the meniscus waterline."),
-                technical_tooltip: Some("Live. Extra Fresnel-like term at grazing angles, visible when the waterline is nearly edge-on."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.contact_shadow_enabled",
-                label: "Contact shadow",
-                category: Category::Water,
-                default: Value::U32(0),
-                value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Soft shadow near the floor/wall join where water meets the corner."),
-                technical_tooltip: Some("Live. Ambient-occlusion-style darkening near the floor edge, in both the FLOOR and lower WALL branches."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.contact_shadow_strength",
-                label: "Contact shadow strength",
-                category: Category::Water,
-                default: Value::F32(0.15),
-                value: Value::F32(0.15),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("How dark the floor/wall corner shadow gets."),
-                technical_tooltip: Some("Live. Multiplied by the shadow gradient (1 at the seam, 0 at contact_shadow_radius)."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.contact_shadow_radius",
-                label: "Contact shadow radius",
-                category: Category::Water,
-                default: Value::F32(0.08),
-                value: Value::F32(0.08),
-                validation: Validation::F32Range { min: 0.01, max: 0.5 },
-                tooltip: Some("World-space width of the floor/wall corner shadow."),
-                technical_tooltip: Some("Live. Smoothstep fade from shadow at the seam to full brightness at this distance."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.debug_view",
-                label: "Wet wall debug",
-                category: Category::Water,
-                default: Value::U32(0),
-                value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 2 },
-                tooltip: Some("Debug overlay: 0=off, 1=wetness field, 2=meniscus mask."),
-                technical_tooltip: Some("Live enum. 1 shows the raw wetness scalar (white=fully wet); 2 shows the meniscus band mask."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.reflectivity",
-                label: "Wall wet reflectivity",
-                category: Category::Water,
-                default: Value::F32(0.12),
-                value: Value::F32(0.12),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("How strongly wet wall areas reflect the environment/skybox. Makes wet patches visibly shiny and mirror-like rather than just darker."),
-                technical_tooltip: Some("Live. Blends env_sample(reflect(view,face_normal)) into the wall color scaled by wetness*reflectivity*fresnel. Visible even on the near-black wall because it adds light rather than subtracting it."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.specular",
-                label: "Wall wet specular",
-                category: Category::Water,
-                default: Value::F32(0.12),
-                value: Value::F32(0.12),
-                validation: Validation::F32Range { min: 0.0, max: 2.0 },
-                tooltip: Some("Sun specular sheen on wet wall areas. Adds a bright glint where the sun hits a wet surface."),
-                technical_tooltip: Some("Live. Adds sharp and subtle broad sun highlights scaled by wetness*specular*wall_gloss. R = reflect(view, face_normal) in world space."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.wet_wall.supersample",
-                label: "Wall wetness resolution",
-                category: Category::Water,
-                default: Value::U32(8),
-                value: Value::U32(8),
-                validation: Validation::U32Range { min: 1, max: 32 },
-                tooltip: Some("Supersample factor for the wetness buffer (texels per sim cell per axis). Higher values reduce the blocky pixel grid visible on wet walls."),
-                technical_tooltip: Some("Reset-class. Multiplies the per-axis texel count so the buffer has ss^2 texels per sim cell face. 1 = original resolution; 8 = 64x texels per face; 32 = 1024x. Buffer is rebuilt on Reset."),
-                apply: ApplyClass::Reset,
-            },
-            Setting {
-                id: "render.hero.wet_wall.blur",
-                label: "Wall wetness blur",
-                category: Category::Water,
-                default: Value::F32(12.0),
-                value: Value::F32(12.0),
-                validation: Validation::F32Range { min: 0.0, max: 12.0 },
-                tooltip: Some("Read-side blur radius in supersampled texels. Smooths blocky wetness patterns. 0=off, 12=default smoothing."),
-                technical_tooltip: Some("Live. Applied in environment.wgsl wetness readers as a triangular weighted filter over up to 2*floor(radius)+1 texels per axis, then sampled with smooth interpolation. Stored in render2.w of WetWallUniform."),
-                apply: ApplyClass::Live,
-            },
             // --- Flat-water-against-walls (v1.20). Live: batched into composite Hero uniform. ---
             Setting {
                 id: "render.hero.flat_water.strength",
@@ -1664,207 +1226,6 @@ impl Default for Registry {
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
                 tooltip: Some("Snaps the water front-surface DEPTH (silhouette), not just the normal, to the wall plane for near-wall pixels so wall-pressed water reads as a flat sheet rather than bumpy spheres."),
                 technical_tooltip: Some("Live. In composite.wgsl, intersects the box-local eye ray with the nearest in-epsilon tank plane and mixes front_z toward the hit by depth_strength*ramp before the refraction depth guard. Routed via composite CamUniform flat.z."),
-                apply: ApplyClass::Live,
-            },
-            // --- Gap-filled flat water sheet (v1.21). All Live: pass toggle + params. ---
-            Setting {
-                id: "render.hero.flat_water.fill_enabled",
-                label: "Wall fill enabled",
-                category: Category::Water,
-                default: Value::U32(0),
-                value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Toggle the gap-filled flat water sheet against glass walls. Off by default; use the cheaper wall-contact snap first."),
-                technical_tooltip: Some("Live enum. Gates the wallfill occupancy compute pass and the wallfill injection draw (both run before bilateral smoothing). Off = only the normal+depth snap is active and the mask is cleared."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.flat_water.fill_strength",
-                label: "Wall fill strength",
-                category: Category::Water,
-                default: Value::F32(0.6),
-                value: Value::F32(0.6),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("Overall weight/opacity of the injected flat wall sheet (0=off, 1=full). Scales the final slab contribution after wall-UV coverage smoothing."),
-                technical_tooltip: Some("Live. Multiplies fill_slab so the sheet can be dialled down without disabling the pass; edge smoothing comes from continuous wall-UV atlas sampling. Routes into FillUniform.fill.y."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.flat_water.fill_slab",
-                label: "Wall fill slab thickness",
-                category: Category::Water,
-                default: Value::F32(0.04),
-                value: Value::F32(0.04),
-                validation: Validation::F32Range { min: 0.0, max: 0.3 },
-                tooltip: Some("Thickness slab (box-local units) contributed by the fill pass to the water thickness target. Gives the sheet enough body to be visible in the composite without double-counting particle thickness."),
-                technical_tooltip: Some("Live. Written into target 0 (thickness) of the MRT with Add blend, so it supplements particle thickness. Routes into FillUniform.fill.z."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.flat_water.fill_supersample",
-                label: "Wall fill resolution",
-                category: Category::Water,
-                default: Value::U32(8),
-                value: Value::U32(8),
-                validation: Validation::U32Range { min: 1, max: 32 },
-                tooltip: Some("Supersample factor for the wall-fill occupancy atlas. Higher values reduce the visible sim-cell grid in the fill sheet; values above 16 can be expensive."),
-                technical_tooltip: Some("Reset-class. WallOccupancySystem allocates per-face atlases at nx*ss by ny*ss or nz*ss by ny*ss and writes fractional coverage from near-wall particle splats. Buffer is rebuilt on Reset. Exposed max is 32; default 16."),
-                apply: ApplyClass::Reset,
-            },
-            Setting {
-                id: "render.hero.flat_water.fill_color_strength",
-                label: "Wall fill color",
-                category: Category::Water,
-                default: Value::F32(0.35),
-                value: Value::F32(0.35),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("How strongly wall-fill pixels take on the normal water body color. Lower values keep the sheet clearer and less saturated."),
-                technical_tooltip: Some("Live. Composite samples wallfill_mask and scales Beer-Lambert body-color thickness only on fill pixels. Routes into HeroUniform.wallfill.x."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.flat_water.fill_reflection_strength",
-                label: "Wall fill reflection",
-                category: Category::Water,
-                default: Value::F32(0.65),
-                value: Value::F32(0.65),
-                validation: Validation::F32Range { min: 0.0, max: 2.0 },
-                tooltip: Some("Reflection multiplier for wall-fill pixels only. Lower values make the sheet subtler; values above 1 exaggerate glassy reflection."),
-                technical_tooltip: Some("Live. Composite samples wallfill_mask and multiplies Fresnel reflection amount only on fill pixels. Routes into HeroUniform.wallfill.y."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.flat_water.fill_roughness",
-                label: "Wall fill roughness",
-                category: Category::Water,
-                default: Value::F32(0.22),
-                value: Value::F32(0.22),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("Environment reflection roughness target for wall-fill pixels only. Higher values soften reflections."),
-                technical_tooltip: Some("Live. Composite samples wallfill_mask and blends the water roughness toward this value only on fill pixels. Routes into HeroUniform.wallfill.z."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.flat_water.fill_absorption_strength",
-                label: "Wall fill absorption",
-                category: Category::Water,
-                default: Value::F32(0.45),
-                value: Value::F32(0.45),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("Absorption strength for wall-fill pixels only. Lower values reduce over-darkening and strong blue/green tint on the glass sheet."),
-                technical_tooltip: Some("Live. Composite samples wallfill_mask and scales Beer-Lambert absorption only on fill pixels. Routes into HeroUniform.wallfill.w."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.flat_water.waterline_softness",
-                label: "Waterline softness",
-                category: Category::Water,
-                default: Value::F32(0.14),
-                value: Value::F32(0.14),
-                validation: Validation::F32Range { min: 0.0, max: 0.2 },
-                tooltip: Some("Softens wall-fill wet/dry transitions after continuous wall-UV atlas sampling. Larger values make the sheet edge less stair-stepped."),
-                technical_tooltip: Some("Live. wallfill.wgsl fs_fill samples the supersampled occupancy atlas bilinearly in both wall axes and smooths coverage instead of snapping y to one occupied row. Routes into FillUniform.fill.w."),
-                apply: ApplyClass::Live,
-            },
-            // --- Temporal stabilization (v1.18). All Live: sliders rebuild the
-            // HeroParams uniform via the existing render.hero.* batch route. ---
-            Setting {
-                id: "render.hero.temporal.enabled",
-                label: "Temporal stabilization",
-                category: Category::Water,
-                default: Value::U32(0),
-                value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Master toggle for temporal history blending on depth, thickness, and caustics targets. Reduces flicker and shimmer but may ghost on fast camera moves."),
-                technical_tooltip: Some("Live enum. When on, enables per-target ping-pong history blend: out=mix(current,history,history_alpha). Camera motion beyond the threshold drops history for one frame to prevent ghosting."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.temporal.thickness_history",
-                label: "Thickness history",
-                category: Category::Water,
-                default: Value::U32(1),
-                value: Value::U32(1),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Blend the water thickness target with its history (sub-feature of Temporal stabilization)."),
-                technical_tooltip: Some("Live enum. Gates the per-frame ping-pong blend of thickness_view. Requires temporal.enabled."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.temporal.normal_history",
-                label: "Depth/normal history",
-                category: Category::Water,
-                default: Value::U32(1),
-                value: Value::U32(1),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Blend the smoothed front-depth target with its history, which also stabilizes the derived surface normals (sub-feature of Temporal stabilization)."),
-                technical_tooltip: Some("Live enum. Gates the per-frame ping-pong blend of smooth_z_view. Normal stabilization is a side-effect since normals are finite-differenced from smooth_z. Depth-reject + normal-reject thresholds suppress ghosting at depth discontinuities."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.temporal.caustic_history",
-                label: "Caustics history",
-                category: Category::Water,
-                default: Value::U32(1),
-                value: Value::U32(1),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Pass caustic history blending through the unified temporal control (sub-feature of Temporal stabilization). Replaces the separate caustics temporal toggle."),
-                technical_tooltip: Some("Live enum. When on, caustics in-shader blend uses hero.temporal.history_alpha instead of the now-unified caustics.temporal_alpha. Requires temporal.enabled."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.temporal.foam_history",
-                label: "Foam/whitewater history",
-                category: Category::Water,
-                default: Value::U32(0),
-                value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Blend the screen-space whitewater signal with its history (off by default; can make whitewater feel sticky)."),
-                technical_tooltip: Some("Live enum. Gates the per-frame ping-pong blend of whitewater_view. Off by default because whitewater is fast-moving and history blur makes it look gummy."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.temporal.history_alpha",
-                label: "History alpha",
-                category: Category::Water,
-                default: Value::F32(0.15),
-                value: Value::F32(0.15),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("History blend weight: 0 = no smoothing (all current frame), 1 = frozen (all history). Low values like 0.1-0.2 reduce flicker with minimal ghosting."),
-                technical_tooltip: Some("Live. mix(current,history,history_alpha). v1.18 polarity: 0=all-current, 1=frozen. Also drives caustics history alpha when temporal.caustic_history is on."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.temporal.camera_motion_reset_threshold",
-                label: "Camera reset threshold",
-                category: Category::Water,
-                default: Value::F32(0.02),
-                value: Value::F32(0.02),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("Drops history when the camera moves faster than this; prevents ghosting on pan/zoom. Lower = more resets (crisper but more flicker)."),
-                technical_tooltip: Some("Live. CPU-side metric: acos((trace(R_prev^T * R_cur) - 1) / 2) in radians, plus scaled eye position delta. When above threshold, history_alpha is forced to 0 for one frame."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.temporal.depth_reject_threshold",
-                label: "Depth reject threshold",
-                category: Category::Water,
-                default: Value::F32(0.1),
-                value: Value::F32(0.1),
-                validation: Validation::F32Range { min: 0.0, max: 2.0 },
-                tooltip: Some("Eye-space depth difference above which smooth_z history is rejected to avoid depth-discontinuity ghosting. 0 = disabled."),
-                technical_tooltip: Some("Live. Smooth_z pass only. When |cur_z - hist_z| > threshold, history_alpha is forced to 0 for that pixel."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.hero.temporal.normal_reject_threshold",
-                label: "Normal reject threshold",
-                category: Category::Water,
-                default: Value::F32(0.3),
-                value: Value::F32(0.3),
-                validation: Validation::F32Range { min: 0.0, max: 2.0 },
-                tooltip: Some("1 - N dot N' above which smooth_z history is rejected (measures angular normal difference). 0 = disabled."),
-                technical_tooltip: Some("Live. Smooth_z pass only. Normal is finite-differenced from smooth_z. When (1 - dot(cur_n, hist_n)) > threshold, history_alpha forced to 0."),
                 apply: ApplyClass::Live,
             },
             // --- Screen-space surface quality (v1.19 polish). All Live: sliders
@@ -1927,28 +1288,28 @@ impl Default for Registry {
                 technical_tooltip: Some("Live. Inline normal blur: weight to mix(pixel_normal, avg_cross_normal, strength). The avg samples the normal at 4 diagonal offsets of size stencil+1 pixels."),
                 apply: ApplyClass::Live,
             },
-            // --- Diffuse water: persistent foam / spray / bubbles (v1.13). All
+            // --- Surface foam. All
             // Live: sliders rebuild the DiffuseParams uniform; no realloc, no reset.
             // `max_particles` is an active cap within a fixed GPU buffer capacity. ---
             Setting {
                 id: "render.diffuse.enabled",
-                label: "Foam & spray",
+                label: "Foam",
                 category: Category::Water,
-                default: Value::U32(0),
-                value: Value::U32(0),
+                default: Value::U32(1),
+                value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Master toggle for persistent foam, spray, and bubble particles. Off by default so the glass wall treatment stays smooth."),
-                technical_tooltip: Some("Live enum. Off stops emission and clears the diffuse particle render; the speed-mask whitewater tint remains as the fallback. Disabled by default because billboards near glass can read as wall pixels."),
+                tooltip: Some("Master toggle for conservative surface foam. The screen-space whitewater tint remains as the fallback when off."),
+                technical_tooltip: Some("Live enum. Off skips foam emission/update/render; foam particles are surface-constrained and do not create spray, bubbles, or wall decals."),
                 apply: ApplyClass::Live,
             },
             Setting {
                 id: "render.diffuse.max_particles",
                 label: "Max foam particles",
                 category: Category::Water,
-                default: Value::U32(96_000),
-                value: Value::U32(96_000),
+                default: Value::U32(64_000),
+                value: Value::U32(64_000),
                 validation: Validation::U32Range { min: 1_024, max: 262_144 },
-                tooltip: Some("Caps how many diffuse particles can be alive at once; higher looks denser but costs more."),
+                tooltip: Some("Caps how many surface foam particles can be alive at once; higher looks denser but costs more."),
                 technical_tooltip: Some("Live active cap within a fixed GPU buffer capacity (262144). The emitter recycles the oldest slots via a ring cursor when this fills."),
                 apply: ApplyClass::Live,
             },
@@ -1956,10 +1317,10 @@ impl Default for Registry {
                 id: "render.diffuse.emit_rate",
                 label: "Emission rate",
                 category: Category::Water,
-                default: Value::F32(1.3),
-                value: Value::F32(1.3),
+                default: Value::F32(0.85),
+                value: Value::F32(0.85),
                 validation: Validation::F32Range { min: 0.0, max: 8.0 },
-                tooltip: Some("Overall multiplier on how readily foam/spray/bubbles are born."),
+                tooltip: Some("Overall multiplier on how readily surface foam is born."),
                 technical_tooltip: Some("Live global gain on the per-cell stochastic spawn probability."),
                 apply: ApplyClass::Live,
             },
@@ -1967,8 +1328,8 @@ impl Default for Registry {
                 id: "render.diffuse.emit_budget_per_frame",
                 label: "Emission budget/frame",
                 category: Category::Water,
-                default: Value::U32(2_500),
-                value: Value::U32(2_500),
+                default: Value::U32(1_500),
+                value: Value::U32(1_500),
                 validation: Validation::U32Range { min: 0, max: 40_000 },
                 tooltip: Some("Caps new particles spawned per frame to bound GPU cost; clamping is reported in the profiler."),
                 technical_tooltip: Some("Live per-frame spawn budget enforced by an integer atomic; rejected spawns are counted and surfaced as diffuse_clamped."),
@@ -1978,10 +1339,10 @@ impl Default for Registry {
                 id: "render.diffuse.surface_speed_threshold",
                 label: "Surface speed onset",
                 category: Category::Water,
-                default: Value::F32(2.0),
-                value: Value::F32(2.0),
+                default: Value::F32(1.6),
+                value: Value::F32(1.6),
                 validation: Validation::F32Range { min: 0.0, max: 10.0 },
-                tooltip: Some("Minimum water speed at the surface before foam/spray start to form."),
+                tooltip: Some("Minimum water speed at the liquid-air surface before foam starts to form."),
                 technical_tooltip: Some("Live threshold (units/s) on cell-centered grid speed at liquid/air interface cells."),
                 apply: ApplyClass::Live,
             },
@@ -1989,121 +1350,44 @@ impl Default for Registry {
                 id: "render.diffuse.surface_speed_gain",
                 label: "Surface speed gain",
                 category: Category::Water,
-                default: Value::F32(0.8),
-                value: Value::F32(0.8),
+                default: Value::F32(0.7),
+                value: Value::F32(0.7),
                 validation: Validation::F32Range { min: 0.0, max: 4.0 },
-                tooltip: Some("How quickly faster surface water makes more foam and spray."),
-                technical_tooltip: Some("Live gain converting (speed - onset) into spawn probability for surface flecks/spray."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.diffuse.wall_impact_threshold",
-                label: "Wall impact onset",
-                category: Category::Water,
-                default: Value::F32(2.5),
-                value: Value::F32(2.5),
-                validation: Validation::F32Range { min: 0.0, max: 10.0 },
-                tooltip: Some("Minimum speed of water hitting a wall before impact foam appears."),
-                technical_tooltip: Some("Live threshold (units/s) on the velocity component directed into a Solid neighbor cell."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.diffuse.wall_impact_gain",
-                label: "Wall impact gain",
-                category: Category::Water,
-                default: Value::F32(0.15),
-                value: Value::F32(0.15),
-                validation: Validation::F32Range { min: 0.0, max: 4.0 },
-                tooltip: Some("How much brief spray a hard wall impact throws off."),
-                technical_tooltip: Some("Live gain converting (impact speed - onset) into spawn probability for short-lived wall spray. Kept subtle so wet-wall material owns the glass cue."),
+                tooltip: Some("How quickly faster surface water makes more foam."),
+                technical_tooltip: Some("Live gain converting (speed - onset) into spawn probability for surface foam."),
                 apply: ApplyClass::Live,
             },
             Setting {
                 id: "render.diffuse.foam_lifetime",
                 label: "Foam lifetime",
                 category: Category::Water,
-                default: Value::F32(2.5),
-                value: Value::F32(2.5),
+                default: Value::F32(1.8),
+                value: Value::F32(1.8),
                 validation: Validation::F32Range { min: 0.1, max: 8.0 },
                 tooltip: Some("How long surface foam flecks persist before fading."),
                 technical_tooltip: Some("Live max lifetime (s) for foam; spawned lifetimes are randomized in [0.4x, 1.0x]."),
                 apply: ApplyClass::Live,
             },
             Setting {
-                id: "render.diffuse.spray_lifetime",
-                label: "Spray lifetime",
-                category: Category::Water,
-                default: Value::F32(1.2),
-                value: Value::F32(1.2),
-                validation: Validation::F32Range { min: 0.1, max: 6.0 },
-                tooltip: Some("How long airborne spray droplets persist before fading."),
-                technical_tooltip: Some("Live max lifetime (s) for spray; spawned lifetimes are randomized in [0.4x, 1.0x]."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.diffuse.bubble_lifetime",
-                label: "Bubble lifetime",
-                category: Category::Water,
-                default: Value::F32(3.5),
-                value: Value::F32(3.5),
-                validation: Validation::F32Range { min: 0.1, max: 10.0 },
-                tooltip: Some("How long submerged bubbles persist before rising out and fading."),
-                technical_tooltip: Some("Live max lifetime (s) for bubbles; spawned lifetimes are randomized in [0.4x, 1.0x]."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
                 id: "render.diffuse.radius",
-                label: "Particle radius",
+                label: "Foam radius",
                 category: Category::Water,
-                default: Value::F32(0.005),
-                value: Value::F32(0.005),
-                validation: Validation::F32Range { min: 0.002, max: 0.06 },
-                tooltip: Some("World-space size of each foam/spray/bubble dot."),
-                technical_tooltip: Some("Live billboard radius (world units) shared by all diffuse particle types."),
+                default: Value::F32(0.0045),
+                value: Value::F32(0.0045),
+                validation: Validation::F32Range { min: 0.002, max: 0.03 },
+                tooltip: Some("World-space size of each soft foam fleck."),
+                technical_tooltip: Some("Live billboard radius (world units) for foam particles."),
                 apply: ApplyClass::Live,
             },
             Setting {
                 id: "render.diffuse.alpha",
                 label: "Foam opacity",
                 category: Category::Water,
-                default: Value::F32(0.28),
-                value: Value::F32(0.28),
+                default: Value::F32(0.22),
+                value: Value::F32(0.22),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("How opaque the foam/spray/bubbles read at full lifetime."),
+                tooltip: Some("How opaque the foam reads at full lifetime."),
                 technical_tooltip: Some("Live peak opacity; per-particle alpha also fades with normalized age."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.diffuse.bubble_buoyancy",
-                label: "Bubble buoyancy",
-                category: Category::Water,
-                default: Value::F32(6.0),
-                value: Value::F32(6.0),
-                validation: Validation::F32Range { min: 0.0, max: 30.0 },
-                tooltip: Some("How fast submerged bubbles rise toward the surface."),
-                technical_tooltip: Some("Live upward acceleration (units/s^2) applied to bubble-type particles each update."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.diffuse.spray_drag",
-                label: "Spray drag",
-                category: Category::Water,
-                default: Value::F32(1.5),
-                value: Value::F32(1.5),
-                validation: Validation::F32Range { min: 0.0, max: 10.0 },
-                tooltip: Some("Air resistance on airborne spray; higher makes droplets slow and arc sooner."),
-                technical_tooltip: Some("Live linear drag coefficient (1/s) for spray; spray also feels gravity ballistically."),
-                apply: ApplyClass::Live,
-            },
-            Setting {
-                id: "render.diffuse.debug_view",
-                label: "Foam debug view",
-                category: Category::Water,
-                default: Value::U32(0),
-                value: Value::U32(0),
-                validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Color-codes diffuse particles by type (foam/spray/bubble) for debugging."),
-                technical_tooltip: Some("Live enum. 0 = natural white/milky look; 1 = foam green / spray red / bubble blue."),
                 apply: ApplyClass::Live,
             },
             Setting {
@@ -2113,7 +1397,7 @@ impl Default for Registry {
                 default: Value::U32(1337),
                 value: Value::U32(1337),
                 validation: Validation::U32Range { min: 0, max: 65_535 },
-                tooltip: Some("Changes the random pattern of where foam and spray are born."),
+                tooltip: Some("Changes the random pattern of where foam is born."),
                 technical_tooltip: Some("Live seed mixed into the per-cell, per-frame spawn hash (deterministic; no wall-clock randomness)."),
                 apply: ApplyClass::Live,
             },
@@ -2405,56 +1689,6 @@ impl Registry {
             micro_normal_scale: self.f32_or("render.hero.micro_normal_scale", 60.0),
             micro_normal_velocity_scale: self
                 .f32_or("render.hero.micro_normal_velocity_scale", 1.0),
-            // --- Approximate caustics (v1.16) ---
-            caustics_enabled: self.u32_or("render.hero.caustics.enabled", 0) != 0,
-            caustics_intensity: self.f32_or("render.hero.caustics.intensity", 1.0),
-            caustics_focus_strength: self.f32_or("render.hero.caustics.focus_strength", 2.0),
-            caustics_thickness_scale: self.f32_or("render.hero.caustics.thickness_scale", 3.0),
-            caustics_floor_enabled: self.u32_or("render.hero.caustics.floor_enabled", 1) != 0,
-            caustics_back_wall_enabled: self.u32_or("render.hero.caustics.back_wall_enabled", 1)
-                != 0,
-            caustics_side_walls_enabled: self.u32_or("render.hero.caustics.side_walls_enabled", 0)
-                != 0,
-            caustics_temporal_enabled: false,
-            caustics_temporal_alpha: 0.15,
-            caustics_motion_scale: self.f32_or("render.hero.caustics.motion_scale", 0.5),
-            caustics_max_intensity: self.f32_or("render.hero.caustics.max_intensity", 2.5),
-            // --- Wet walls (v1.17) ---
-            wet_wall_enabled: self.u32_or("render.hero.wet_wall.enabled", 0) != 0,
-            wet_wall_wetness_decay: self.f32_or("render.hero.wet_wall.wetness_decay", 0.97),
-            wet_wall_contact_gain: self.f32_or("render.hero.wet_wall.wetness_contact_gain", 1.0),
-            wet_wall_spray_gain: self.f32_or("render.hero.wet_wall.wetness_spray_gain", 0.0),
-            wet_wall_darkening_strength: self
-                .f32_or("render.hero.wet_wall.darkening_strength", 0.05),
-            wet_wall_gloss_strength: self.f32_or("render.hero.wet_wall.gloss_strength", 0.08),
-            wet_wall_streak_strength: self.f32_or("render.hero.wet_wall.streak_strength", 0.0),
-            wet_wall_meniscus_enabled: self.u32_or("render.hero.wet_wall.meniscus_enabled", 0) != 0,
-            wet_wall_meniscus_width: self.f32_or("render.hero.wet_wall.meniscus_width", 0.04),
-            wet_wall_meniscus_strength: self.f32_or("render.hero.wet_wall.meniscus_strength", 0.15),
-            wet_wall_meniscus_fresnel_boost: self
-                .f32_or("render.hero.wet_wall.meniscus_fresnel_boost", 0.12),
-            wet_wall_contact_shadow_enabled: self
-                .u32_or("render.hero.wet_wall.contact_shadow_enabled", 0)
-                != 0,
-            wet_wall_contact_shadow_strength: self
-                .f32_or("render.hero.wet_wall.contact_shadow_strength", 0.15),
-            wet_wall_contact_shadow_radius: self
-                .f32_or("render.hero.wet_wall.contact_shadow_radius", 0.08),
-            wet_wall_debug_view: self.u32_or("render.hero.wet_wall.debug_view", 0),
-            // --- Temporal stabilization (v1.18) ---
-            temporal_enabled: self.u32_or("render.hero.temporal.enabled", 0) != 0,
-            temporal_thickness_history: self.u32_or("render.hero.temporal.thickness_history", 1)
-                != 0,
-            temporal_normal_history: self.u32_or("render.hero.temporal.normal_history", 1) != 0,
-            temporal_caustic_history: self.u32_or("render.hero.temporal.caustic_history", 1) != 0,
-            temporal_foam_history: self.u32_or("render.hero.temporal.foam_history", 0) != 0,
-            temporal_history_alpha: self.f32_or("render.hero.temporal.history_alpha", 0.15),
-            temporal_camera_motion_reset_threshold: self
-                .f32_or("render.hero.temporal.camera_motion_reset_threshold", 0.02),
-            temporal_depth_reject_threshold: self
-                .f32_or("render.hero.temporal.depth_reject_threshold", 0.1),
-            temporal_normal_reject_threshold: self
-                .f32_or("render.hero.temporal.normal_reject_threshold", 0.3),
             // --- Screen-space surface quality (v1.19 polish) ---
             smooth_iterations: self.u32_or("render.hero.smooth_iterations", 2),
             smooth_radius: self.u32_or("render.hero.smooth_radius", 5),
@@ -2462,53 +1696,26 @@ impl Registry {
                 .f32_or("render.hero.smooth_thickness_splat_scale", 1.8),
             normal_stencil: self.u32_or("render.hero.normal_stencil", 2),
             normal_smooth_strength: self.f32_or("render.hero.normal_smooth_strength", 0.5),
-            // --- Wet wall round-2 reflectivity + supersample (v1.19 polish) ---
-            wet_wall_reflectivity: self.f32_or("render.hero.wet_wall.reflectivity", 0.12),
-            wet_wall_specular: self.f32_or("render.hero.wet_wall.specular", 0.12),
-            wet_wall_supersample: self.u32_or("render.hero.wet_wall.supersample", 8),
-            // --- Wet wall round-3: blur + flat-water (v1.20) ---
-            wet_wall_blur: self.f32_or("render.hero.wet_wall.blur", 12.0),
+            // --- Flat-water wall-contact snap ---
             flat_water_strength: self.f32_or("render.hero.flat_water.strength", 0.8),
             flat_water_epsilon: self.f32_or("render.hero.flat_water.epsilon", 0.04),
             flat_water_depth_strength: self.f32_or("render.hero.flat_water.depth_strength", 0.8),
-            // --- Gap-filled flat water sheet (v1.21) ---
-            flat_water_fill_enabled: self.u32_or("render.hero.flat_water.fill_enabled", 0) != 0,
-            flat_water_fill_strength: self.f32_or("render.hero.flat_water.fill_strength", 0.6),
-            flat_water_fill_slab: self.f32_or("render.hero.flat_water.fill_slab", 0.04),
-            flat_water_fill_supersample: self.u32_or("render.hero.flat_water.fill_supersample", 8),
-            flat_water_fill_color_strength: self
-                .f32_or("render.hero.flat_water.fill_color_strength", 0.35),
-            flat_water_fill_reflection_strength: self
-                .f32_or("render.hero.flat_water.fill_reflection_strength", 0.65),
-            flat_water_fill_roughness: self.f32_or("render.hero.flat_water.fill_roughness", 0.22),
-            flat_water_fill_absorption_strength: self
-                .f32_or("render.hero.flat_water.fill_absorption_strength", 0.45),
-            flat_water_waterline_softness: self
-                .f32_or("render.hero.flat_water.waterline_softness", 0.14),
         }
     }
 
-    /// Build a flat snapshot of all diffuse-water (foam/spray/bubble) settings. The
-    /// renderer mirrors this into the diffuse uniform whenever a `render.diffuse.*`
-    /// slider changes.
+    /// Build a flat snapshot of all surface-foam settings. The renderer mirrors
+    /// this into the diffuse uniform whenever a `render.diffuse.*` slider changes.
     pub fn diffuse_params(&self) -> DiffuseParams {
         DiffuseParams {
-            enabled: self.u32_or("render.diffuse.enabled", 0) != 0,
-            max_particles: self.u32_or("render.diffuse.max_particles", 96_000),
-            emit_rate: self.f32_or("render.diffuse.emit_rate", 2.0),
-            emit_budget_per_frame: self.u32_or("render.diffuse.emit_budget_per_frame", 6_000),
-            surface_speed_threshold: self.f32_or("render.diffuse.surface_speed_threshold", 1.2),
-            surface_speed_gain: self.f32_or("render.diffuse.surface_speed_gain", 1.0),
-            wall_impact_threshold: self.f32_or("render.diffuse.wall_impact_threshold", 1.5),
-            wall_impact_gain: self.f32_or("render.diffuse.wall_impact_gain", 0.15),
-            foam_lifetime: self.f32_or("render.diffuse.foam_lifetime", 2.5),
-            spray_lifetime: self.f32_or("render.diffuse.spray_lifetime", 1.2),
-            bubble_lifetime: self.f32_or("render.diffuse.bubble_lifetime", 3.5),
-            radius: self.f32_or("render.diffuse.radius", 0.005),
-            alpha: self.f32_or("render.diffuse.alpha", 0.28),
-            bubble_buoyancy: self.f32_or("render.diffuse.bubble_buoyancy", 6.0),
-            spray_drag: self.f32_or("render.diffuse.spray_drag", 1.5),
-            debug_view: self.u32_or("render.diffuse.debug_view", 0),
+            enabled: self.u32_or("render.diffuse.enabled", 1) != 0,
+            max_particles: self.u32_or("render.diffuse.max_particles", 64_000),
+            emit_rate: self.f32_or("render.diffuse.emit_rate", 0.85),
+            emit_budget_per_frame: self.u32_or("render.diffuse.emit_budget_per_frame", 1_500),
+            surface_speed_threshold: self.f32_or("render.diffuse.surface_speed_threshold", 1.6),
+            surface_speed_gain: self.f32_or("render.diffuse.surface_speed_gain", 0.7),
+            foam_lifetime: self.f32_or("render.diffuse.foam_lifetime", 1.8),
+            radius: self.f32_or("render.diffuse.radius", 0.0045),
+            alpha: self.f32_or("render.diffuse.alpha", 0.22),
             random_seed: self.u32_or("render.diffuse.random_seed", 1337),
         }
     }
@@ -2625,15 +1832,28 @@ impl Registry {
 }
 
 fn legacy_hidden_setting_id(id: &str) -> bool {
-    matches!(
-        id,
-        "render.hero.caustics.mode"
-            | "render.hero.caustics.resolution_scale"
-            | "render.hero.caustics.blur_radius"
-            | "render.hero.caustics.temporal_enabled"
-            | "render.hero.caustics.temporal_alpha"
-            | "render.hero.temporal.jitter_enabled"
-    )
+    id.starts_with("render.hero.caustics.")
+        || id.starts_with("render.hero.temporal.")
+        || id.starts_with("render.hero.wet_wall.")
+        || matches!(
+            id,
+            "render.hero.flat_water.fill_enabled"
+                | "render.hero.flat_water.fill_strength"
+                | "render.hero.flat_water.fill_slab"
+                | "render.hero.flat_water.fill_supersample"
+                | "render.hero.flat_water.fill_color_strength"
+                | "render.hero.flat_water.fill_reflection_strength"
+                | "render.hero.flat_water.fill_roughness"
+                | "render.hero.flat_water.fill_absorption_strength"
+                | "render.hero.flat_water.waterline_softness"
+                | "render.diffuse.wall_impact_threshold"
+                | "render.diffuse.wall_impact_gain"
+                | "render.diffuse.spray_lifetime"
+                | "render.diffuse.bubble_lifetime"
+                | "render.diffuse.bubble_buoyancy"
+                | "render.diffuse.spray_drag"
+                | "render.diffuse.debug_view"
+        )
 }
 
 fn settings_tab(setting: &Setting) -> SettingsTab {
@@ -2648,19 +1868,7 @@ fn settings_tab(setting: &Setting) -> SettingsTab {
         return SettingsTab::CameraView;
     }
     if id.starts_with("render.diffuse.") {
-        return SettingsTab::DiffuseWater;
-    }
-    if id.starts_with("render.hero.flat_water.") {
-        return SettingsTab::WallFill;
-    }
-    if id.starts_with("render.hero.wet_wall.") {
-        return SettingsTab::WetWall;
-    }
-    if id.starts_with("render.hero.caustics.") {
-        return SettingsTab::Caustics;
-    }
-    if id.starts_with("render.hero.temporal.") {
-        return SettingsTab::Temporal;
+        return SettingsTab::Foam;
     }
     if matches!(
         id,
@@ -2750,10 +1958,8 @@ fn enum_options(id: &str) -> Option<&'static [&'static str]> {
         "render.hero.invalid_refraction_fallback" => Some(&["Unrefracted", "Base tint"]),
         "render.hero.skybox_enabled" => Some(&["Disabled", "Enabled"]),
         "render.hero.micro_normal_enabled" => Some(&["Disabled", "Enabled"]),
-        "render.hero.flat_water.fill_enabled" => Some(&["Disabled", "Enabled"]),
         "render.hero.environment_mode" => Some(&["Sky", "Room", "Studio"]),
         "render.diffuse.enabled" => Some(&["Disabled", "Enabled"]),
-        "render.diffuse.debug_view" => Some(&["Natural", "Color by type"]),
         "render.hero.debug_view" => Some(&[
             "Off",
             "Scene color",
@@ -2765,10 +1971,8 @@ fn enum_options(id: &str) -> Option<&'static [&'static str]> {
             "Final water only",
             "Reflection",
             "Env only",
-            "Caustics",
             "Nearest Z",
             "Whitewater",
-            "Wallfill mask",
         ]),
         _ => None,
     }
@@ -3002,7 +2206,99 @@ mod tests {
             "render.hero.micro_normal_strength",
             "render.hero.micro_normal_scale",
             "render.hero.micro_normal_velocity_scale",
-            // --- v1.16 caustics ---
+            // --- v1.19 surface quality ---
+            "render.hero.smooth_iterations",
+            "render.hero.smooth_radius",
+            "render.hero.smooth_thickness_splat_scale",
+            "render.hero.normal_stencil",
+            "render.hero.normal_smooth_strength",
+            // --- Flat-water wall-contact snap ---
+            "render.hero.flat_water.strength",
+            "render.hero.flat_water.epsilon",
+            "render.hero.flat_water.depth_strength",
+        ];
+        for id in ids {
+            let s = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
+            assert_eq!(s.category, Category::Water, "{id} must be in the Water tab");
+            assert_eq!(s.apply, ApplyClass::Live, "{id} must be Live");
+            assert!(json.contains(&format!(r#""id":"{id}""#)));
+        }
+        // Color + enum metadata is emitted for the right ids.
+        assert!(json.contains(r#""options":["Disabled","Enabled"]"#));
+        assert!(json.contains(r#""options":["Sky","Room","Studio"]"#));
+        assert!(json.contains(
+            r#""options":["Off","Scene color","Scene depth","Thickness","Refraction UV offset","Fresnel","Absorption","Final water only","Reflection","Env only","Nearest Z","Whitewater"]"#
+        ));
+        assert!(!json.contains(r#""id":"render.hero.caustics.enabled""#));
+        assert!(!json.contains(r#""id":"render.hero.wet_wall.enabled""#));
+        assert!(!json.contains(r#""id":"render.hero.temporal.enabled""#));
+        assert!(!json.contains(r#""id":"render.hero.flat_water.fill_enabled""#));
+
+        // hero_params() reads the registry defaults and derives nothing nonsensical.
+        let hero = registry.hero_params();
+        assert!(hero.refraction_enabled);
+        assert!(hero.reflection_enabled);
+        assert!(hero.body_color_enabled);
+        assert!(hero.wall_contact_enabled);
+        assert_eq!(hero.debug_view, 0);
+        assert!((hero.ior - 1.33).abs() < 1e-6);
+        assert!((hero.refraction_max_offset_px - 48.0).abs() < 1e-6);
+        assert_eq!(hero.invalid_refraction_fallback, 0);
+        assert!((hero.absorption_strength - 2.4).abs() < 1e-5);
+        assert!((hero.transparency - 0.18).abs() < 1e-5);
+        assert!((hero.deep_water_darkening - 2.4).abs() < 1e-5);
+        // v1.19 surface quality defaults
+        assert_eq!(hero.smooth_iterations, 2, "smooth_iterations default 2");
+        assert_eq!(hero.smooth_radius, 5, "smooth_radius default 5");
+        assert!(
+            (hero.smooth_thickness_splat_scale - 1.8).abs() < 1e-5,
+            "splat_scale default 1.8"
+        );
+        assert_eq!(hero.normal_stencil, 2, "normal_stencil default 2");
+        assert!(
+            (hero.normal_smooth_strength - 0.5).abs() < 1e-5,
+            "normal_smooth_strength default 0.5"
+        );
+        assert!(
+            (hero.flat_water_strength - 0.8).abs() < 1e-5,
+            "flat_water_strength default 0.8"
+        );
+        assert!(
+            (hero.flat_water_epsilon - 0.04).abs() < 1e-5,
+            "flat_water_epsilon default 0.04"
+        );
+        assert!(
+            (hero.flat_water_depth_strength - 1.0).abs() < 1e-5,
+            "flat_water_depth_strength default 1.0"
+        );
+    }
+
+    #[test]
+    fn legacy_hero_mode_maps_only_core_optical_toggles() {
+        let mut registry = Registry::default();
+        assert!(registry.set_value_f64("render.hero.wall_contact_enabled", 0.0));
+
+        assert!(registry.set_value_f64("render.hero.mode_enabled", 0.0));
+        let hero = registry.hero_params();
+        assert!(!hero.refraction_enabled);
+        assert!(!hero.reflection_enabled);
+        assert!(!hero.body_color_enabled);
+        assert!(!hero.wall_contact_enabled);
+
+        assert!(registry.set_value_f64("render.hero.mode_enabled", 7.0));
+        let hero = registry.hero_params();
+        assert!(hero.refraction_enabled);
+        assert!(hero.reflection_enabled);
+        assert!(hero.body_color_enabled);
+        assert!(!hero.wall_contact_enabled);
+    }
+
+    #[test]
+    fn legacy_hidden_hero_settings_are_accepted_but_not_visible() {
+        let mut registry = Registry::default();
+        let json = registry.config_json();
+        for id in [
+            "render.hero.mode_enabled",
             "render.hero.caustics.enabled",
             "render.hero.caustics.intensity",
             "render.hero.caustics.focus_strength",
@@ -3012,7 +2308,21 @@ mod tests {
             "render.hero.caustics.side_walls_enabled",
             "render.hero.caustics.motion_scale",
             "render.hero.caustics.max_intensity",
-            // --- v1.17 wet walls ---
+            "render.hero.caustics.mode",
+            "render.hero.caustics.resolution_scale",
+            "render.hero.caustics.blur_radius",
+            "render.hero.caustics.temporal_enabled",
+            "render.hero.caustics.temporal_alpha",
+            "render.hero.temporal.enabled",
+            "render.hero.temporal.thickness_history",
+            "render.hero.temporal.normal_history",
+            "render.hero.temporal.caustic_history",
+            "render.hero.temporal.foam_history",
+            "render.hero.temporal.history_alpha",
+            "render.hero.temporal.camera_motion_reset_threshold",
+            "render.hero.temporal.depth_reject_threshold",
+            "render.hero.temporal.normal_reject_threshold",
+            "render.hero.temporal.jitter_enabled",
             "render.hero.wet_wall.enabled",
             "render.hero.wet_wall.wetness_decay",
             "render.hero.wet_wall.wetness_contact_gain",
@@ -3028,237 +2338,31 @@ mod tests {
             "render.hero.wet_wall.contact_shadow_strength",
             "render.hero.wet_wall.contact_shadow_radius",
             "render.hero.wet_wall.debug_view",
-            // --- v1.19 surface quality ---
-            "render.hero.smooth_iterations",
-            "render.hero.smooth_radius",
-            "render.hero.smooth_thickness_splat_scale",
-            "render.hero.normal_stencil",
-            "render.hero.normal_smooth_strength",
-            // --- v1.19 round-2 wet wall reflectivity ---
             "render.hero.wet_wall.reflectivity",
             "render.hero.wet_wall.specular",
-            // --- v1.20 round-3 wet wall blur + flat-water ---
             "render.hero.wet_wall.blur",
-            "render.hero.flat_water.strength",
-            "render.hero.flat_water.epsilon",
-            "render.hero.flat_water.depth_strength",
-            // --- v1.21 gap-filled flat water sheet ---
             "render.hero.flat_water.fill_enabled",
             "render.hero.flat_water.fill_strength",
             "render.hero.flat_water.fill_slab",
+            "render.hero.flat_water.fill_supersample",
             "render.hero.flat_water.fill_color_strength",
             "render.hero.flat_water.fill_reflection_strength",
             "render.hero.flat_water.fill_roughness",
             "render.hero.flat_water.fill_absorption_strength",
             "render.hero.flat_water.waterline_softness",
-            // --- v1.18 temporal ---
-            "render.hero.temporal.enabled",
-            "render.hero.temporal.thickness_history",
-            "render.hero.temporal.normal_history",
-            "render.hero.temporal.caustic_history",
-            "render.hero.temporal.foam_history",
-            "render.hero.temporal.history_alpha",
-            "render.hero.temporal.camera_motion_reset_threshold",
-            "render.hero.temporal.depth_reject_threshold",
-            "render.hero.temporal.normal_reject_threshold",
-        ];
-        for id in ids {
-            let s = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
-            assert_eq!(s.category, Category::Water, "{id} must be in the Water tab");
-            assert_eq!(s.apply, ApplyClass::Live, "{id} must be Live");
-            assert!(json.contains(&format!(r#""id":"{id}""#)));
-        }
-        // Color + enum metadata is emitted for the right ids.
-        assert!(json.contains(r#""options":["Disabled","Enabled"]"#));
-        assert!(json.contains(r#""options":["Sky","Room","Studio"]"#));
-        assert!(json.contains(
-            r#""options":["Off","Scene color","Scene depth","Thickness","Refraction UV offset","Fresnel","Absorption","Final water only","Reflection","Env only","Caustics","Nearest Z","Whitewater","Wallfill mask"]"#
-        ));
-
-        // hero_params() reads the registry defaults and derives nothing nonsensical.
-        let hero = registry.hero_params();
-        assert!(hero.refraction_enabled);
-        assert!(hero.reflection_enabled);
-        assert!(hero.body_color_enabled);
-        assert!(hero.wall_contact_enabled);
-        assert_eq!(hero.debug_view, 0);
-        assert!((hero.ior - 1.33).abs() < 1e-6);
-        assert!((hero.refraction_max_offset_px - 48.0).abs() < 1e-6);
-        assert_eq!(hero.invalid_refraction_fallback, 0);
-        assert!((hero.absorption_strength - 2.4).abs() < 1e-5);
-        assert!((hero.transparency - 0.18).abs() < 1e-5);
-        assert!((hero.deep_water_darkening - 2.4).abs() < 1e-5);
-        // v1.17 wet_wall defaults sanity
-        assert!(!hero.wet_wall_enabled, "wet_wall defaults OFF");
-        assert!((hero.wet_wall_wetness_decay - 0.97).abs() < 1e-5);
-        assert_eq!(hero.wet_wall_spray_gain, 0.0, "spray_gain stubbed at 0");
-        assert!(!hero.wet_wall_meniscus_enabled, "meniscus defaults OFF");
-        assert!(
-            !hero.wet_wall_contact_shadow_enabled,
-            "contact_shadow defaults OFF"
-        );
-        assert_eq!(hero.wet_wall_debug_view, 0, "debug_view defaults off");
-        // v1.18 temporal defaults
-        assert!(!hero.temporal_enabled, "temporal defaults OFF");
-        assert!(
-            hero.temporal_thickness_history,
-            "thickness_history defaults ON"
-        );
-        assert!(hero.temporal_normal_history, "normal_history defaults ON");
-        assert!(hero.temporal_caustic_history, "caustic_history defaults ON");
-        assert!(!hero.temporal_foam_history, "foam_history defaults OFF");
-        assert!(
-            (hero.temporal_history_alpha - 0.15).abs() < 1e-5,
-            "history_alpha default 0.15"
-        );
-        assert!((hero.temporal_camera_motion_reset_threshold - 0.02).abs() < 1e-5);
-        // v1.19 surface quality defaults
-        assert_eq!(hero.smooth_iterations, 2, "smooth_iterations default 2");
-        assert_eq!(hero.smooth_radius, 5, "smooth_radius default 5");
-        assert!(
-            (hero.smooth_thickness_splat_scale - 1.8).abs() < 1e-5,
-            "splat_scale default 1.8"
-        );
-        assert_eq!(hero.normal_stencil, 2, "normal_stencil default 2");
-        assert!(
-            (hero.normal_smooth_strength - 0.5).abs() < 1e-5,
-            "normal_smooth_strength default 0.5"
-        );
-        // v1.19 round-2 wet wall reflectivity + supersample defaults
-        assert!(
-            (hero.wet_wall_reflectivity - 0.12).abs() < 1e-5,
-            "wet_wall_reflectivity default 0.12"
-        );
-        assert!(
-            (hero.wet_wall_specular - 0.12).abs() < 1e-5,
-            "wet_wall_specular default 0.12"
-        );
-        assert_eq!(
-            hero.wet_wall_supersample, 8,
-            "wet_wall_supersample default 8"
-        );
-        // v1.20 round-3 wet wall blur + flat-water defaults
-        assert!(
-            (hero.wet_wall_blur - 12.0).abs() < 1e-5,
-            "wet_wall_blur default 12.0"
-        );
-        assert!(
-            (hero.flat_water_strength - 0.8).abs() < 1e-5,
-            "flat_water_strength default 0.8"
-        );
-        assert!(
-            (hero.flat_water_epsilon - 0.04).abs() < 1e-5,
-            "flat_water_epsilon default 0.04"
-        );
-        assert!(
-            (hero.flat_water_depth_strength - 1.0).abs() < 1e-5,
-            "flat_water_depth_strength default 1.0"
-        );
-        // v1.21 gap-filled flat water sheet defaults
-        assert!(
-            !hero.flat_water_fill_enabled,
-            "flat_water_fill_enabled defaults OFF"
-        );
-        assert!(
-            (hero.flat_water_fill_strength - 0.6).abs() < 1e-5,
-            "flat_water_fill_strength default 0.6"
-        );
-        assert!(
-            (hero.flat_water_fill_slab - 0.04).abs() < 1e-5,
-            "flat_water_fill_slab default 0.04"
-        );
-        assert_eq!(
-            hero.flat_water_fill_supersample, 8,
-            "flat_water_fill_supersample default 8"
-        );
-        assert!(
-            (hero.flat_water_fill_color_strength - 0.35).abs() < 1e-5,
-            "flat_water_fill_color_strength default 0.35"
-        );
-        assert!(
-            (hero.flat_water_fill_reflection_strength - 0.65).abs() < 1e-5,
-            "flat_water_fill_reflection_strength default 0.65"
-        );
-        assert!(
-            (hero.flat_water_fill_roughness - 0.22).abs() < 1e-5,
-            "flat_water_fill_roughness default 0.22"
-        );
-        assert!(
-            (hero.flat_water_fill_absorption_strength - 0.45).abs() < 1e-5,
-            "flat_water_fill_absorption_strength default 0.45"
-        );
-        assert!(
-            (hero.flat_water_waterline_softness - 0.14).abs() < 1e-5,
-            "flat_water_waterline_softness default 0.14"
-        );
-    }
-
-    #[test]
-    fn temporal_settings_are_live_water_tab_controls() {
-        let registry = Registry::default();
-        let ids = [
-            "render.hero.temporal.enabled",
-            "render.hero.temporal.thickness_history",
-            "render.hero.temporal.normal_history",
-            "render.hero.temporal.caustic_history",
-            "render.hero.temporal.foam_history",
-            "render.hero.temporal.history_alpha",
-            "render.hero.temporal.camera_motion_reset_threshold",
-            "render.hero.temporal.depth_reject_threshold",
-            "render.hero.temporal.normal_reject_threshold",
-        ];
-        let json = registry.config_json();
-        for id in ids {
-            let s = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
-            assert_eq!(s.category, Category::Water, "{id} must be Water");
-            assert_eq!(s.apply, ApplyClass::Live, "{id} must be Live");
-            assert!(json.contains(&format!(r#""id":"{id}""#)));
-        }
-        let hero = registry.hero_params();
-        assert!(!hero.temporal_enabled);
-    }
-
-    #[test]
-    fn legacy_hero_mode_maps_only_core_optical_toggles() {
-        let mut registry = Registry::default();
-        assert!(registry.set_value_f64("render.hero.wall_contact_enabled", 0.0));
-        assert!(registry.set_value_f64("render.hero.flat_water.fill_enabled", 1.0));
-        assert!(registry.set_value_f64("render.hero.wet_wall.enabled", 1.0));
-
-        assert!(registry.set_value_f64("render.hero.mode_enabled", 0.0));
-        let hero = registry.hero_params();
-        assert!(!hero.refraction_enabled);
-        assert!(!hero.reflection_enabled);
-        assert!(!hero.body_color_enabled);
-        assert!(!hero.wall_contact_enabled);
-        assert!(hero.flat_water_fill_enabled);
-        assert!(hero.wet_wall_enabled);
-
-        assert!(registry.set_value_f64("render.hero.mode_enabled", 7.0));
-        let hero = registry.hero_params();
-        assert!(hero.refraction_enabled);
-        assert!(hero.reflection_enabled);
-        assert!(hero.body_color_enabled);
-        assert!(!hero.wall_contact_enabled);
-        assert!(hero.flat_water_fill_enabled);
-        assert!(hero.wet_wall_enabled);
-    }
-
-    #[test]
-    fn legacy_hidden_hero_settings_are_accepted_but_not_visible() {
-        let mut registry = Registry::default();
-        let json = registry.config_json();
-        for id in [
-            "render.hero.mode_enabled",
-            "render.hero.caustics.mode",
-            "render.hero.caustics.resolution_scale",
-            "render.hero.caustics.blur_radius",
-            "render.hero.caustics.temporal_enabled",
-            "render.hero.caustics.temporal_alpha",
-            "render.hero.temporal.jitter_enabled",
+            "render.diffuse.wall_impact_threshold",
+            "render.diffuse.wall_impact_gain",
+            "render.diffuse.spray_lifetime",
+            "render.diffuse.bubble_lifetime",
+            "render.diffuse.bubble_buoyancy",
+            "render.diffuse.spray_drag",
+            "render.diffuse.debug_view",
         ] {
             assert!(registry.set_value_f64(id, 1.0), "{id} should replay safely");
-            assert!(!json.contains(&format!(r#""id":"{id}""#)), "{id} should be hidden");
+            assert!(
+                !json.contains(&format!(r#""id":"{id}""#)),
+                "{id} should be hidden"
+            );
         }
     }
 }

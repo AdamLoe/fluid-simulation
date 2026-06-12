@@ -1,7 +1,6 @@
-// Diffuse-water update (v1.13). One invocation per active diffuse particle slot.
-// Ages each particle, advects it by type (foam clings to the flow, spray flies
-// ballistically with drag, bubbles rise by buoyancy), handles type transitions at
-// the surface, clamps to the tank, and recounts alive-per-type via integer atomics.
+// Surface-foam update. One invocation per active foam particle slot. Ages each
+// particle, advects it with local MAC flow while it remains on a liquid-air
+// surface, kills stranded/wall-hugging particles, and recounts alive foam.
 // Render-only; reads the live sim buffers but never writes them.
 
 struct Params {
@@ -17,11 +16,11 @@ struct Params {
 
 struct DiffuseU {
     f0: vec4<f32>,  // dt, emit_rate, radius, alpha
-    f1: vec4<f32>,  // surf_thresh, surf_gain, wall_thresh, wall_gain
-    f2: vec4<f32>,  // foam_life, spray_life, bubble_life, bubble_buoyancy
-    f3: vec4<f32>,  // spray_drag, _, _, _
+    f1: vec4<f32>,  // surf_thresh, surf_gain, _, _
+    f2: vec4<f32>,  // foam_life, _, _, _
+    f3: vec4<f32>,  // _, _, _, _
     u0: vec4<u32>,  // frame_index, max_particles, emit_budget, random_seed
-    u1: vec4<u32>,  // enabled, debug_view, _, _
+    u1: vec4<u32>,  // enabled, _, _, _
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -35,6 +34,7 @@ struct DiffuseU {
 
 const LIQUID: u32 = 1u;
 const AIR: u32 = 2u;
+const SOLID: u32 = 0u;
 
 fn sample_u(P: vec3<f32>) -> f32 {
     let dim = vec3<i32>(i32(params.gdim.x) + 1, i32(params.gdim.y), i32(params.gdim.z));
@@ -112,14 +112,31 @@ fn cell_at_pos(P: vec3<f32>) -> u32 {
     return cell_type[i + nx * (j + ny * k)];
 }
 
+fn cell_at(i: i32, j: i32, k: i32) -> u32 {
+    let nx = i32(params.gdim.x); let ny = i32(params.gdim.y); let nz = i32(params.gdim.z);
+    if (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) { return SOLID; }
+    return cell_type[i + nx * (j + ny * k)];
+}
+
+fn surface_at_pos(P: vec3<f32>) -> bool {
+    let nx = i32(params.gdim.x); let ny = i32(params.gdim.y); let nz = i32(params.gdim.z);
+    let g = (P - params.origin.xyz) * params.geom.y;
+    let i = clamp(i32(floor(g.x)), 0, nx - 1);
+    let j = clamp(i32(floor(g.y)), 0, ny - 1);
+    let k = clamp(i32(floor(g.z)), 0, nz - 1);
+    if (cell_at(i, j, k) != LIQUID) { return false; }
+    return cell_at(i + 1, j, k) == AIR || cell_at(i - 1, j, k) == AIR ||
+           cell_at(i, j + 1, k) == AIR || cell_at(i, j - 1, k) == AIR ||
+           cell_at(i, j, k + 1) == AIR || cell_at(i, j, k - 1) == AIR;
+}
+
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = gid.x;
     if (p >= du.u0.y) { return; }                 // beyond active cap → inactive slot
 
     let pt = particles[p * 3u + 0u];
-    var ptype = pt.w;
-    if (ptype < 0.0) { return; }                  // dead slot
+    if (pt.w < 0.0) { return; }                   // dead slot
 
     let dt = du.f0.x;
     var pos = pt.xyz;
@@ -133,33 +150,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    let gv = vec3<f32>(sample_u(pos), sample_v(pos), sample_w(pos));
-    let grav = params.grav.xyz;
-    let up = select(vec3<f32>(0.0, 1.0, 0.0), -normalize(grav), length(grav) > 1e-4);
-    // Cell the particle currently sits in (before advection) — decides whether foam
-    // is still on the water or has been stranded in the air.
-    let here0 = cell_at_pos(pos);
-
-    if (ptype < 0.5) {
-        // Foam clings to the surface flow ONLY while it's in/at liquid. Once the
-        // water drops away and it is left in an air cell, it falls back down
-        // ballistically (with mild drag) instead of hanging in midair.
-        if (here0 == LIQUID) {
-            vel = mix(vel, gv, clamp(8.0 * dt, 0.0, 1.0));
-        } else {
-            vel += grav * dt;
-            vel *= max(1.0 - du.f3.x * 0.5 * dt, 0.0);
-        }
-    } else if (ptype < 1.5) {
-        // Spray: ballistic with linear air drag.
-        vel += grav * dt;
-        vel *= max(1.0 - du.f3.x * dt, 0.0);
-    } else {
-        // Bubble: rises by buoyancy, lightly dragged by the flow.
-        vel = mix(vel, gv, clamp(3.0 * dt, 0.0, 1.0));
-        vel += up * du.f2.w * dt;
+    if (!surface_at_pos(pos)) {
+        particles[p * 3u + 0u].w = -1.0;
+        return;
     }
 
+    let gv = vec3<f32>(sample_u(pos), sample_v(pos), sample_w(pos));
+    vel = mix(vel, gv, clamp(8.0 * dt, 0.0, 1.0));
     pos += vel * dt;
 
     // Clamp to the tank (matches the sim's wall-contact convention).
@@ -174,20 +171,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (pos.z < lo.z) { pos.z = lo.z; vel.z = 0.0; }
     if (pos.z > hi.z) { pos.z = hi.z; vel.z = 0.0; }
 
-    // Type transitions at the interface.
-    let here = cell_at_pos(pos);
-    if (ptype > 1.5 && here == AIR) {
-        ptype = 0.0;                  // bubble surfaced → becomes foam
-    } else if (ptype > 0.5 && ptype < 1.5 && here == LIQUID) {
-        ptype = 0.0;                  // spray fell back in → becomes foam
-        vel *= 0.3;
+    // Kill foam that has been carried into the exposed vertical-wall band.
+    let near_vertical_wall =
+        pos.x < lo.x + 6.0 * h || pos.x > hi.x - 6.0 * h ||
+        pos.z < lo.z + 6.0 * h || pos.z > hi.z - 6.0 * h;
+    let above_floor_band = pos.y > lo.y + 1.25 * h;
+    if (near_vertical_wall && above_floor_band) {
+        particles[p * 3u + 0u].w = -1.0;
+        return;
+    }
+    if (!surface_at_pos(pos)) {
+        particles[p * 3u + 0u].w = -1.0;
+        return;
     }
 
-    // Recount alive-per-type (integer atomics; read back throttled for stats).
-    let ti = u32(clamp(ptype, 0.0, 2.0));
-    atomicAdd(&counters[3u + ti], 1u);
+    // Recount alive foam (integer atomic; read back throttled for stats).
+    atomicAdd(&counters[3u], 1u);
 
-    particles[p * 3u + 0u] = vec4<f32>(pos, ptype);
+    particles[p * 3u + 0u] = vec4<f32>(pos, 0.0);
     particles[p * 3u + 1u] = vec4<f32>(vel, age);
     // life (lifetime, per-particle random) is preserved.
 }

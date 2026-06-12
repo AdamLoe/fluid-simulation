@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-08
+last_updated:  2026-06-12
 okay_to_delete: false
 long_lived:    true
 ---
@@ -25,6 +25,9 @@ The profiler is core infrastructure, not late polish. It owns a hierarchical, co
 - `record_resolve_and_maybe_copy` — resolves timestamps every frame; copies to the mappable read buffer **throttled** every 20 frames to avoid per-frame stall
 - `map_readback` — async-maps the read buffer; on completion writes a `Readout` into an `Rc<Cell<Readout>>` and calls `unmap`; `pending` guard prevents overlapping maps
 - the liveness counter (`liquid_cells`) is read back in the same throttled buffer copy, not in a separate readback
+- surface-foam counters are read back in the same throttled buffer copy; visible
+  profiler text reports foam alive/emitted/clamped only, while legacy JSON keys for
+  spray and bubble remain present as zeroes
 
 ## Scope model & timing sources
 
@@ -75,7 +78,7 @@ Always-present keys additionally include measurement/scale facts:
 `pressure_iterations`, and `render_mode`, alongside the existing frame percentile,
 grid, memory, dropped-time, dispatch, and GPU fields.
 
-The `gpu` sub-object always carries: `sim_ms`, `prep_ms`, `pressure_ms`, `finish_ms`, `render_ms`, `liquid_cells`, `substeps`, `detailed`. When `detailed` is true it also carries `sections` (name→ms map) and `cg` (`total_ms`, `avg_ms_per_iter`, `spmv_ms`, `reductions_ms`, `updates_ms`, `scalars_ms`, `iters`). Fine fields are only present when real timestamps and the dev toggle are both active — never fabricated.
+The `gpu` sub-object always carries: `sim_ms`, `prep_ms`, `pressure_ms`, `finish_ms`, `render_ms`, `liquid_cells`, `substeps`, `detailed`. When `detailed` is true it also carries `sections` (name→ms map) and `cg` (`total_ms`, `avg_ms_per_iter`, `spmv_ms`, `reductions_ms`, `updates_ms`, `scalars_ms`, `iters`). Fine fields are only present when real timestamps and the dev toggle are both active — never fabricated. When timestamp readback includes foam counters, `gpu.diffuse` carries `alive`, `foam`, `spray`, `bubble`, `emitted`, and `clamped`; `spray` and `bubble` are compatibility zeroes after Phase 2.
 
 ## Non-obvious invariants and gotchas
 
@@ -110,7 +113,11 @@ hardcode pressure or any other pass as dominant.
 - long frame: ~33 ms
 - stall / deep-drilldown: ~100 ms — this is the stall threshold; 100 ms is not the only threshold
 
-**`liquid_cells` liveness.** The occupied-cell count is read back in the same throttled copy as the timestamps (`app/crates/fluid-lab/src/gpu/timing.rs → GpuTimers::record_resolve_and_maybe_copy` copies `stats_buf` at offset `TS_BYTES`). It is a single `u32` counter, not a per-frame readback.
+**`liquid_cells` and foam liveness.** The occupied-cell count and diffuse counter
+slots are read back in the same throttled copy as the timestamps
+(`app/crates/fluid-lab/src/gpu/timing.rs -> GpuTimers::record_resolve_and_maybe_copy`).
+`liquid_cells` is a single `u32`; foam counters are cursor/emitted/clamped/alive foam
+with legacy spray/bubble slots forced to zero.
 
 ## Update when
 

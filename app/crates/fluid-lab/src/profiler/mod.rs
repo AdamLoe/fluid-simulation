@@ -140,7 +140,7 @@ struct GpuSample {
     cg_iters: u32,
     /// Substeps the per-pass totals were summed over (for ms/substep display).
     substeps: u32,
-    /// Diffuse-water (v1.13) alive counts [foam, spray, bubble].
+    /// Surface-foam alive count in slot 0. Slots 1/2 are legacy zeroes for JSON shape.
     diffuse_alive: [u32; 3],
     diffuse_emitted: u32,
     diffuse_clamped: u32,
@@ -369,14 +369,11 @@ impl Profiler {
                 ));
             }
             out.push_str(&format!("│   liquid cells     {}\n", g.liquid_cells));
-            let diffuse_total = g.diffuse_alive[0] + g.diffuse_alive[1] + g.diffuse_alive[2];
+            let diffuse_total = g.diffuse_alive[0];
             if diffuse_total > 0 || g.diffuse_emitted > 0 {
                 out.push_str(&format!(
-                    "│   diffuse alive    {} (foam {} / spray {} / bubble {})  emitted {}{}\n",
+                    "│   foam alive       {}  emitted {}{}\n",
                     diffuse_total,
-                    g.diffuse_alive[0],
-                    g.diffuse_alive[1],
-                    g.diffuse_alive[2],
                     g.diffuse_emitted,
                     if g.diffuse_clamped > 0 {
                         format!("  ⚠ budget-clamped {}", g.diffuse_clamped)
@@ -464,7 +461,7 @@ impl Profiler {
                 };
                 let diffuse = format!(
                     r#","diffuse":{{"alive":{al},"foam":{fo},"spray":{sp},"bubble":{bu},"emitted":{em},"clamped":{cl}}}"#,
-                    al = g.diffuse_alive[0] + g.diffuse_alive[1] + g.diffuse_alive[2],
+                    al = g.diffuse_alive[0],
                     fo = g.diffuse_alive[0],
                     sp = g.diffuse_alive[1],
                     bu = g.diffuse_alive[2],

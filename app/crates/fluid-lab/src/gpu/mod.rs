@@ -1,7 +1,6 @@
 //! WebGPU context: adapter/device init, surface configuration, boot diagnostics,
 //! the compute/integer-atomic smoke test, the GPU fluid sim, and rendering.
 
-mod caustics;
 mod composite;
 mod diffuse;
 mod environment;
@@ -12,10 +11,7 @@ mod skybox;
 mod slice;
 mod smoke;
 mod smoothing;
-mod temporal;
 mod timing;
-mod wallfill;
-mod wetwall;
 
 pub use timing::Readout as GpuReadout;
 pub use timing::FINE_SECTIONS;
@@ -79,7 +75,6 @@ pub struct GpuContext {
     depth_view: wgpu::TextureView,
     thickness_view: wgpu::TextureView,
     whitewater_view: wgpu::TextureView,
-    wallfill_mask_view: wgpu::TextureView,
     nearest_z_view: wgpu::TextureView,
     smooth_z_ping_view: wgpu::TextureView,
     smooth_z_view: wgpu::TextureView,
@@ -99,19 +94,8 @@ pub struct GpuContext {
     thickness_smoothing: smoothing::ThicknessSmoothRenderer,
     whitewater_smoothing: smoothing::ThicknessSmoothRenderer,
     slice: slice::SliceRenderer,
-    /// Persistent diffuse-water particles (foam/spray/bubbles) — render-only.
+    /// Persistent surface-foam particles — render-only.
     diffuse: diffuse::DiffuseSystem,
-    /// v1.16 approximate screen-space caustics — two-pass generation + composite.
-    caustics: caustics::CausticsSystem,
-    /// v1.17 wet-wall + meniscus — persistent wetness field on tank walls.
-    wetwall: wetwall::WetWallSystem,
-    /// v1.21 gap-filled flat water sheet — per-wall occupancy compute + MRT fill pass.
-    wallocc: wallfill::WallOccupancySystem,
-    wallfill: wallfill::WallFillRenderer,
-    /// v1.18 temporal stabilization — ping-pong history blend for depth/thickness/whitewater.
-    temporal: temporal::TemporalSystem,
-    /// Previous frame's eye_to_world matrix for camera-motion delta computation.
-    prev_eye_to_world: Mat4,
     /// Monotonic frame counter feeding the diffuse spawn hash (no wall-clock RNG).
     diffuse_frame: u32,
     pressure_enabled: bool,
@@ -227,7 +211,6 @@ impl GpuContext {
         let depth_view = create_depth(&device, width, height);
         let thickness_view = create_r16_target(&device, width, height, "water thickness");
         let whitewater_view = create_r16_target(&device, width, height, "water whitewater");
-        let wallfill_mask_view = create_r16_target(&device, width, height, "wallfill mask");
         let nearest_z_view = create_r16_target(&device, width, height, "water nearest z");
         let smooth_z_ping_view = create_r16_target(&device, width, height, "water smooth z ping");
         let smooth_z_view = create_r16_target(&device, width, height, "water smooth z");
@@ -254,34 +237,6 @@ impl GpuContext {
 
         let (tank_lo, tank_hi) = fluid.tank_bounds();
         let [grid_nx_init, grid_ny_init, grid_nz_init] = fluid.grid_dims();
-        // WetWallSystem is constructed here and after recreate_fluid (for Reset).
-        // Its wetness buffer + uniform are shared with EnvironmentRenderer (group 1).
-        // Derive hero params early so we can pass wet_wall_supersample here
-        // (the named `hero` binding is later below with the skybox/composite).
-        let hero_init = settings.hero_params();
-        let wetwall = wetwall::WetWallSystem::new(
-            &device,
-            fluid.cell_type_buffer(),
-            grid_nx_init,
-            grid_ny_init,
-            grid_nz_init,
-            tank_lo,
-            tank_hi,
-            hero_init.wet_wall_supersample,
-        );
-        let wallocc = wallfill::WallOccupancySystem::new(
-            &device,
-            fluid.cell_type_buffer(),
-            fluid.particle_buffer(),
-            fluid.particle_count(),
-            grid_nx_init,
-            grid_ny_init,
-            grid_nz_init,
-            tank_lo,
-            tank_hi,
-            &hero_init,
-        );
-        let wallfill_renderer = wallfill::WallFillRenderer::new(&device, &wallocc, &hero_init);
         let wireframe = renderer::WireframeRenderer::new(
             &device,
             format,
@@ -298,8 +253,6 @@ impl GpuContext {
             DEPTH_FORMAT,
             tank_lo,
             tank_hi,
-            &wetwall.uniform_buf,
-            &wetwall.wetness_buf,
         );
         let mut particles = particles::ParticleRenderer::new(
             &device,
@@ -378,27 +331,12 @@ impl GpuContext {
             settings.diffuse_params(),
         );
 
-        // v1.18 TemporalSystem — always allocated. When disabled, alpha=0 → stable views
-        // pass through raw current each frame. Caustics + composite always read stable views.
-        let temporal_sys = temporal::TemporalSystem::new(
-            &device,
-            &thickness_view,
-            &smooth_z_view,
-            &whitewater_view,
-            &hero,
-            width,
-            height,
-        );
-
-        // Composite reads stabilized views (temporal stable = raw current on first frame
-        // since history_valid=false → reset_flag=1.0 → pass-through).
         let composite = composite::CompositeRenderer::new(
             &device,
             format,
-            temporal_sys.stable_thickness(),
-            temporal_sys.stable_whitewater(),
-            temporal_sys.stable_smooth_z(),
-            &wallfill_mask_view,
+            &thickness_view,
+            &whitewater_view,
+            &smooth_z_view,
             &scene_color_view,
             &scene_depth_view,
             &hero,
@@ -409,21 +347,6 @@ impl GpuContext {
             settings.whitewater_threshold(),
             settings.whitewater_softness(),
             [width, height],
-        );
-
-        // CausticsSystem — always allocated (OFF by default). Reads stabilized
-        // depth/thickness from the temporal system (pass-through on first frame).
-        let caustics_sys = caustics::CausticsSystem::new(
-            &device,
-            SCENE_COLOR_FORMAT,
-            temporal_sys.stable_smooth_z(),
-            temporal_sys.stable_thickness(),
-            &scene_depth_view,
-            &hero,
-            tank_lo,
-            tank_hi,
-            width,
-            height,
         );
 
         let timers = if timestamp_query {
@@ -446,7 +369,6 @@ impl GpuContext {
             depth_view,
             thickness_view,
             whitewater_view,
-            wallfill_mask_view,
             nearest_z_view,
             smooth_z_ping_view,
             smooth_z_view,
@@ -463,12 +385,6 @@ impl GpuContext {
             whitewater_smoothing,
             slice,
             diffuse,
-            caustics: caustics_sys,
-            wetwall,
-            wallocc,
-            wallfill: wallfill_renderer,
-            temporal: temporal_sys,
-            prev_eye_to_world: Mat4::IDENTITY,
             diffuse_frame: 0,
             pressure_enabled: true,
             slice_enabled: false,
@@ -532,18 +448,6 @@ impl GpuContext {
         let particle_radius = crate::sim::H * 0.35;
         let (tank_lo, tank_hi) = fluid.tank_bounds();
         let [grid_nx, grid_ny, grid_nz] = fluid.grid_dims();
-        // Rebuild WetWallSystem with a fresh zeroed wetness buffer (clears wetness on Reset).
-        // Must be built before EnvironmentRenderer so we can pass the fresh buffer refs.
-        let wetwall = wetwall::WetWallSystem::new(
-            &self.device,
-            fluid.cell_type_buffer(),
-            grid_nx,
-            grid_ny,
-            grid_nz,
-            tank_lo,
-            tank_hi,
-            self.hero.wet_wall_supersample,
-        );
         self.wireframe = renderer::WireframeRenderer::new(
             &self.device,
             self.config.format,
@@ -560,8 +464,6 @@ impl GpuContext {
             DEPTH_FORMAT,
             tank_lo,
             tank_hi,
-            &wetwall.uniform_buf,
-            &wetwall.wetness_buf,
         );
         self.environment.set_params(&self.queue, &self.hero);
         let particles = particles::ParticleRenderer::new(
@@ -596,30 +498,10 @@ impl GpuContext {
             &fluid,
             settings.diffuse_params(),
         );
-        // Rebuild WallOccupancySystem and rebind the fill renderer.
-        let wallocc = wallfill::WallOccupancySystem::new(
-            &self.device,
-            fluid.cell_type_buffer(),
-            fluid.particle_buffer(),
-            fluid.particle_count(),
-            grid_nx,
-            grid_ny,
-            grid_nz,
-            tank_lo,
-            tank_hi,
-            &self.hero,
-        );
-        self.wallfill.rebind_occ(&self.device, &wallocc);
         self.fluid = fluid;
         self.particles = particles;
         self.slice = slice;
         self.diffuse = diffuse;
-        self.wetwall = wetwall;
-        self.wallocc = wallocc;
-        // Drop temporal history on Reset so the first post-reset frame is clean.
-        self.temporal.invalidate_history();
-        self.caustics.invalidate_history();
-        self.prev_eye_to_world = Mat4::IDENTITY;
         self.diffuse_frame = 0;
         // Timers carry Reset-class layout (max_substeps / detailed / pressure_iters);
         // rebuild them here so a Reset resizes the query set. Only when the adapter
@@ -730,35 +612,17 @@ impl GpuContext {
         self.depth_view = create_depth(&self.device, width, height);
         self.thickness_view = create_r16_target(&self.device, width, height, "water thickness");
         self.whitewater_view = create_r16_target(&self.device, width, height, "water whitewater");
-        self.wallfill_mask_view = create_r16_target(&self.device, width, height, "wallfill mask");
         self.nearest_z_view = create_r16_target(&self.device, width, height, "water nearest z");
         self.smooth_z_ping_view =
             create_r16_target(&self.device, width, height, "water smooth z ping");
         self.smooth_z_view = create_r16_target(&self.device, width, height, "water smooth z");
         self.scene_color_view = create_scene_color_target(&self.device, width, height);
         self.scene_depth_view = create_r16_target(&self.device, width, height, "hero scene depth");
-        // Rebuild temporal system first so stable views are available for caustics/composite.
-        self.temporal.set_views(
-            &self.device,
-            &self.thickness_view,
-            &self.smooth_z_view,
-            &self.whitewater_view,
-            &self.hero,
-            width,
-            height,
-        );
-        // Always bind the stable views regardless of temporal_enabled.
-        // When temporal is disabled, alpha=0 makes stable==raw each frame (pass-through).
-        // Gating here on temporal_enabled causes inconsistency: construction and the
-        // Outdated branch always use stable views, but after a resize with temporal off
-        // composite would be reading raw views and enabling temporal Live would have no
-        // effect until the next resize. Remove the gate to keep all code-paths consistent.
         self.composite.set_views(
             &self.device,
-            self.temporal.stable_thickness(),
-            self.temporal.stable_whitewater(),
-            self.temporal.stable_smooth_z(),
-            &self.wallfill_mask_view,
+            &self.thickness_view,
+            &self.whitewater_view,
+            &self.smooth_z_view,
             &self.scene_color_view,
             &self.scene_depth_view,
         );
@@ -779,24 +643,10 @@ impl GpuContext {
             &self.whitewater_view,
             &self.smooth_z_ping_view,
         );
-        self.caustics.set_views(
-            &self.device,
-            self.temporal.stable_smooth_z(),
-            self.temporal.stable_thickness(),
-            &self.scene_depth_view,
-            width,
-            height,
-        );
-        self.caustics.set_hero_params(&self.queue, &self.hero);
-        self.prev_eye_to_world = Mat4::IDENTITY;
     }
 
     pub fn reset(&mut self) {
         self.fluid.reset(&self.queue);
-        // Drop temporal history on Reset so the first post-reset frame is clean.
-        self.temporal.invalidate_history();
-        self.caustics.invalidate_history();
-        self.prev_eye_to_world = Mat4::IDENTITY;
     }
 
     pub fn set_pressure_enabled(&mut self, enabled: bool) {
@@ -877,8 +727,6 @@ impl GpuContext {
         self.composite.set_hero_params(&self.queue, &hero);
         self.environment.set_params(&self.queue, &hero);
         self.skybox.set_params(&self.queue, &hero);
-        self.caustics.set_hero_params(&self.queue, &hero);
-        self.wetwall.set_params(&self.queue, &hero);
         self.smoothing
             .update_radius(&self.queue, hero.smooth_radius);
         self.thickness_smoothing
@@ -888,7 +736,7 @@ impl GpuContext {
         self.particles.splat_scale = hero.smooth_thickness_splat_scale;
     }
 
-    /// Mirror the Water-tab diffuse (foam/spray/bubble) settings into the diffuse
+    /// Mirror the Water-tab foam settings into the diffuse
     /// system. Called whenever a `render.diffuse.*` slider changes (all Live).
     pub fn set_diffuse_params(&mut self, params: settings::DiffuseParams) {
         self.diffuse.set_params(params);
@@ -901,34 +749,6 @@ impl GpuContext {
         self.diffuse_frame = self.diffuse_frame.wrapping_add(1);
         self.diffuse
             .record_step(&self.device, &self.queue, dt, self.diffuse_frame);
-    }
-
-    /// Advance the wet-wall wetness field by `dt` seconds. Reads the current
-    /// `cell_type` buffer (post-substep, latest classification) and decays/updates
-    /// the persistent wetness target. Runs in its own encoder, after `update_diffuse`
-    /// and before the render prepass.
-    pub fn update_wetwall(&mut self, dt: f32) {
-        let (tank_lo, tank_hi) = self.fluid.tank_bounds();
-        let [nx, ny, nz] = self.fluid.grid_dims();
-        self.wetwall.record_step(
-            &self.device,
-            &self.queue,
-            dt,
-            &self.hero,
-            nx,
-            ny,
-            nz,
-            tank_lo,
-            tank_hi,
-        );
-    }
-
-    /// Update the wall occupancy buffer (v1.21 gap-fill). Reads current `cell_type`
-    /// and writes dense per-wall-cell occupancy. Runs after `update_wetwall`,
-    /// before the render prepass. No-op when fill is disabled.
-    pub fn update_wallocc(&mut self) {
-        self.wallocc
-            .record_step(&self.device, &self.queue, &self.hero);
     }
 
     pub fn set_particle_slow_color(&mut self, rgb: [f32; 3]) {
@@ -1231,12 +1051,6 @@ impl GpuContext {
                     self.config.height,
                     "water whitewater",
                 );
-                self.wallfill_mask_view = create_r16_target(
-                    &self.device,
-                    self.config.width,
-                    self.config.height,
-                    "wallfill mask",
-                );
                 self.nearest_z_view = create_r16_target(
                     &self.device,
                     self.config.width,
@@ -1263,22 +1077,11 @@ impl GpuContext {
                     self.config.height,
                     "hero scene depth",
                 );
-                // Rebuild temporal first; stable views feed composite + caustics.
-                self.temporal.set_views(
-                    &self.device,
-                    &self.thickness_view,
-                    &self.smooth_z_view,
-                    &self.whitewater_view,
-                    &self.hero,
-                    self.config.width,
-                    self.config.height,
-                );
                 self.composite.set_views(
                     &self.device,
-                    self.temporal.stable_thickness(),
-                    self.temporal.stable_whitewater(),
-                    self.temporal.stable_smooth_z(),
-                    &self.wallfill_mask_view,
+                    &self.thickness_view,
+                    &self.whitewater_view,
+                    &self.smooth_z_view,
                     &self.scene_color_view,
                     &self.scene_depth_view,
                 );
@@ -1300,16 +1103,6 @@ impl GpuContext {
                     &self.whitewater_view,
                     &self.smooth_z_ping_view,
                 );
-                self.caustics.set_views(
-                    &self.device,
-                    self.temporal.stable_smooth_z(),
-                    self.temporal.stable_thickness(),
-                    &self.scene_depth_view,
-                    self.config.width,
-                    self.config.height,
-                );
-                self.caustics.set_hero_params(&self.queue, &self.hero);
-                self.prev_eye_to_world = Mat4::IDENTITY;
                 return Ok(());
             }
             Cur::Timeout | Cur::Occluded => return Ok(()),
@@ -1343,43 +1136,13 @@ impl GpuContext {
             tank_hi_arr,
             &self.hero,
         );
-        // Push wallfill camera uniform (v1.21).
-        self.wallfill.set_camera(
-            &self.queue,
-            eye_to_world,
-            eye_world_local,
-            box_rot,
-            self.config.width,
-            self.config.height,
-            &self.hero,
-        );
         self.skybox
             .set_camera(&self.queue, eye_to_world, self.aspect());
-        self.caustics.cache_eye_to_world(eye_to_world);
-        self.caustics.set_camera(&self.queue, eye_to_world);
         self.particles
             .update_camera(&self.queue, view_proj, cam_right, cam_up);
         self.diffuse
             .update_camera(&self.queue, view_proj, cam_right, cam_up);
         self.slice.update_camera(&self.queue, view_proj);
-
-        // v1.18 Camera motion detection (CPU-side, no GPU readback).
-        // eye_to_world is model-free (camera only), so we can compute a clean delta.
-        let cam_reset = compute_camera_reset(
-            &self.prev_eye_to_world,
-            eye_to_world,
-            self.hero.temporal_camera_motion_reset_threshold,
-        );
-        self.prev_eye_to_world = *eye_to_world;
-
-        // Update temporal uniforms before issuing passes.
-        self.temporal.update_params(
-            &self.queue,
-            &self.hero,
-            cam_reset,
-            self.config.width,
-            self.config.height,
-        );
 
         const CLEAR: wgpu::Color = wgpu::Color {
             r: 0.04,
@@ -1501,81 +1264,8 @@ impl GpuContext {
                     self.particles
                         .draw_thickness(&mut pass, self.fluid.particle_count());
                 }
-                // Clear wall-fill mask every frame. The expensive injection draw runs
-                // only when dense wall fill is enabled.
-                if !self.hero.flat_water_fill_enabled {
-                    let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("wallfill mask clear pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &self.wallfill_mask_view,
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                }
-                // v1.21 Wall-fill injection pass: runs AFTER particle thickness, BEFORE
-                // bilateral smoothing. Injects a flat glass-plane surface into the same
-                // three MRT targets (thickness Add, nearest_z Min, whitewater Add) wherever
-                // the occupancy buffer reports liquid against the wall, and writes a
-                // separate wall-fill mask for composite-time color/reflection controls.
-                if self.hero.flat_water_fill_enabled {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("wallfill injection pass"),
-                        color_attachments: &[
-                            Some(wgpu::RenderPassColorAttachment {
-                                view: &self.thickness_view,
-                                resolve_target: None,
-                                depth_slice: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            }),
-                            Some(wgpu::RenderPassColorAttachment {
-                                view: &self.nearest_z_view,
-                                resolve_target: None,
-                                depth_slice: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            }),
-                            Some(wgpu::RenderPassColorAttachment {
-                                view: &self.whitewater_view,
-                                resolve_target: None,
-                                depth_slice: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            }),
-                            Some(wgpu::RenderPassColorAttachment {
-                                view: &self.wallfill_mask_view,
-                                resolve_target: None,
-                                depth_slice: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            }),
-                        ],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
-                    self.wallfill.draw(&mut pass);
-                }
                 // v1.22 Thickness smoothing: a plain separable Gaussian over the
-                // thickness target, run AFTER particle + wall-fill thickness writes
+                // thickness target, run AFTER particle thickness writes
                 // and BEFORE depth smoothing (so it can reuse the depth pass's
                 // smooth_z_ping scratch). Raw thickness drives Beer-Lambert opacity
                 // in the composite, so its per-particle splat noise was the source of
@@ -1723,84 +1413,6 @@ impl GpuContext {
                         self.smoothing.draw_y(&mut pass);
                     }
                 }
-                // v1.18 Temporal stabilization passes: blend thickness, smooth_z, whitewater
-                // with their histories. Runs AFTER smooth-y writes smooth_z_view and AFTER
-                // the thickness pass writes thickness/whitewater. Stable views feed caustics
-                // and composite downstream.
-                self.temporal.draw(&mut encoder);
-
-                // Per-frame rebind of composite + caustics to the freshly-written stable
-                // textures. draw() flips ping-pong parity so stable_view() now returns the
-                // texture that was WRITTEN this frame; downstream bind groups built at
-                // construction/resize are permanently wired to whichever side was "stable"
-                // at that moment and become stale every other frame without this rebind.
-                {
-                    let (st, sz, sw) = self.temporal.stable_views();
-                    self.composite.rebind_temporal_views(
-                        &self.device,
-                        st,
-                        sw,
-                        sz,
-                        &self.wallfill_mask_view,
-                        &self.scene_color_view,
-                        &self.scene_depth_view,
-                    );
-                    self.caustics.rebind_input_views(&self.device, sz, st);
-                }
-
-                // Caustics pass (A): half-res generation into caustic ping/pong target.
-                // Caustics pass (B): additive composite into scene_color so the water
-                // composite (pass 5 below) picks up the caustic lighting via refract_uv.
-                if self.hero.caustics_enabled {
-                    // Determine the generation target BEFORE draw_generate flips parity,
-                    // then record the pass (draw_generate borrows &mut self.caustics and
-                    // flips parity internally).
-                    let gen_target_is_ping = !self.caustics.frame_parity();
-                    {
-                        let gen_view = if gen_target_is_ping {
-                            self.caustics.ping_view()
-                        } else {
-                            self.caustics.pong_view()
-                        };
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("caustics generate pass"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: gen_view,
-                                resolve_target: None,
-                                depth_slice: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                        self.caustics
-                            .draw_generate(&self.queue, &mut pass, cam_reset);
-                    }
-                    {
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("caustics composite pass"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &self.scene_color_view,
-                                resolve_target: None,
-                                depth_slice: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                        self.caustics.draw_composite(&mut pass);
-                    }
-                }
                 let diffuse_active = self.diffuse.enabled();
                 {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1827,7 +1439,7 @@ impl GpuContext {
                     });
                     self.composite.draw(&mut pass);
                 }
-                // Persistent foam/spray/bubbles over the composite, depth-tested
+                // Persistent surface foam over the composite, depth-tested
                 // against the shared scene depth (environment + wireframe).
                 if diffuse_active {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2090,45 +1702,6 @@ fn validate_particle_scale(
         ));
     }
     Ok(())
-}
-
-/// Compute whether the camera has moved enough to require a temporal history reset.
-///
-/// Uses the model-free `eye_to_world` (camera rotation + position, no box orientation)
-/// so box tilting does not spuriously trigger resets. The metric combines:
-///   rot_angle  = acos(clamp((trace(R_prev^T * R_cur) - 1) / 2, -1, 1))
-///   pos_delta  = |cur.w_axis.xyz - prev.w_axis.xyz|
-/// and returns `true` if either `rot_angle > threshold` OR `pos_delta > threshold`.
-/// A scale factor of 0.5 is applied to pos_delta relative to threshold so that a
-/// small dolly does not trigger a spurious reset while large pans/zooms still do.
-fn compute_camera_reset(prev: &Mat4, cur: &Mat4, threshold: f32) -> bool {
-    if threshold <= 0.0 {
-        return false;
-    }
-    // Extract 3×3 rotation columns from the mat4 (eye→world columns 0,1,2).
-    let pr = glam::Mat3::from_cols(
-        prev.x_axis.truncate(),
-        prev.y_axis.truncate(),
-        prev.z_axis.truncate(),
-    );
-    let cr = glam::Mat3::from_cols(
-        cur.x_axis.truncate(),
-        cur.y_axis.truncate(),
-        cur.z_axis.truncate(),
-    );
-    // R_prev^T * R_cur
-    let rel = pr.transpose() * cr;
-    // trace
-    let tr = rel.x_axis.x + rel.y_axis.y + rel.z_axis.z;
-    let cos_angle = ((tr - 1.0) / 2.0).clamp(-1.0, 1.0);
-    let rot_angle = cos_angle.acos();
-
-    // Eye-position delta (dolly / pan / zoom translate).
-    // Scale matches rotation: threshold in radians ≈ threshold in world units
-    // (a 1-radian orbit and a 1-unit dolly are treated as equally significant).
-    let pos_delta = (cur.w_axis.truncate() - prev.w_axis.truncate()).length();
-
-    rot_angle > threshold || pos_delta > threshold
 }
 
 fn log_boot_diagnostics(

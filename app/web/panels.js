@@ -14,13 +14,30 @@ const HIDDEN_SETTING_IDS = new Set([
 ]);
 const LEGACY_REPLAY_SETTING_IDS = new Set([
   "render.hero.mode_enabled",
-  "render.hero.caustics.mode",
-  "render.hero.caustics.resolution_scale",
-  "render.hero.caustics.blur_radius",
-  "render.hero.caustics.temporal_enabled",
-  "render.hero.caustics.temporal_alpha",
-  "render.hero.temporal.jitter_enabled",
+  "render.hero.flat_water.fill_enabled",
+  "render.hero.flat_water.fill_strength",
+  "render.hero.flat_water.fill_slab",
+  "render.hero.flat_water.fill_supersample",
+  "render.hero.flat_water.fill_color_strength",
+  "render.hero.flat_water.fill_reflection_strength",
+  "render.hero.flat_water.fill_roughness",
+  "render.hero.flat_water.fill_absorption_strength",
+  "render.hero.flat_water.waterline_softness",
+  "render.diffuse.wall_impact_threshold",
+  "render.diffuse.wall_impact_gain",
+  "render.diffuse.spray_lifetime",
+  "render.diffuse.bubble_lifetime",
+  "render.diffuse.bubble_buoyancy",
+  "render.diffuse.spray_drag",
+  "render.diffuse.debug_view",
 ]);
+
+function isLegacyReplaySettingId(id) {
+  return LEGACY_REPLAY_SETTING_IDS.has(id) ||
+    id.startsWith("render.hero.caustics.") ||
+    id.startsWith("render.hero.temporal.") ||
+    id.startsWith("render.hero.wet_wall.");
+}
 const DEFAULT_TAB = "scenario";
 const PROFILER_TAB = { id: "profiler", label: "Profiler", order: 1000, profiler: true };
 const TAB_ALIASES = {
@@ -683,10 +700,6 @@ function buildProfilerPanel(container, app) {
           <span class="prof-val">${(d.alive ?? 0).toLocaleString()}</span>
         </div>
         <div class="prof-row">
-          <span class="prof-key">&nbsp;&nbsp;foam / spray / bubble</span>
-          <span class="prof-val">${(d.foam ?? 0).toLocaleString()} / ${(d.spray ?? 0).toLocaleString()} / ${(d.bubble ?? 0).toLocaleString()}</span>
-        </div>
-        <div class="prof-row">
           <span class="prof-key">&nbsp;&nbsp;emitted / clamped</span>
           <span class="prof-val">${(d.emitted ?? 0).toLocaleString()} / ${(d.clamped ?? 0).toLocaleString()}</span>
         </div>
@@ -749,7 +762,6 @@ export function initPanels(app) {
   const settingsPanel = document.getElementById("settings-panel");
   const settingsBody = document.getElementById("settings-body");
   const tabsRoot = document.getElementById("settings-tabs");
-  const navToggle = document.getElementById("settings-nav-toggle");
   const btnConfig = document.getElementById("btn-config");
   const toolbarReset = document.getElementById("btn-reset");
 
@@ -764,7 +776,7 @@ export function initPanels(app) {
     const knownIds = new Set(current.map((s) => s.id));
     let needsRebuild = false;
     for (const [id, value] of Object.entries(stored)) {
-      if (knownIds.has(id) || LEGACY_REPLAY_SETTING_IDS.has(id)) {
+      if (knownIds.has(id) || isLegacyReplaySettingId(id)) {
         try {
           const live = app.set_setting(id, value);
           if (!live) needsRebuild = true;
@@ -854,11 +866,6 @@ export function initPanels(app) {
   }
 
   btnConfig.addEventListener("click", toggleSettings);
-  navToggle?.addEventListener("click", () => {
-    const collapsed = settingsPanel.classList.toggle("nav-collapsed");
-    navToggle.setAttribute("aria-pressed", collapsed ? "true" : "false");
-    navToggle.title = collapsed ? "Expand settings navigation" : "Collapse settings navigation";
-  });
 
   if (toolbarReset) {
     toolbarReset.addEventListener("click", () => {

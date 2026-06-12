@@ -1,16 +1,16 @@
-//! Diffuse-water particle system (v1.13): persistent foam, spray, and bubbles.
+//! Surface-foam particle system.
 //!
 //! A render-only GPU particle system that reads the live sim buffers (cell types +
 //! MAC face velocities) but never writes them — it conserves no mass and affects no
-//! pressure. Particles are *born* at fast/breaking surfaces and wall impacts,
-//! advect/age over several seconds, and *decay*, replacing the old speed-mask
-//! whitewater tint with persistent diffuse state.
+//! pressure. Particles are born at fast/breaking liquid-air surfaces, advect/age
+//! briefly near the surface, and decay. The screen-space whitewater target remains
+//! the fallback; this adds persistent surface flecks only.
 //!
 //! Three passes, all GPU-side (no normal-frame readback):
 //!   * emit   — one invocation per grid cell; stochastic spawn into a ring buffer
 //!              with an integer-atomic per-frame budget (no float atomics).
-//!   * update — one invocation per active slot; age/advect/buoyancy/drag/transition
-//!              + integer-atomic alive-per-type recount.
+//!   * update — one invocation per active slot; age/advect on the surface and
+//!              integer-atomic alive recount.
 //!   * render — instanced camera-facing billboards over the water composite.
 //!
 //! `render.diffuse.max_particles` is an ACTIVE CAP within this fixed buffer
@@ -28,7 +28,7 @@ pub const DIFFUSE_CAPACITY: u32 = 262_144;
 /// vec4<f32> slots per particle: pos_type, vel_age, life.
 const VEC4S_PER_PARTICLE: u32 = 3;
 /// u32 counter slots: 0 ring cursor (persistent), 1 emitted, 2 clamped,
-/// 3/4/5 alive foam/spray/bubble, 6/7 pad.
+/// 3 alive foam, 4/5 legacy-zero spray/bubble counters, 6/7 pad.
 const COUNTERS: u32 = 8;
 const WG: u32 = 64;
 
@@ -36,32 +36,32 @@ const WG: u32 = 64;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct DiffuseUniform {
     f0: [f32; 4], // dt, emit_rate, radius, alpha
-    f1: [f32; 4], // surf_thresh, surf_gain, wall_thresh, wall_gain
-    f2: [f32; 4], // foam_life, spray_life, bubble_life, bubble_buoyancy
-    f3: [f32; 4], // spray_drag, _, _, _
+    f1: [f32; 4], // surf_thresh, surf_gain, _, _
+    f2: [f32; 4], // foam_life, _, _, _
+    f3: [f32; 4], // _, _, _, _
     u0: [u32; 4], // frame_index, max_particles, emit_budget, random_seed
-    u1: [u32; 4], // enabled, debug_view, _, _
+    u1: [u32; 4], // enabled, _, _, _
 }
 
 fn build_uniform(d: &DiffuseParams, dt: f32, frame_index: u32) -> DiffuseUniform {
     let max_p = d.max_particles.clamp(1, DIFFUSE_CAPACITY);
     DiffuseUniform {
-        f0: [dt, d.emit_rate.max(0.0), d.radius.max(0.0), d.alpha.clamp(0.0, 1.0)],
+        f0: [
+            dt,
+            d.emit_rate.max(0.0),
+            d.radius.max(0.0),
+            d.alpha.clamp(0.0, 1.0),
+        ],
         f1: [
             d.surface_speed_threshold.max(0.0),
             d.surface_speed_gain.max(0.0),
-            d.wall_impact_threshold.max(0.0),
-            d.wall_impact_gain.max(0.0),
+            0.0,
+            0.0,
         ],
-        f2: [
-            d.foam_lifetime.max(0.05),
-            d.spray_lifetime.max(0.05),
-            d.bubble_lifetime.max(0.05),
-            d.bubble_buoyancy.max(0.0),
-        ],
-        f3: [d.spray_drag.max(0.0), 0.0, 0.0, 0.0],
+        f2: [d.foam_lifetime.max(0.05), 0.0, 0.0, 0.0],
+        f3: [0.0, 0.0, 0.0, 0.0],
         u0: [frame_index, max_p, d.emit_budget_per_frame, d.random_seed],
-        u1: [u32::from(d.enabled), d.debug_view, 0, 0],
+        u1: [u32::from(d.enabled), 0, 0, 0],
     }
 }
 
@@ -71,7 +71,7 @@ struct DiffuseCamera {
     view_proj: [[f32; 4]; 4],
     right: [f32; 4], // xyz right, w radius
     up: [f32; 4],    // xyz up, w peak alpha
-    misc: [f32; 4],  // x debug_view, yzw _
+    misc: [f32; 4],  // unused padding
 }
 
 pub struct DiffuseSystem {
@@ -321,12 +321,12 @@ impl DiffuseSystem {
         dt: f32,
         frame_index: u32,
     ) {
-        if !self.params.enabled || dt <= 0.0 {
-            return;
-        }
         // Reset per-frame counters [1..=5] (emitted, clamped, alive×3); keep [0]
         // (persistent ring cursor) and [6..7] (pad).
         queue.write_buffer(&self.counters, 4, bytemuck::cast_slice(&[0u32; 5]));
+        if !self.params.enabled || dt <= 0.0 {
+            return;
+        }
         queue.write_buffer(
             &self.du_buf,
             0,
@@ -362,7 +362,7 @@ impl DiffuseSystem {
             view_proj: view_proj.to_cols_array_2d(),
             right: [right.x, right.y, right.z, self.params.radius.max(0.0)],
             up: [up.x, up.y, up.z, self.params.alpha.clamp(0.0, 1.0)],
-            misc: [self.params.debug_view as f32, 0.0, 0.0, 0.0],
+            misc: [0.0, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&self.cam_buf, 0, bytemuck::bytes_of(&cam));
     }
