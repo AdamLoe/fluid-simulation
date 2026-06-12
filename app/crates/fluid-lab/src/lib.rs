@@ -1,12 +1,11 @@
 //! fluid-lab — browser-native Rust/WASM/WebGPU 3D fluid lab.
 //!
-//! Phase 0.1 scope: app shell, WebGPU boot, compute/atomic smoke test, wireframe
-//! tank + orbit camera, pause/reset/step, hierarchical profiler skeleton, typed
-//! config-registry skeleton. No fluid simulation yet.
+//! Runtime scope: app shell, WebGPU boot/smoke test, GPU FLIP/PIC simulation,
+//! rendering, profiler, and the typed config registry.
 //!
-//! Frame-loop ownership: TypeScript owns `requestAnimationFrame` and calls into
-//! the single Rust entry point [`FluidApp::frame`]. Rust owns all app state and
-//! scheduling. TS never drives simulation frames independently.
+//! Frame-loop ownership: the web shell owns `requestAnimationFrame` and calls
+//! into the single Rust entry point [`FluidApp::frame`]. Rust owns all app state
+//! and scheduling. JavaScript never drives simulation frames independently.
 //!
 //! NOTE: `#![allow(dead_code)]` is intentional for the 0.1–0.2 skeleton. Many
 //! config-registry / scene / profiler fields belong to the forward-looking data
@@ -273,7 +272,7 @@ enum RunState {
     Paused,
 }
 
-/// The single WASM-exported application object. TypeScript constructs one of
+/// The single WASM-exported application object. The web shell constructs one of
 /// these per canvas and calls [`FluidApp::frame`] from its rAF loop.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -347,21 +346,19 @@ impl FluidApp {
     }
 
     /// Single frame entry point. `render_dt_ms` is the browser rAF delta in
-    /// milliseconds. Simulation stepping (added in later phases) must clamp this;
-    /// 0.1 only advances a logical tick counter when not paused.
+    /// milliseconds. The browser value is sanitized at the bridge before the fixed
+    /// timestep controller consumes it.
     #[wasm_bindgen]
     pub fn frame(&mut self, render_dt_ms: f64) {
+        let render_dt_ms = finite_or_zero_f64(render_dt_ms).max(0.0);
         self.profiler.begin_frame(render_dt_ms);
 
         // --- update (logical) ---
         self.profiler.scope_begin("update");
         let n_substeps: u32 = match self.run_state {
             RunState::Running => {
-                let interaction_dt_s = if render_dt_ms.is_finite() {
-                    ((render_dt_ms as f32) / 1000.0).clamp(0.0, INTERACTION_MAX_DT_S)
-                } else {
-                    0.0
-                };
+                let interaction_dt_s =
+                    ((render_dt_ms as f32) / 1000.0).clamp(0.0, INTERACTION_MAX_DT_S);
                 self.update_interactions(interaction_dt_s);
                 let n = self
                     .timestep
@@ -390,6 +387,7 @@ impl FluidApp {
             }
         };
         self.profiler.scope_end("update");
+        self.gpu.set_frame_substeps(n_substeps);
 
         // Advance the render-only surface foam once per frame, only when the sim
         // actually stepped, using the summed substep time. Reads the freshly
@@ -443,7 +441,7 @@ impl FluidApp {
         // Feed real GPU-timestamp results (throttled readback) to the profiler.
         if let Some(r) = self.gpu.gpu_timing() {
             if r.valid {
-                self.profiler.set_gpu_sample(r, n_substeps);
+                self.profiler.set_gpu_sample(r);
             }
         }
 
@@ -512,7 +510,13 @@ impl FluidApp {
     }
 
     #[wasm_bindgen]
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self) -> bool {
+        let scene = scene::SceneConfig::from_settings(&self.settings);
+        if let Err(e) = self.gpu.recreate_fluid(&self.settings, &scene) {
+            warn(&format!("[fluid-lab][scale] reset rejected: {e}"));
+            return false;
+        }
+
         self.tick = 0;
         self.pending_steps = 0;
         self.reset_count += 1;
@@ -524,11 +528,6 @@ impl FluidApp {
             self.settings.fixed_dt(),
             self.settings.max_substeps(),
         );
-        let scene = scene::SceneConfig::from_settings(&self.settings);
-        if let Err(e) = self.gpu.recreate_fluid(&self.settings, &scene) {
-            warn(&format!("[fluid-lab][scale] reset rejected: {e}"));
-            return;
-        }
         self.scene = scene;
         // Restore the camera orientation from settings (so the camera sliders define the
         // default view), and the box transform to identity.
@@ -550,6 +549,7 @@ impl FluidApp {
             self.settings.grid_res_z(),
             self.gpu.particle_count(),
         ));
+        true
     }
 
     #[wasm_bindgen]
@@ -582,6 +582,10 @@ impl FluidApp {
     /// Live PIC↔FLIP blend (0 = damped PIC, 1 = lively FLIP).
     #[wasm_bindgen]
     pub fn set_flip_blend(&mut self, blend: f32) {
+        if !blend.is_finite() {
+            warn("[fluid-lab] ignored non-finite flip_blend");
+            return;
+        }
         self.gpu.set_flip_blend(blend);
         log(&format!("[fluid-lab] flip_blend = {blend}"));
     }
@@ -622,6 +626,10 @@ impl FluidApp {
     /// (caller should show a "needs reset / needs reload" hint).
     #[wasm_bindgen]
     pub fn set_setting(&mut self, id: &str, value: f64) -> bool {
+        if !value.is_finite() {
+            warn(&format!("[fluid-lab] ignored non-finite setting {id}"));
+            return false;
+        }
         if id == "render.particle_alpha" {
             log(
                 "[fluid-lab] ignored legacy render.particle_alpha; use render.water_optical_density",
@@ -631,6 +639,11 @@ impl FluidApp {
         if !self.settings.set_value_f64(id, value) {
             return false; // unknown id
         }
+        let value = self
+            .settings
+            .get(id)
+            .map(|s| s.value_as_f64())
+            .unwrap_or(value);
         // Hero-water (Water tab) settings are all Live: rebuild the single
         // HeroParams snapshot and push it to the composite + environment, instead
         // of plumbing each id individually.
@@ -900,6 +913,14 @@ fn interaction_seed_for_reset(reset_count: u32) -> u64 {
     INTERACTION_SEED ^ ((reset_count as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
 }
 
+fn finite_or_zero_f64(v: f64) -> f64 {
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
+}
+
 #[cfg(test)]
 mod interaction_tests {
     use super::*;
@@ -944,5 +965,34 @@ mod interaction_tests {
 
         state.reset(7);
         assert_eq!(state.update_wave(0.0, false, 0.5, 2.0), None);
+    }
+
+    #[test]
+    fn bridge_dt_sanitizer_replaces_non_finite_values() {
+        assert_eq!(finite_or_zero_f64(f64::NAN), 0.0);
+        assert_eq!(finite_or_zero_f64(f64::INFINITY), 0.0);
+        assert_eq!(finite_or_zero_f64(-12.5), -12.5);
+    }
+}
+
+#[cfg(test)]
+mod shader_contract_tests {
+    #[test]
+    fn cg_reduce_uses_branch_guard_before_tail_loads() {
+        let src = include_str!("gpu/shaders/cg_reduce.wgsl");
+
+        assert!(src.contains("if (idx < cells)"));
+        assert!(!src.contains("select(0.0, vecA[idx] * vecB[idx]"));
+    }
+
+    #[test]
+    fn cg_scalar_division_guards_do_not_use_select() {
+        let alpha = include_str!("gpu/shaders/cg_alpha.wgsl");
+        let beta = include_str!("gpu/shaders/cg_beta.wgsl");
+
+        assert!(alpha.contains("if (abs(dq) > 1e-30)"));
+        assert!(beta.contains("if (rs_old > 1e-30)"));
+        assert!(!alpha.contains("select("));
+        assert!(!beta.contains("select("));
     }
 }

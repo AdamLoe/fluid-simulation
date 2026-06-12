@@ -27,7 +27,10 @@ fn main(
 ) {
     let cells = params.gdim.x * params.gdim.y * params.gdim.z;
     let idx = gid.x;
-    let prod = select(0.0, vecA[idx] * vecB[idx], idx < cells);
+    var prod = 0.0;
+    if (idx < cells) {
+        prod = vecA[idx] * vecB[idx];
+    }
     sdata[li] = prod;
     workgroupBarrier();
 

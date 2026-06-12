@@ -22,7 +22,7 @@ is the single load-bearing design rule.
 - `begin_frame` / `end_frame_and_maybe_log` — push a frame-time sample, emit console log every ~3 s tagged with the active config snapshot
 - `stats_json` — serialize live state for the JS bridge and the rendered panel (see "stats_json shape" below)
 - `set_timestep_stats(stats, total_dropped)` / `set_frame_facts(...)` — setters called from `FluidApp::frame` each tick
-- `TimingSource` enum — `CpuWallClock | GpuTimestamp | CoarseFence`; `set_gpu_sample` switches the active source to `GpuTimestamp` and caches the per-pass numbers
+- `TimingSource` enum — `CpuWallClock | GpuTimestamp | CoarseFence`; `set_gpu_sample` switches the active source to `GpuTimestamp` and caches the per-pass numbers, including the substep count owned by the sampled readout
 
 `app/crates/fluid-lab/src/gpu/timing.rs` owns:
 - `GpuTimers` — constructed with `(max_substeps, detailed, pressure_iters)`; sizes its `QuerySet` so each substep owns its own slots, ensuring coarse frame totals are correct aggregates across all substeps that ran
@@ -88,8 +88,10 @@ true it also carries `sections` (name→ms map) and `cg` (`total_ms`,
 `avg_ms_per_iter`, `spmv_ms`, `reductions_ms`, `updates_ms`, `scalars_ms`, `iters`).
 Fine fields are only present when real timestamps and the dev toggle are both active
 — never fabricated. When timestamp readback includes foam counters, `gpu.diffuse`
-carries `alive`, `foam`, `spray`, `bubble`, `emitted`, and `clamped`; `spray` and
-`bubble` stay as compatibility zeroes.
+carries `alive`, `foam`, `spray`, `bubble`, `emitted`, `clamped`, and
+`compute_timed`; `spray` and `bubble` stay as compatibility zeroes.
+`compute_timed:false` means diffuse compute work is intentionally outside the
+timestamp totals, so foam counter visibility must not be read as a timed cost.
 
 ## Non-obvious invariants and gotchas
 
@@ -101,10 +103,11 @@ carries `alive`, `foam`, `spray`, `bubble`, `emitted`, and `clamped`; `spray` an
 
 **Scope accumulators reset on log emit.** `end_frame_and_maybe_log` resets all `total_ms` and `calls` after printing, so reported values are per-frame averages over the logging window, not lifetime totals. The `frame_window` rolling buffer (cap 240) is not reset — it persists for percentile computation.
 
-**A Reset starts a clean measurement window.** `Profiler::reset_measurement` clears
-the rolling frame window, cached GPU sample/timing source, timestep snapshot, and CPU
-scope accumulators. This runs for successful and rejected Reset attempts so scale
-measurements cannot inherit pre-reset percentiles or timestamps.
+**A successful Reset starts a clean measurement window.** `Profiler::reset_measurement`
+clears the rolling frame window, cached GPU sample/timing source, timestep snapshot,
+and CPU scope accumulators after `GpuContext::recreate_fluid` succeeds. Rejected
+Reset attempts leave the active measurement window intact because the active fluid
+did not change.
 
 **Scale facts come from the active GPU context, not estimates in JS.**
 `FluidApp::frame` feeds requested/estimated/actual particles, tiled dispatch shape,
@@ -128,7 +131,10 @@ hardcode pressure or any other pass as dominant.
 slots are read back in the same throttled copy as the timestamps
 (`app/crates/fluid-lab/src/gpu/timing.rs -> GpuTimers::record_resolve_and_maybe_copy`).
 `liquid_cells` is a single `u32`; foam counters are cursor/emitted/clamped/alive foam
-with legacy spray/bubble slots forced to zero.
+with legacy spray/bubble slots forced to zero. `FluidApp::frame` writes the frame's
+actual substep count into `GpuTimers` before render, including zero-substep paused
+frames, so the readout owns the sampled substep count rather than borrowing the
+profiler's current frame count.
 
 ## Update when
 

@@ -243,8 +243,8 @@ impl Profiler {
     }
 
     /// Feed the latest real GPU-timestamp readback (sets timing source to GPU).
-    /// All per-pass times are FRAME TOTALS summed across `substeps`.
-    pub fn set_gpu_sample(&mut self, r: crate::gpu::GpuReadout, substeps: u32) {
+    /// All per-pass times are FRAME TOTALS summed across the readout's own substep count.
+    pub fn set_gpu_sample(&mut self, r: crate::gpu::GpuReadout) {
         self.timing_source = TimingSource::GpuTimestamp;
         self.gpu = Some(GpuSample {
             prep_ms: r.prep_ms,
@@ -256,7 +256,7 @@ impl Profiler {
             sections: r.sections,
             cg_cats: r.cg_cats,
             cg_iters: r.cg_iters,
-            substeps,
+            substeps: r.substeps,
             diffuse_alive: r.diffuse_alive,
             diffuse_emitted: r.diffuse_emitted,
             diffuse_clamped: r.diffuse_clamped,
@@ -372,7 +372,7 @@ impl Profiler {
             let diffuse_total = g.diffuse_alive[0];
             if diffuse_total > 0 || g.diffuse_emitted > 0 {
                 out.push_str(&format!(
-                    "│   foam alive       {}  emitted {}{}\n",
+                    "│   foam alive       {}  emitted {}  (compute outside timestamp total){}\n",
                     diffuse_total,
                     g.diffuse_emitted,
                     if g.diffuse_clamped > 0 {
@@ -460,7 +460,7 @@ impl Profiler {
                     String::new()
                 };
                 let diffuse = format!(
-                    r#","diffuse":{{"alive":{al},"foam":{fo},"spray":{sp},"bubble":{bu},"emitted":{em},"clamped":{cl}}}"#,
+                    r#","diffuse":{{"alive":{al},"foam":{fo},"spray":{sp},"bubble":{bu},"emitted":{em},"clamped":{cl},"compute_timed":false}}"#,
                     al = g.diffuse_alive[0],
                     fo = g.diffuse_alive[0],
                     sp = g.diffuse_alive[1],

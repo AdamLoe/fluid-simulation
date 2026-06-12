@@ -112,10 +112,9 @@ source/drain setting ids); `crates/fluid-lab/src/lib.rs → InteractionState`
 ## Optional features are deferred instead of exposed prematurely
 
 **Decision** — Split view, guided tour, pressure-comparison UI, pouring spout,
-source/drain, moving paddle, foam/spray, transparent/refractive material,
-replay/scrub, 128³, and dispatch-tiled particle counts are optional. None blocks a
-phase. Unstable or unfinished optional work is deferred or put behind an explicitly
-experimental plan, not shipped as a product-visible kill switch.
+source/drain, moving paddle, spray/bubbles, replay/scrub, and 128³ are optional.
+None blocks a phase. Unstable or unfinished optional work is deferred or put behind
+an explicitly experimental plan, not shipped as a product-visible kill switch.
 
 **Why** — These features are valuable only after the stable inspectable core exists.
 Treating them as required turns the project into a large graphics surface before the

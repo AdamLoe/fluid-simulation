@@ -14,12 +14,10 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT=5184
 
-# Tear down every running static server, any stale Vite dev server, and free the
-# canonical port. Safe to call when nothing is running.
+# Tear down only the process that owns the canonical port. Safe to call when
+# nothing is running.
 free_port() {
   echo "==> Freeing port $PORT…"
-  pkill -f 'http.server' 2>/dev/null || true
-  pkill -f vite 2>/dev/null || true
   fuser -k "${PORT}/tcp" 2>/dev/null || true
   sleep 0.5
 }

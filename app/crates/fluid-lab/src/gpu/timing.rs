@@ -91,6 +91,8 @@ pub struct Readout {
     pub render_ms: f32,
     pub liquid_cells: u32,
     pub valid: bool,
+    /// Substeps whose query slots were summed into this readout.
+    pub substeps: u32,
     /// Detailed mode only: per-section frame totals (ms), indexed by FINE_SECTIONS.
     /// All zero / `detailed=false` in coarse mode.
     pub detailed: bool,
@@ -398,6 +400,7 @@ impl GpuTimers {
                     render_ms,
                     liquid_cells: liquid,
                     valid: true,
+                    substeps: n_substeps,
                     detailed,
                     diffuse_alive: [d_foam, d_spray, d_bubble],
                     diffuse_emitted: d_emitted,

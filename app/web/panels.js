@@ -3,7 +3,8 @@
 //
 // NOTE on reset/reload-class settings: calling app.set_setting() updates the stored
 // value in the Rust side, but the running simulation only picks up "reset"-class
-// changes after app.reset() and "reload"-class changes after a full page reload.
+// changes after a successful app.reset() and "reload"-class changes after a full
+// page reload.
 // This module flags those rows with a badge so the user knows action is needed.
 // Live-class settings apply to the running sim immediately and need no badge.
 
@@ -513,8 +514,11 @@ function buildEnumRow(s, app, row, labelWrap, showPending = false) {
     persistCurrentSettings(app);
 
     if (autoReset) {
-      app.reset();
-      badge.style.display = "none";
+      if (app.reset()) {
+        badge.style.display = "none";
+      } else {
+        showApplyBadge(badge, s.apply);
+      }
     } else if (s.apply !== "live") {
       showApplyBadge(badge, s.apply);
     }
@@ -744,7 +748,7 @@ function buildProfilerPanel(container, app) {
             <span class="prof-key">Updates total</span>
             <span class="prof-val">${fmt(cg.updates_ms, 3)} ms</span>
           </div>
-          <div class="prof-note">CG categories are contiguous GPU passes: "reductions" is the d·q dot; the r·r dot is grouped into "updates".</div>
+          <div class="prof-note">CG categories are contiguous GPU passes: "reductions" includes d·q and r·r dot products; "updates" is the vector update pass.</div>
         `;
       }
     }
@@ -785,7 +789,9 @@ export function initPanels(app) {
         }
       }
     }
-    if (needsRebuild) app.reset();
+    if (needsRebuild && !app.reset()) {
+      console.warn("[panels] restored reset-class settings, but reset was rejected");
+    }
   }
 
   const tabs = deriveTabs(safeConfigJson(app));

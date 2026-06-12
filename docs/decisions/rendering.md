@@ -77,8 +77,8 @@ uniform.
 
 **Why** - The composite already does most of the material (thickness, smoothed front
 depth, reconstructed normal, Fresnel, Beer-Lambert absorption). A second top-level mode
-would duplicate that renderer. Keeping hero features Live keeps the ~150-control surface
-navigable with no reset and no pipeline rebuilds.
+would duplicate that renderer. Keeping hero features Live keeps the broad control
+surface navigable with no reset and no pipeline rebuilds.
 
 **Tradeoffs** - One composite shader grows in complexity and uniform size across the
 series instead of being split into independent pipelines. The old

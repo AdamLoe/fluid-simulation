@@ -80,9 +80,9 @@ strategy note, now migrated here and into `architecture/simulation.md`.
 ## Fixed/clamped physics timestep with substeps
 
 **Decision** — Physics runs on a fixed `dt = 1/120 s`; the browser render `dt` is
-clamped to ≤ `1/30 s` and fed to an accumulator that emits fixed steps (≤4 substeps
-per frame, dropped time tracked). Raw `requestAnimationFrame` delta is never consumed
-by advection.
+clamped to ≤ `1/30 s` and fed to an accumulator that emits fixed steps (default cap
+1 substep per frame, dropped time tracked). Raw `requestAnimationFrame` delta is
+never consumed by advection.
 
 **Why** — Advection and projection go unstable when a tab hitch, GC pause, or shader
 compile produces a huge `dt`. A fixed step also makes profiling and reproduction

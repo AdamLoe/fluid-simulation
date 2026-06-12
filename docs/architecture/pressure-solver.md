@@ -22,7 +22,7 @@ algorithm can be swapped without touching the surrounding sim loop.
 - The host reference implementation and tests (`app/crates/fluid-lab/src/sim/pressure.rs`).
 
 Divergence computation (`app/crates/fluid-lab/src/gpu/shaders/divergence.wgsl`) and the gradient-subtraction
-pass (`app/crates/fluid-lab/src/gpu/shaders/pressure.wgsl`, `record_finish`) are called immediately before
+pass (`app/crates/fluid-lab/src/gpu/shaders/gradient.wgsl`, `record_finish`) are called immediately before
 and after this subsystem but are **owned by the sim step** — see `simulation.md`.
 
 ## The solver: unpreconditioned Conjugate Gradient
@@ -58,7 +58,8 @@ init (p=0, r=b, d=b)
 **Dot products.** Each `dot` is a two-level tree reduction: `cg_reduce` produces one
 partial sum per workgroup into a scratch buffer; `cg_reduce_final` sums those into a
 single scalar slot. Fixed dispatch order → fixed-order floating-point summation →
-run-to-run deterministic on a given GPU.
+run-to-run deterministic on a given GPU. The tail of `cg_reduce` must branch before
+loading vector buffers; do not rely on WGSL `select` to mask out-of-range lanes.
 
 ## Non-obvious invariants and gotchas
 
@@ -86,6 +87,10 @@ L2 divergence sharply and beats Jacobi on the same reference case.
 dot-product reductions are fixed-order but still floating-point. This is a separate,
 compatible guarantee from the integer-atomic P2G determinism invariant (which must
 never introduce a float reduction — see `simulation.md` and `../decisions/simulation.md`).
+
+**Division guards are branches, not `select`.** `cg_alpha` and `cg_beta` explicitly
+branch around near-zero denominators before dividing. WGSL `select` is not a safe
+guard for arithmetic that would be invalid if both operands are evaluated.
 
 **Gradient subtraction and solid re-enforcement are not owned here.** After
 `record_pressure`, `record_finish` runs the gradient pass and `enforce` to zero solid

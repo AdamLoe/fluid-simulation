@@ -161,8 +161,12 @@ impl WaterSmoothRenderer {
     /// whenever the `render.hero.smooth_radius` Live setting changes.
     pub fn update_radius(&self, queue: &wgpu::Queue, radius: u32) {
         let (r, sigma) = radius_sigma(radius);
-        let ux = SmoothUniform { axis_radius: [1.0, 0.0, r, sigma] };
-        let uy = SmoothUniform { axis_radius: [0.0, 1.0, r, sigma] };
+        let ux = SmoothUniform {
+            axis_radius: [1.0, 0.0, r, sigma],
+        };
+        let uy = SmoothUniform {
+            axis_radius: [0.0, 1.0, r, sigma],
+        };
         queue.write_buffer(&self.uniform_x, 0, bytemuck::bytes_of(&ux));
         queue.write_buffer(&self.uniform_y, 0, bytemuck::bytes_of(&uy));
     }
@@ -333,8 +337,12 @@ impl ThicknessSmoothRenderer {
     /// Match the kernel to the (shared) `render.hero.smooth_radius` Live setting.
     pub fn update_radius(&self, queue: &wgpu::Queue, radius: u32) {
         let (r, sigma) = radius_sigma(radius);
-        let ux = SmoothUniform { axis_radius: [1.0, 0.0, r, sigma] };
-        let uy = SmoothUniform { axis_radius: [0.0, 1.0, r, sigma] };
+        let ux = SmoothUniform {
+            axis_radius: [1.0, 0.0, r, sigma],
+        };
+        let uy = SmoothUniform {
+            axis_radius: [0.0, 1.0, r, sigma],
+        };
         queue.write_buffer(&self.uniform_x, 0, bytemuck::bytes_of(&ux));
         queue.write_buffer(&self.uniform_y, 0, bytemuck::bytes_of(&uy));
     }

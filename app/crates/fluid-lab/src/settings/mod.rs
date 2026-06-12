@@ -1724,6 +1724,9 @@ impl Registry {
     /// Preserves the Value variant (U32 → round, F32 → as f32).
     /// Returns true if the id was found (regardless of clamping).
     pub fn set_value_f64(&mut self, id: &str, v: f64) -> bool {
+        if !v.is_finite() {
+            return false;
+        }
         if id == "render.hero.mode_enabled" {
             let mapped = if v == 0.0 { 0.0 } else { 1.0 };
             let mut accepted = false;
@@ -2024,6 +2027,10 @@ fn json_quote(s: &str) -> String {
 /// Format a f64 for JSON: use integer form if it is a whole number, otherwise
 /// 6 significant decimal places with trailing zeros stripped.
 fn fmt_f64(v: f64) -> String {
+    debug_assert!(
+        v.is_finite(),
+        "settings JSON cannot encode non-finite numbers"
+    );
     if v.fract() == 0.0 && v.abs() < 1.0e15 {
         format!("{}", v as i64)
     } else {
@@ -2101,6 +2108,31 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_setting_values_are_rejected() {
+        let mut registry = Registry::default();
+        let before = registry.flip_blend();
+
+        assert!(!registry.set_value_f64("physics.flip_blend", f64::NAN));
+        assert!(!registry.set_value_f64("physics.flip_blend", f64::INFINITY));
+        assert_eq!(registry.flip_blend(), before);
+
+        let json = registry.config_json();
+        assert!(!json.contains("NaN"));
+        assert!(!json.contains("inf"));
+    }
+
+    #[test]
+    fn finite_out_of_range_setting_values_are_clamped() {
+        let mut registry = Registry::default();
+
+        assert!(registry.set_value_f64("physics.cfl", 1.0e100));
+        assert_eq!(registry.f32_or("physics.cfl", 0.0), 6.0);
+
+        assert!(registry.set_value_f64("solver.pressure_iterations", 1.0e100));
+        assert_eq!(registry.u32_or("solver.pressure_iterations", 0), 200);
+    }
+
+    #[test]
     fn interaction_settings_are_live_default_controls() {
         let registry = Registry::default();
         let json = registry.config_json();
@@ -2125,6 +2157,29 @@ mod tests {
         assert!(!registry.wave_enabled());
         assert!((registry.auto_roll_strength() - 0.22).abs() < f32::EPSILON);
         assert!((registry.wave_strength() - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn reset_class_settings_stay_reset_class() {
+        let registry = Registry::default();
+        for id in [
+            "scene.preset",
+            "scene.drop_height",
+            "grid.res_x",
+            "grid.res_y",
+            "grid.res_z",
+            "particles.count",
+            "physics.fixed_dt",
+            "physics.max_substeps",
+            "dev.detailed_gpu_profiling",
+        ] {
+            let setting = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
+            assert_eq!(
+                setting.apply,
+                ApplyClass::Reset,
+                "{id} must remain Reset-class"
+            );
+        }
     }
 
     #[test]

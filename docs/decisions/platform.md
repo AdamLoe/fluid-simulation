@@ -20,15 +20,16 @@ gaps) and awkward WASM/browser debugging, in exchange for shareability.
 
 **Applies to** — `architecture/gpu-resources.md`, `architecture/web-shell.md`.
 
-## One Rust crate with modules, not a multi-crate workspace
+## One Rust crate with modules inside a small Cargo workspace
 
-**Decision** — The project is a single crate (`fluid-lab`) with internal modules
-(`sim`, `gpu`, `scene`, `settings`, `profiler`), not a multi-crate workspace.
+**Decision** — The app workspace currently contains one product crate (`fluid-lab`)
+with internal modules (`sim`, `gpu`, `scene`, `settings`, `profiler`), not a
+multi-crate package split.
 
-**Why** — A multi-crate split is premature modularization for a solo build: it adds
-workspace wiring and cross-crate visibility friction before any code exists, and the
-boundaries are guesses until the code is real. Modules promote to crates trivially
-later if compile times or reuse actually force it.
+**Why** — A multi-crate package split is premature modularization for a solo build:
+it adds cross-crate visibility friction before the boundaries are proven. The
+top-level `app/Cargo.toml` workspace is just the build root; modules can promote to
+additional crates later if compile times or reuse actually force it.
 
 **Tradeoffs** — Slightly less enforced separation early, far less scaffolding; the
 split can happen later from evidence instead of up-front speculation.
@@ -53,7 +54,7 @@ complexity. The CPU reference earns its keep purely as host-testable algorithm s
 ## React is optional scaffolding, not a core dependency
 
 **Decision** — The simulator does not require React. The web shell is minimal
-TypeScript/HTML; React may wrap the shell only if the surrounding portfolio site
+JavaScript/HTML; React may wrap the shell only if the surrounding portfolio site
 already uses it.
 
 **Why** — The hard part is Rust/WASM/WebGPU; a frontend framework must not become a

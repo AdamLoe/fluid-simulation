@@ -329,7 +329,12 @@ impl ParticleRenderer {
                 self.fast_color[2],
                 0.0,
             ],
-            extra: [self.edge_inner, self.shading, self.volume_scale, self.splat_scale.max(0.0)],
+            extra: [
+                self.edge_inner,
+                self.shading,
+                self.volume_scale,
+                self.splat_scale.max(0.0),
+            ],
         };
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&u));
     }

@@ -421,21 +421,23 @@ impl GpuContext {
         scene: &SceneConfig,
     ) -> Result<(), String> {
         let estimated = fluid::estimated_particle_count(settings, scene);
-        self.requested_particles = settings.particle_count();
-        self.estimated_particles = estimated;
+        let requested_particles = settings.particle_count();
         let dispatch_limit = self.max_particle_dispatch_count();
         let storage_limit = self.max_particle_storage_count();
         if let Err(e) = validate_particle_scale(
-            self.requested_particles,
+            requested_particles,
             estimated,
             self.caps.max_compute_workgroups_per_dimension,
             storage_limit,
         ) {
-            self.scale_status = if estimated > dispatch_limit {
+            let status = if estimated > dispatch_limit {
                 "rejected-dispatch-capacity"
             } else {
                 "rejected-storage-binding-limit"
             };
+            log(&format!(
+                "[fluid-lab][scale] rejected reset preflight: {status}"
+            ));
             return Err(e);
         }
         let fluid = fluid::GpuFluid::new(
@@ -537,6 +539,8 @@ impl GpuContext {
             grid_nz,
             self.fluid.particle_count()
         ));
+        self.requested_particles = requested_particles;
+        self.estimated_particles = estimated;
         self.scale_status = "ok";
         Ok(())
     }
@@ -798,6 +802,12 @@ impl GpuContext {
 
     pub fn gpu_timing(&self) -> Option<GpuReadout> {
         self.timers.as_ref().map(|t| t.latest())
+    }
+
+    pub fn set_frame_substeps(&self, substeps: u32) {
+        if let Some(t) = &self.timers {
+            t.set_frame_substeps(substeps);
+        }
     }
 
     /// Advance the simulation by `substeps` fixed physics steps. Each substep is

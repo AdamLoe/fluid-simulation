@@ -12,8 +12,8 @@ The app shell owns the WASM/JS boundary, the per-frame dispatch loop, the fixed-
 
 ## What it owns
 
-- **WASM entry struct** — `app/crates/fluid-lab/src/lib.rs → FluidApp` (wasm-bindgen exported). One instance per canvas; TypeScript constructs it async and drives it via `rAF`.
-- **Frame entry point** — `app/crates/fluid-lab/src/lib.rs → FluidApp::frame`. Receives raw browser rAF delta (ms), hands it to the timestep controller, calls `gpu.step(n)`, then renders.
+- **WASM entry struct** — `app/crates/fluid-lab/src/lib.rs → FluidApp` (wasm-bindgen exported). One instance per canvas; the web shell constructs it async and drives it via `rAF`.
+- **Frame entry point** — `app/crates/fluid-lab/src/lib.rs → FluidApp::frame`. Receives browser rAF delta (ms), sanitizes non-finite/negative input to a non-negative finite value, hands it to the timestep controller, calls `gpu.step(n)`, then renders.
 - **Fixed-timestep accumulator** — `app/crates/fluid-lab/src/timestep.rs → TimestepController`. Pure Rust, unit-tested natively.
 - **Orbit camera** — `app/crates/fluid-lab/src/camera.rs → OrbitCamera`. Quaternion-based yaw/pitch; no up-vector clamp.
 - **Tank transform** — `box_orient: glam::Quat` + `box_pos: glam::Vec3` fields on `FluidApp`; mutated by cube pointer methods.
@@ -25,7 +25,7 @@ The app shell owns the WASM/JS boundary, the per-frame dispatch loop, the fixed-
 ## Frame loop
 
 ```
-rAF delta_ms (TS)
+rAF delta_ms (web shell)
   └─ FluidApp::frame
        ├─ update_interactions(clamped_s) [Running only]
        ├─ timestep.steps_for_frame(clamped_s) → n
@@ -34,11 +34,11 @@ rAF delta_ms (TS)
        └─ profiler.end_frame_and_maybe_log
 ```
 
-TypeScript owns `requestAnimationFrame`; Rust owns all scheduling. TS never drives sim frames independently.
+The web shell owns `requestAnimationFrame`; Rust owns all scheduling. JavaScript never drives sim frames independently.
 
 ## Timestep accumulator
 
-`app/crates/fluid-lab/src/timestep.rs → TimestepController::steps_for_frame`:
+`app/crates/fluid-lab/src/timestep.rs → TimestepController::steps_for_frame` receives only finite, non-negative seconds from `FluidApp::frame`:
 
 1. Clamps incoming render dt to `MAX_RENDER_DT_S` = 1/30 s before accumulation — a single browser hitch cannot produce unbounded sim work.
 2. Drains the accumulator in `fixed_dt` (default 1/120 s) chunks.
@@ -98,7 +98,12 @@ Particle placement within each block uses a deterministic seeded jitter (`app/cr
 
 **Gravity follows tank orientation.** `push_gravity` (`app/crates/fluid-lab/src/lib.rs → FluidApp::push_gravity`) converts the world-down vector into the tank's local frame via `box_orient.inverse() * world_g` and sends it to the GPU. Every rotation and reset calls `push_gravity`. If you mutate `box_orient` without calling `push_gravity`, the GPU gravity vector is stale.
 
-**Reset restores the full pose.** `FluidApp::reset` sets `box_orient = Quat::IDENTITY`, `box_pos = Vec3::ZERO`, reconstructs `OrbitCamera::new()` then restores its pitch/yaw/roll **and distance** from the `camera.*` settings, and finally calls `push_gravity`. A Reset always returns the tank to upright, centered, untilted, with the settings-defined camera pose — gravity points straight down again.
+**Reset is staged around GPU rebuild success.** `FluidApp::reset` builds the new `SceneConfig` and calls `GpuContext::recreate_fluid` before mutating app-visible reset state. If GPU preflight rejects the requested scale, the current fluid, tick, schedules, pose, profiler window, and reset counter remain intact.
+The method returns `false` for rejected resets and `true` after the rebuild and
+app-state commit succeed; JS callers must not rerender/reset UI state as though a
+failed reset applied.
+
+**A successful reset restores the full pose.** After `recreate_fluid` succeeds, `FluidApp::reset` sets `box_orient = Quat::IDENTITY`, `box_pos = Vec3::ZERO`, reconstructs `OrbitCamera::new()` then restores its pitch/yaw/roll **and distance** from the `camera.*` settings, and finally calls `push_gravity`. A successful Reset always returns the tank to upright, centered, untilted, with the settings-defined camera pose — gravity points straight down again.
 
 **Auto-roll is bounded tank motion, not camera spin.** The app generates target tank poses in Rust and clamps them by `interaction.auto_roll_strength`. It never changes `OrbitCamera`.
 
@@ -106,7 +111,7 @@ Particle placement within each block uses a deterministic seeded jitter (`app/cr
 
 **Accumulator must be zeroed on pause.** The frame loop calls `timestep.reset()` every paused frame. Forgetting this would let the accumulator silently fill during a pause and burst multiple substeps on resume.
 
-**`set_setting` has two return semantics.** Returns `true` only for `Live`-class settings (change applied to GPU immediately). Returns `false` for `Reset`- and `Reload`-class settings, meaning the registry was updated but the caller must prompt the user to reset/reload. The web panel uses this return value to show the hint badge.
+**`set_setting` has two return semantics.** Returns `true` only for accepted `Live`-class settings (change applied to GPU immediately). Returns `false` for accepted `Reset`- and `Reload`-class settings, meaning the registry was updated but the caller must prompt the user to reset/reload. Non-finite input is rejected before the registry changes and also returns `false`. Finite out-of-range input is clamped by the registry before any live GPU update uses it. The web panel uses this return value to show the hint badge, so rejected values must also be logged.
 
 **`box_pos` is clamped.** `move_box` and `slosh_box` both clamp `box_pos` to `[-3, 3]^3` so the tank cannot escape the camera frustum entirely.
 
@@ -130,7 +135,7 @@ Particle placement within each block uses a deterministic seeded jitter (`app/cr
 
 - `simulation.md` — GPU solver and substep internals that `gpu.step(n)` drives
 - `gpu-resources.md` — WebGPU surface, pipeline, and `GpuContext` ownership
-- `../decisions/platform.md` — why TypeScript owns rAF and Rust owns scheduling
+- `../decisions/platform.md` — why the web shell owns rAF and Rust owns scheduling
 - `../decisions/scope.md` — the typed scene config / scenarios-are-later rationale
 - `../decisions/performance.md` — fixed-dt and substep-cap rationale
 - `../agent-context/maintaining-docs.md`

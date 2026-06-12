@@ -17,9 +17,9 @@ names it under `Applies to`.
 | True 3D MAC grid, hybrid FLIP/PIC, fixed-point integer-atomic P2G & determinism, fixed/clamped timestep | [`simulation.md`](simulation.md) |
 | Pressure projection as core, replaceable solver, why CG over Jacobi, boundary conventions | [`pressure.md`](pressure.md) |
 | GPU-native no-readback views, screen-space water, optical/simple particle and liquid-cell inspection, multi-pass rendering, separate particle/grid representations | [`rendering.md`](rendering.md) |
-| 32³/64³/128³ targets, one preset until 1.5, SoA buffers, per-stage storage-buffer limit, 1M-particle stretch, render-cost/memory policy | [`performance.md`](performance.md) |
+| 32³/64³/128³ targets, measured preset/tier policy, SoA buffers, per-stage storage-buffer limit, 1M-particle stretch, render-cost/memory policy | [`performance.md`](performance.md) |
 | Observability-first product, schema-driven config registry, apply classes, hierarchical/timing-honest profiler | [`observability.md`](observability.md) |
-| Rust+WASM+WebGPU, single crate not workspace, tiny disposable CPU reference, React optional, the no-bundler web path | [`platform.md`](platform.md) |
+| Rust+WASM+WebGPU, one product crate in the app workspace, tiny disposable CPU reference, React optional, the no-bundler web path | [`platform.md`](platform.md) |
 | Bounded tank vs ocean, fluid-lab direction, scenarios are 1.x, source/drain deferred, optional features are not blockers | [`scope.md`](scope.md) |
 
 ## See also

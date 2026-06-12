@@ -51,9 +51,9 @@ The canonical shell is **`web/index.html`**, so the bare `/` serves it under any
 (it is the default directory index — no path remap). `run.sh` wraps `http.server` only to
 add **no-cache headers**, so an ordinary browser reload always picks up the freshly built
 `.wasm` — no Ctrl-Shift-R, and you never put a filename in the URL or start a server by
-hand. Port **5184 is the one fixed web port**; `run.sh` frees it (killing any stale
-`http.server` or Vite instance) before serving, so there is never a second instance to
-manage.
+hand. Port **5184 is the one fixed web port**; `run.sh` frees only listeners on that
+port before serving, so there is never a second instance to manage without killing
+unrelated development servers.
 
 Do **not** hand-run `python3 -m http.server` — that skips the rebuild, the port-free, and
 the no-cache headers (it serves the right `index.html` at `/`, but caches the `.wasm`),
@@ -79,7 +79,7 @@ You only need these when debugging the loop or running a single piece in isolati
    cd /home/adamg/fluid-simulation/app && cargo build --target wasm32-unknown-unknown
    ```
 
-2. **Free port 5184:** `pkill -f 'http.server'; pkill -f vite; fuser -k 5184/tcp`.
+2. **Free port 5184:** `fuser -k 5184/tcp` if something is listening there.
 
 3. **Serve `app/web/`** via the no-cache `python3 -c` handler (not a bare
    `python3 -m http.server`, which caches the `.wasm`). The bare `/` resolves to
@@ -94,7 +94,9 @@ use Vite. See [`../architecture/web-shell.md`](../architecture/web-shell.md).
 
 The capture harness drives real **Windows** Chrome headless against the dev server and is
 the one acceptance signal that can't be faked — it writes a screenshot **plus** the
-page console. It must run under **Windows** node + Windows Chrome:
+page console and exits non-zero for missing WebGPU, page/request errors, missing
+stats, rejected requested reset setup, or boot smoke-test failure. It must run under
+**Windows** node + Windows Chrome:
 
 - **WSL node cannot launch Windows Chrome** — the puppeteer process pipe doesn't cross
   the OS boundary (it fails with "Failed to launch the browser process").
@@ -125,9 +127,10 @@ default `C:/Program Files/Google/Chrome/Application/chrome.exe`; pass `""` to ke
 default while providing later args. The optional `evalJs` arg is the CLI equivalent of
 `EVAL` and is useful when cross-shell env quoting is brittle. The optional viewport args
 override the default `1280x800` viewport. Env hooks:
-`PARTICLES=N` applies an exact requested particle count and resets; `DETAILED=1`
-enables detailed GPU profiling before that reset; `MEASURE_WAIT=ms` controls the
-post-reset sample window. `DRAG=1` exercises the orbit camera; `EVAL=...` runs a JS
+`PARTICLES=N` applies an exact integer requested particle count and resets; invalid
+values or rejected resets fail the capture. `DETAILED=1` enables detailed GPU
+profiling before that reset; `MEASURE_WAIT=ms` controls the post-reset sample window.
+`DRAG=1` exercises the orbit camera; `EVAL=...` runs a JS
 expression against `window.__fluid`; `FRAMES` / `FRAME_INTERVAL` capture a sequence;
 `SEQ_RESET` exercises repeated resets. Every run records a final machine-readable
 `stats_json` line. A console line `hasGpu: false` means the screenshot is the

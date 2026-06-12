@@ -20,7 +20,7 @@ Load only the subsystem doc that matches the task. For rationale, follow the doc
 | GPU-native screen-space water, optical/simple particle rendering, tank-wireframe, and grid-slice views; water pass order and no-normal-frame-readback rules | [`rendering.md`](rendering.md) |
 | The hierarchical, config-tagged, timing-source-honest profiler + GPU timestamp queries | [`profiler.md`](profiler.md) |
 | The typed config registry, apply classes (live/reset/reload), the JS bridge | [`settings.md`](settings.md) |
-| The thin TS/HTML web shell, the two entry paths, the rendered config/profiler panels, the capture harness | [`web-shell.md`](web-shell.md) |
+| The thin JS/HTML web shell, the legacy TS stub, the rendered config/profiler panels, the capture harness | [`web-shell.md`](web-shell.md) |
 
 ## See also
 

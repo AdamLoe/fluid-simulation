@@ -8,5 +8,9 @@
 @compute @workgroup_size(1)
 fn main() {
     let dq = cg_scalars[1];
-    cg_scalars[2] = select(0.0, cg_scalars[0] / dq, abs(dq) > 1e-30);
+    if (abs(dq) > 1e-30) {
+        cg_scalars[2] = cg_scalars[0] / dq;
+    } else {
+        cg_scalars[2] = 0.0;
+    }
 }

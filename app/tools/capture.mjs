@@ -1,7 +1,7 @@
 // Browser capture harness for visible-win evidence and checkpoint bundles.
 //
 // Runs on the WINDOWS side (real-GPU Chrome) via puppeteer-core, pointed at the
-// Vite dev server running inside WSL. Captures: console output (incl. the Rust
+// static dev server running inside WSL. Captures: console output (incl. the Rust
 // boot diagnostics, smoke-test result, and profiler logs), page errors, and a
 // PNG screenshot of the canvas after a warm-up period.
 //
@@ -23,7 +23,7 @@ import puppeteer from "puppeteer-core";
 // not the cwd. Keeps screenshots out of app/tools/ (which is tracked by git).
 const CAPTURES_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../captures");
 
-const url = process.argv[2] || "http://localhost:5173/";
+const url = process.argv[2] || "http://localhost:5184/";
 const outArg = process.argv[3] || "capture.png";
 // Bare filename → captures/; an explicit path (has a separator or is absolute) is
 // respected as-is (relative to cwd).
@@ -49,6 +49,8 @@ const viewportWidth = parseInt(process.env.VIEWPORT_WIDTH || process.argv[7] || 
 const viewportHeight = parseInt(process.env.VIEWPORT_HEIGHT || process.argv[8] || "800", 10);
 
 const consoleLines = [];
+const pageErrors = [];
+const requestFailures = [];
 
 function record(line) {
   consoleLines.push(line);
@@ -72,10 +74,15 @@ try {
   await page.setViewport({ width: viewportWidth, height: viewportHeight, deviceScaleFactor: 1 });
 
   page.on("console", (msg) => record("[console:" + msg.type() + "] " + msg.text()));
-  page.on("pageerror", (err) => record("[pageerror] " + err.message));
-  page.on("requestfailed", (req) =>
-    record("[requestfailed] " + req.url() + " " + (req.failure()?.errorText || "")),
-  );
+  page.on("pageerror", (err) => {
+    pageErrors.push(err.message);
+    record("[pageerror] " + err.message);
+  });
+  page.on("requestfailed", (req) => {
+    const line = req.url() + " " + (req.failure()?.errorText || "");
+    requestFailures.push(line);
+    record("[requestfailed] " + line);
+  });
 
   record("[harness] navigating to " + url);
   await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
@@ -84,6 +91,9 @@ try {
   // Repeatable scale/profiler measurement path. Keep this separate from EVAL so
   // Windows cmd.exe quoting cannot silently drop the requested configuration.
   if (process.env.PARTICLES || process.env.DETAILED === "1") {
+    if (process.env.PARTICLES && !/^\d+$/.test(process.env.PARTICLES)) {
+      throw new Error("PARTICLES must be an integer");
+    }
     const requestedParticles = process.env.PARTICLES
       ? parseInt(process.env.PARTICLES, 10)
       : null;
@@ -97,7 +107,8 @@ try {
         if (detailed) {
           window.__fluid.set_setting("dev.detailed_gpu_profiling", 1);
         }
-        window.__fluid.reset();
+        const resetOk = window.__fluid.reset();
+        if (!resetOk) throw new Error("requested reset was rejected");
         return { requestedParticles, detailed };
       },
       { requestedParticles, detailed },
@@ -162,6 +173,16 @@ try {
   record("[harness] stats_json: " + JSON.stringify(stats));
 
   writeFileSync(outPng + ".console.txt", consoleLines.join("\n") + "\n");
+  const smokeFailed = consoleLines.some((line) => line.includes("[fluid-lab][smoke] FAIL"));
+  const failures = [];
+  if (!gpu.hasGpu) failures.push("navigator.gpu is false");
+  if (stats == null) failures.push("stats_json unavailable");
+  if (pageErrors.length > 0) failures.push(`${pageErrors.length} page error(s)`);
+  if (requestFailures.length > 0) failures.push(`${requestFailures.length} failed request(s)`);
+  if (smokeFailed) failures.push("WebGPU smoke test failed");
+  if (failures.length > 0) {
+    throw new Error("capture failed acceptance checks: " + failures.join(", "));
+  }
 } finally {
   await browser.close();
 }

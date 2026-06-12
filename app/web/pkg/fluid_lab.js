@@ -3,7 +3,7 @@
 //#region exports
 
 /**
- * The single WASM-exported application object. TypeScript constructs one of
+ * The single WASM-exported application object. The web shell constructs one of
  * these per canvas and calls [`FluidApp::frame`] from its rAF loop.
  */
 export class FluidApp {
@@ -102,8 +102,8 @@ export class FluidApp {
     }
     /**
      * Single frame entry point. `render_dt_ms` is the browser rAF delta in
-     * milliseconds. Simulation stepping (added in later phases) must clamp this;
-     * 0.1 only advances a logical tick counter when not paused.
+     * milliseconds. The browser value is sanitized at the bridge before the fixed
+     * timestep controller consumes it.
      * @param {number} render_dt_ms
      */
     frame(render_dt_ms) {
@@ -130,10 +130,14 @@ export class FluidApp {
         _assertNum(this.__wbg_ptr);
         wasm.fluidapp_move_box(this.__wbg_ptr, dx, dy);
     }
+    /**
+     * @returns {boolean}
+     */
     reset() {
         if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
         _assertNum(this.__wbg_ptr);
-        wasm.fluidapp_reset(this.__wbg_ptr);
+        const ret = wasm.fluidapp_reset(this.__wbg_ptr);
+        return ret !== 0;
     }
     /**
      * @returns {number}

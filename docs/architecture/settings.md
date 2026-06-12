@@ -20,12 +20,14 @@ optional help copy, and `ApplyClass`. `settings_tab` maps each visible row to a
 registry-owned tab (`tab`, `tab_label`, `tab_order`, `tab_group`, `tab_variant`) in
 `config_json`.
 
-`config_json()` emits visible settings only. Optional fields include `tooltip`,
-`technical_tooltip`, `options`, and `slider_scale`.
+`config_json()` emits registry rows with visibility and tab metadata. The web panel
+renders only visible durable rows and skips hidden scheduler/compatibility controls.
+Optional fields include `tooltip`, `technical_tooltip`, `options`, and
+`slider_scale`.
 
-`set_setting(id, value)` validates and stores through the registry. Live settings
-push directly into app/GPU state and return `true`; Reset/Reload settings store the
-value and return `false`.
+`set_setting(id, value)` rejects non-finite numbers, then validates and stores finite
+values through the registry. Live settings push directly into app/GPU state and
+return `true`; Reset/Reload settings store the value and return `false`.
 
 ## Functional tabs
 
@@ -92,7 +94,8 @@ walk visible non-default rows only, so removed ids drop out naturally.
 ## Gotchas
 
 - Registry lookups and mutations are by id, not row index.
-- `set_value_f64` clamps values instead of rejecting them.
+- `set_value_f64` rejects non-finite values, then clamps finite values to the row's
+  declared bounds.
 - U32 settings round incoming f64s before storage; F32 settings cast to f32.
 - Hidden scheduler booleans (`interaction.auto_roll_enabled`,
   `interaction.wave_enabled`) are real settings but not visible durable preferences.

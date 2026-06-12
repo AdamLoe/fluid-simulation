@@ -44,13 +44,14 @@ exchange for developing against real GPU constraints sooner.
 
 **Applies to** — `architecture/simulation.md`, `architecture/gpu-resources.md`.
 
-## Run exactly one preset until the human-facing pass; tiers are 1.5 work
+## Keep tiers as measurement output, not a runtime system
 
-**Decision** — There is one active preset path; low/default/high tier labels are
-measurement outputs, not a runtime system.
+**Decision** — Scene presets may exist as authored Reset-class scenarios, but
+low/default/high tier labels remain measurement outputs, not a runtime system.
 
 **Why** — Tiers are only meaningful once measurements exist and a human is choosing.
-Building a tier system earlier serves no consumer.
+Building a tier system earlier serves no consumer; authored scene presets are a
+separate product affordance, not a performance-tier architecture.
 
 **Applies to** — `architecture/settings.md`, `architecture/gpu-resources.md`.
 
@@ -187,8 +188,8 @@ forcing a second surface representation.
 
 **Tradeoffs** — The path now owns persistent screen-sized render targets in addition
 to simulation buffers, and render timing is a coarse multi-pass total rather than one
-draw-pass cost. Refraction remains deferred because it would add a sampleable
-scene-color target and only pays off with visible scene detail to distort.
+draw-pass cost. Refraction samples the offscreen scene-color prepass; the scene-color
+target and visible scene detail make that cost legible.
 
 **Applies to** — `architecture/rendering.md`, `architecture/gpu-resources.md`,
 `architecture/profiler.md`.

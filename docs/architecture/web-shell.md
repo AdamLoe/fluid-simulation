@@ -30,7 +30,8 @@ index.html -> main.js -> panels.js
   `?slicemode=N`.
 - Exposing `window.__fluidShell` helpers for captures:
   `openSettings`, `selectSettingsTab`, `selectProductMode`, `selectControlTarget`,
-  `reset`, and `state`, plus backward-compatible workspace aliases.
+  `reset`, and `state`, plus backward-compatible workspace aliases. `reset` returns
+  the underlying `FluidApp::reset` boolean.
 
 ## Canonical shell
 
@@ -90,8 +91,10 @@ Useful environment hooks: `EVAL`, `EVAL_WAIT`, `VIEWPORT_WIDTH`,
 `VIEWPORT_HEIGHT`, `PARTICLES`, `DETAILED`, `DRAG`, `FRAMES`, `FRAME_INTERVAL`,
 and `SEQ_RESET`.
 
-If `navigator.gpu` is false, the screenshot is the unsupported overlay and is not
-valid visual evidence.
+The harness exits non-zero when WebGPU is unavailable, `stats_json` is missing, page
+errors/request failures occur, requested reset setup is rejected, or the boot smoke
+test reports failure. If `navigator.gpu` is false, the screenshot is the unsupported
+overlay and is not valid visual evidence.
 
 ## Gotchas
 

@@ -8,6 +8,10 @@
 fn main() {
     let rs_old = cg_scalars[0];
     let rs_new = cg_scalars[1];
-    cg_scalars[3] = select(0.0, rs_new / rs_old, rs_old > 1e-30);
+    if (rs_old > 1e-30) {
+        cg_scalars[3] = rs_new / rs_old;
+    } else {
+        cg_scalars[3] = 0.0;
+    }
     cg_scalars[0] = rs_new;
 }

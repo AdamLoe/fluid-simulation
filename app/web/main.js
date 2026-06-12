@@ -1,6 +1,5 @@
-// Plain-JS entry for static serving (Python http.server) - bypasses the bundler
-// for verification/capture. Mirrors src/main.ts. The Vite/TS path remains the
-// canonical build; this is the no-dependency verification path.
+// Canonical static entry for local verification/capture and production serving.
+// The old Vite/TS stub is not loaded by index.html.
 //
 // URL params for capture control: ?pressure=off  ?paused=1
 // Exposes window.__fluid and window.__fluidShell so the capture harness can drive controls.
@@ -43,14 +42,23 @@ function sizeCanvas(canvas) {
 }
 
 async function loadVersionLabel() {
-  try {
-    const res = await fetch("./package.json", { cache: "no-store" });
-    if (!res.ok) return "";
-    const pkg = await res.json();
-    return pkg && pkg.version ? `v${pkg.version}` : "";
-  } catch {
-    return "";
+  for (const path of ["./pkg/package.json", "./package.json"]) {
+    try {
+      const res = await fetch(path, { cache: "no-store" });
+      if (!res.ok) continue;
+      const pkg = await res.json();
+      if (pkg && pkg.version) return `v${pkg.version}`;
+    } catch {}
   }
+  return "";
+}
+
+function finiteParam(params, name) {
+  const raw = params.get(name);
+  if (raw === null) return null;
+  if (raw.trim() === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
 }
 
 function setPauseButtonState(button, paused) {
@@ -78,11 +86,10 @@ async function main() {
     showUnsupported("navigator.gpu is missing - WebGPU is not supported in this browser.");
     return;
   }
-  sizeCanvas(canvas);
-  await init();
-
   let app;
   try {
+    sizeCanvas(canvas);
+    await init();
     app = await FluidApp.create(canvas);
   } catch (e) {
     showUnsupported("WebGPU initialization failed: " + String(e));
@@ -97,9 +104,11 @@ async function main() {
   const panelApi = initPanels(app);
   const params = new URLSearchParams(location.search);
   if (params.get("pressure") === "off") app.set_pressure_enabled(false);
-  if (params.get("flip") !== null) app.set_flip_blend(parseFloat(params.get("flip")));
+  const flip = finiteParam(params, "flip");
+  if (flip !== null) app.set_flip_blend(flip);
   if (params.get("slice") === "1") app.set_slice_enabled(true);
-  if (params.get("slicemode") !== null) app.set_slice_mode(parseInt(params.get("slicemode"), 10));
+  const sliceMode = finiteParam(params, "slicemode");
+  if (sliceMode !== null) app.set_slice_mode(Math.trunc(sliceMode));
 
   let productMode = "autoRotate";
   let controlTarget = "camera";
@@ -167,9 +176,10 @@ async function main() {
   });
 
   function resetSimulation() {
-    app.reset();
+    if (!app.reset()) return false;
     applyProductMode(productMode);
     panelApi?.rerender();
+    return true;
   }
 
   resetBtn.addEventListener("click", resetSimulation);
@@ -295,7 +305,7 @@ async function main() {
       setControlTarget(alias);
     },
     reset() {
-      resetSimulation();
+      return resetSimulation();
     },
     state() {
       return {
@@ -314,4 +324,4 @@ async function main() {
   console.log("[fluid-lab] shell running (static).");
 }
 
-main();
+main().catch((e) => showUnsupported("Application startup failed: " + String(e)));

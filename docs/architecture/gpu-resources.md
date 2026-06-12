@@ -74,10 +74,12 @@ or particle changes rebuild `GpuFluid` and renderers that bind sim buffers.
 
 ## Reset and resize
 
-`GpuContext::recreate_fluid` rebuilds the simulation, wireframe/environment geometry,
+`GpuContext::recreate_fluid` preflights the requested particle scale before mutating
+the active scale facts, then rebuilds the simulation, wireframe/environment geometry,
 particle renderer, slice renderer, and diffuse system against fresh sim buffers.
-Rebuilding `DiffuseSystem` clears foam particles. `GpuTimers` is also rebuilt when
-timestamp queries are available.
+Rejected recreates leave the active fluid and reported scale facts intact except for a
+log line describing the rejected request. Rebuilding `DiffuseSystem` clears foam
+particles. `GpuTimers` is also rebuilt when timestamp queries are available.
 
 `resize` recreates the surface-sized targets and rebinds smoothing/composite views.
 There are no temporal or caustic stable-view rebinding paths.

@@ -1,10 +1,10 @@
-// Thin TypeScript shell (Phase 0.1).
+// Orphaned legacy TypeScript shell. The live app uses web/main.js + panels.js.
 //
 // Responsibilities, kept deliberately minimal (orchestrator_rules.md Rule 9):
 //   - feature-detect WebGPU and show a clean unsupported message,
 //   - load the wasm module and construct the single Rust `FluidApp`,
 //   - own requestAnimationFrame and call `app.frame(dt)` (frame-loop ownership:
-//     TS drives rAF; Rust owns all sim state),
+//     JavaScript drives rAF; Rust owns all sim state),
 //   - forward pause/reset/step and camera pointer input to Rust,
 //   - keep the canvas sized to the device pixel ratio.
 

@@ -5,21 +5,21 @@ hybrid particle-grid (FLIP/PIC) liquid simulation that runs on the GPU via WebGP
 exposes its internal pipeline — particles, MAC grid, divergence, pressure, velocity,
 and liquid-cell slices — as inspectable render modes with a live config panel and a
 real-GPU-timestamp profiler. It is one Rust crate compiled to WASM plus a thin
-TypeScript shell.
+vanilla JavaScript shell.
 
 ## Shape
 
 ```
  Browser tab
  ┌─────────────────────────────────────────────────────────────┐
- │  web shell (thin TS/HTML, no framework)                      │
+ │  web shell (thin JS/HTML, no framework)                      │
  │    index.html + main.js + panels.js   ← canonical path       │
  │    config panel · profiler panel   (rendered from the bridge)│
  │                    │  config_json / set_setting / stats_json │
  │                    ▼                                          │
  │  WASM module (fluid-lab crate)                               │
  │    lib.rs  FluidApp — rAF frame loop, pointer modes (orbit/rotate/roll/slosh), bridge  │
- │     │  timestep accumulator (fixed dt=1/120, ≤4 substeps)    │
+ │     │  timestep accumulator (fixed dt=1/120, default cap 1)  │
  │     ▼                                                        │
  │    per substep:  clear → mark/classify → P2G (i32 atomics)  │
  │       → normalize → forces → boundaries → divergence        │
@@ -46,7 +46,7 @@ relative to it. (The Rust crate manifest is `app/Cargo.toml`; its source is `app
   `scene` (typed scene config), `settings` (config registry), `profiler`, plus
   `lib.rs` (the WASM app + frame loop) and `camera.rs` / `timestep.rs`. WGSL compute &
   render shaders live in `app/crates/fluid-lab/src/gpu/shaders/`.
-- **Web shell** (`app/web/`): thin TypeScript/HTML. The verified path is the no-bundler
+- **Web shell** (`app/web/`): thin JavaScript/HTML. The verified path is the no-bundler
   static path (`index.html` + `main.js` + `panels.js`); an orphaned Vite/TS stub
   (`src/main.ts`) exists but nothing loads it.
 - **Capture harness** (`app/tools/capture.mjs`): headless real-GPU Chrome that writes a
@@ -62,8 +62,8 @@ relative to it. (The Rust crate manifest is `app/Cargo.toml`; its source is `app
 
 ## Hard-to-grep facts
 
-- **Builds must run inside WSL** (`wsl.exe -d Ubuntu-24.04 -- bash -lc '…'`); the
-  agent's shell is Windows over the `\\wsl.localhost\` share. See
+- **Builds must run inside WSL**. In this environment the agent shell is already WSL,
+  so commands run directly from `app/`; Windows shells need the documented wrapper. See
   [agent-context/build-run.md](agent-context/build-run.md).
 - Toolchain: **wgpu 29 · wasm-pack 0.15 · rustc/cargo ~1.95 · node 20 (WSL) / 24
   (Windows)**.
