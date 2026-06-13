@@ -5,12 +5,44 @@ last_updated:  2026-06-13
 okay_to_delete: false
 phase_3_designed: true
 phase_3_implemented: true
-phase_3_shipped: false
+phase_3_shipped: true
+phase_4_implemented: true
+phase_4_shipped: true
 long_lived:    false
 owning_docs:
   - architecture/simulation.md
   - decisions/performance.md
 ---
+
+## Phase 3 + 4 SHIPPED (2026-06-13) — spatial sort + workgroup-local scatter, NET WIN, default ON
+
+The Phase-3 spatial sort's high-count regression (sorted particles serializing the
+plain scatter's same-address global atomics) is fixed by **Phase 4: workgroup-local
+scatter pre-accumulation** (`scatter_local.wgsl`). On the sorted path each workgroup
+pre-accumulates its 64 particles' P2G taps into an 8 KB shared-memory open-addressed
+hash table (CAP=1024 i32 keys + 1024 i32 vals, keyed by packed global face slot),
+then flushes ONE global atomic per touched slot (table-full → direct global atomic).
+Pure i32 fixed-point through accumulate AND flush → bit-identical. Both scatter
+pipelines share one explicit bind-group layout so `scatter_bg` drives either; gated
+on `sort_enabled` (the unsorted path keeps the plain `scatter.wgsl`).
+
+- **Determinism: PASS, 0-pixel-diff** sorted+local vs unsorted on the order-independent
+  `render.hero.debug_view=10` depth stage (interleaved OFF/ON runs, warm-up discarded).
+- **Perf: PASS the bar at 13M AND 22M.** Drift-robust **interleaved A/B** captures
+  (paired OFF/ON medians; sequential sweeps were too thermally noisy on this GPU):
+
+  | count | OFF sim | ON sim (N=4) | ON faster | rounds |
+  |------:|--------:|-------------:|----------:|--------|
+  | 13.4M | 72.5 ms | 60.8 ms      | **16.1%** | 6/6 win |
+  | 21.6M | 109.9 ms| 91.2 ms      | **17.0%** | 5/6 win, 1 tie |
+  | 6.6M  | 49.5 ms | 41.5 ms      | ~16%      | sweep |
+
+  g2p ~4× faster (coherent gather); scatter no longer regresses (local-accum cuts the
+  contention); sort cost amortized at N=4.
+
+- **Shipped:** `dev.particle_sort` default flipped to **ON**, `dev.particle_sort_period`
+  default **4**. Toggle kept. Docs updated (simulation.md, gpu-resources.md shared-mem
+  budget, decisions/performance.md). Merged to `main`.
 
 ## Phase 3 RESULT (2026-06-13) — implemented, verified bit-identical, but a NET PERF LOSS at high count; NOT shipped
 

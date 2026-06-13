@@ -49,6 +49,18 @@ P2G SCATTER  [fused: 1 pass, all 3 components]
                           (FIXED_SCALE 2^16). Each component keeps its own MAC
                           half-cell offset and +1 face dim. (Was 3 per-axis passes;
                           fused into one — 7 storage buffers + 1 uniform.)
+  └─ scatter_local.wgsl → SORTED-PATH variant (used when dev.particle_sort is on,
+                          which is the default). Same math/result, but each
+                          workgroup first pre-accumulates its 64 sorted particles'
+                          taps into a SHARED-MEMORY open-addressed hash table
+                          (CAP=1024 i32 keys + 1024 i32 vals = 8 KB), keyed by the
+                          packed global face slot, then flushes ONE global atomic per
+                          touched slot (table-full → direct global atomic). This cuts
+                          the same-address global-atomic contention that cell-sorted
+                          particles otherwise create on the plain scatter. Still pure
+                          i32 fixed-point through accumulate AND flush, so it is
+                          bit-identical to scatter.wgsl. Shares scatter.wgsl's
+                          explicit bind-group layout so one scatter_bg drives either.
 
 P2G NORMALIZE  [×3 axes]
   └─ normalize.wgsl     → float u/v/w_vel = num/den (den==0 → vel=0, face invalid)
@@ -83,6 +95,23 @@ G2P + ADVECT + RECOVER
 ## Non-obvious invariants and gotchas
 
 **Per-axis indexing drives every kernel.** The host contract (`app/crates/fluid-lab/src/sim/mod.rs → GridDims`, `cell_idx`/`u_idx`/`v_idx`/`w_idx`, `world_to_cell`, `cell_center_world`) is fully per-axis: cell index `i + nx*(j + ny*k)`, staggered face counts `(nx+1)·ny·nz` / `nx·(ny+1)·nz` / `nx·ny·(nz+1)`, scalar `h`. The WGSL port mirrors it: any shader that decomposes a linear cell index uses `i = c%nx; j = (c/nx)%ny; k = c/(nx*ny)` and the per-axis staggered face dims, reading `nx/ny/nz` from `params.gdim` (total cells `nx*ny*nz`). The sim/CG kernels that decompose indices all carry the `gdim` mirror; the scalar kernels (e.g. `clear`, `normalize`, `save_vel`) keep a shorter prefix `Params`. To find the set, `grep params.gdim` over `app/crates/fluid-lab/src/gpu/shaders/`.
+
+**Particle spatial sort + workgroup-local scatter (on by default).** Before P2G the
+particles are reordered into linear-cell-index order by a GPU counting sort
+(`mark` histogram → two-level exclusive prefix sum → cursor scatter into the other
+ping-pong side), gated by `dev.particle_sort` (default ON) and cadenced by
+`dev.particle_sort_period` (default 4, the CFL clamp keeps motion ≲1 cell/step so
+periodic re-sorting stays coherent). The sort is a deterministic permutation, and
+because P2G is order-independent integer atomics and G2P is per-particle, the sorted
+run is **bit-identical** to the unsorted one (verified 0-pixel-diff on the
+order-independent `render.hero.debug_view=10` depth stage). The sort makes the G2P
+gather ~4× faster (coherent memory) but would make the plain scatter SLOWER (sorted
+particles hammer the same grid-face atomics); the sorted path therefore runs
+`scatter_local.wgsl` (shared-memory pre-accumulation, above) instead, which turns
+the scatter into a net win too. Drift-robust interleaved A/B captures: ~17% faster
+sim at 13.4M and 21.6M. The unsorted path keeps the plain `scatter.wgsl`. Anchors:
+`gpu/fluid.rs → record_sort`, `dispatch_scatter`, `scatter_local_pl`; the four
+`sort_*.wgsl` shaders; `scatter_local.wgsl`. See `../decisions/performance.md`.
 
 **Particle-linear passes use one tiled particle index contract.** Mark, the fused
 scatter, G2P, and the standalone impulse pass all compute particle index from 2D workgroup

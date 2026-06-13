@@ -61,14 +61,36 @@ buffer. The per-stage storage-buffer limit is still a hard WebGPU constraint, so
 MAC loop remains split into small passes rather than a mega-pass.
 
 ```
-Particles      particles (pos+vel, 32 B/particle)
+Particles      particles + particles_b (pos+vel, 32 B/particle; B = spatial-sort
+               ping-pong second side, a 32 B placeholder when the sort is off or
+               its buffer can't allocate)
 MAC vels       u_vel / v_vel / w_vel
 P2G accum      u_num / u_den / v_num / v_den / w_num / w_den
 FLIP snapshot  u_saved / v_saved / w_saved
 Pressure       pressure_a / pressure_b
 CG workspace   cg_d / cg_q / cg_partials / cg_scalars
 Grid scalar    divergence / occupancy / cell_type / stats
+Sort scan      cell_offset (per-cell bucket starts / cursor) / scan_spine (per-block)
 ```
+
+### Workgroup shared memory (scatter_local.wgsl)
+
+The sorted-path P2G scatter (`scatter_local.wgsl`, used when `dev.particle_sort` is
+on — the default) is the only kernel using `var<workgroup>` shared memory. Each
+workgroup holds an open-addressed hash table that pre-accumulates its 64 sorted
+particles' P2G taps before flushing one global atomic per touched face slot:
+
+- `sh_key: array<atomic<i32>, 1024>` — packed global face slot (`buffer_id·2^22 +
+  face_idx`, stored +1 so 0 = empty). 4 KB.
+- `sh_val: array<atomic<i32>, 1024>` — accumulated i32 fixed-point value. 4 KB.
+
+Total **8 KB** of workgroup storage, well under the WebGPU floor
+(`maxComputeWorkgroupStorageSize` ≥ 16 KB). The 2^22 (4,194,304) slot stride covers
+the largest face buffer at the 128-capped grid (`(nx+1)·ny·nz = 129·128·128 ≈
+2.11M`); 6 buffers · 2^22 ≈ 25.2M < 2^31 so `key+1` fits i32. Determinism is
+preserved because the accumulate AND the flush stay pure integer atomics (add is
+associative/commutative). See `decisions/performance.md` and
+`architecture/simulation.md`.
 
 `cg_scalars` is a tiny seven-`f32` storage buffer shared by the CG scalar kernels:
 `rs_old`, dot scratch, alpha, beta, initial residual, active flag, and tolerance

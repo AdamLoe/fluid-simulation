@@ -83,6 +83,52 @@ fusion win without a capture.
 
 **Applies to** — `architecture/gpu-resources.md`, `architecture/simulation.md`.
 
+## Particle spatial sort + workgroup-local scatter (default ON) — the high-count win
+
+**Decision** — At high particle counts the per-particle P2G/G2P transfers are the
+frame. Reorder particles into linear-cell-index order with a GPU counting sort before
+P2G (default ON, `dev.particle_sort`, cadence `dev.particle_sort_period`=4), AND on
+that sorted path run a workgroup-local pre-accumulation scatter
+(`scatter_local.wgsl`) instead of the plain global-atomic scatter.
+
+**Why** — The sort makes the G2P gather ~4× faster (coherent memory). But feeding
+sorted particles into the *plain* scatter makes it SLOWER: cell-sorted particles in a
+workgroup hammer the **same** grid-face atomic addresses simultaneously, serializing
+the global atomics (the unsorted layout accidentally spreads them out). That
+regression killed the plain sort at 13M/22M (the earlier "NOT shipped" result).
+`scatter_local.wgsl` fixes it: each workgroup pre-accumulates its 64 sorted
+particles' taps into an 8 KB shared-memory hash table, then flushes ONE global atomic
+per touched face slot — collapsing the per-tap global-atomic count ~20-30× and cutting
+the contention. Net result, drift-robust **interleaved A/B** captures (dev GPU, grid
+128, N=4; sequential sweeps were too thermally noisy to trust — pair OFF/ON
+back-to-back and take the paired median): **13.4M ON 16.1% faster (median 72.5→60.8
+ms, 6/6 rounds win); 21.6M ON 17.0% faster (median 109.9→91.2 ms, 5/6 win, 1 tie);
+6.6M also a win.**
+
+**Determinism is preserved and is the gate.** The sort is a deterministic permutation,
+and both the shared-memory accumulate and the global flush stay pure i32 fixed-point
+(`FIXED_SCALE = 2^16`) — integer add is associative/commutative, so any
+grouping/flush order yields identical `num`/`den`. Verified **0-pixel-diff** sorted vs
+unsorted on the order-independent `render.hero.debug_view=10` ("Nearest Z") depth
+stage after K fixed substeps. (Full-render and `liquid_cells` comparisons are too
+noisy — particle draw-order alpha; use the depth stage.)
+
+**Shared-memory budget** — `scatter_local.wgsl` uses 8 KB workgroup storage (two
+`array<atomic<i32>, 1024>`: keys + vals), under the 16 KB WebGPU floor. Both scatter
+pipelines share ONE explicit bind-group layout so a single `scatter_bg` drives either
+(auto-layout would derive incompatible layouts — the same pitfall as RBGS red/black).
+
+**Measurement note** — This GPU's run-to-run variance was 2-3×, so absolute numbers
+from a single sequential sweep are unreliable; the verdict rests on interleaved paired
+A/B medians (`app/tools/perf_determinism.mjs duel`), which cancel slow thermal drift.
+
+**Code anchors** — `gpu/fluid.rs → record_sort`, `dispatch_scatter`, `scatter_local_pl`,
+the explicit `scatter_bgl`/`scatter_pll`; `gpu/shaders/scatter_local.wgsl`; the four
+`gpu/shaders/sort_*.wgsl`; `settings/mod.rs` (`dev.particle_sort` default 1,
+`dev.particle_sort_period` default 4).
+
+**Applies to** — `architecture/simulation.md`, `architecture/gpu-resources.md`.
+
 ## Hot data is structure-of-arrays with fixed per-scene buffers and ping-pong
 
 **Decision** — Hot simulation data uses structure-of-arrays layout, fixed-size

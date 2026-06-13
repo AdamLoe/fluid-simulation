@@ -161,26 +161,29 @@ async function measure(page, settings, label) {
   await applyReset(page, { ...settings, "dev.detailed_gpu_profiling": 1 });
   await page.evaluate(() => window.__fluid.set_paused(false));
   await sleep(SETTLE);
-  // Average several stat polls across the measure window.
-  const samples = [];
+  // Collect stat polls, then keep ONLY GPU-timestamp samples (cpu-wallclock
+  // fallback frames are unstable post-reset and must not pollute the medians).
+  const all = [];
   const t0 = Date.now();
   while (Date.now() - t0 < MEASURE) {
     const s = await readStats(page);
-    if (s) samples.push(s);
+    if (s) all.push(s);
     await sleep(300);
   }
+  const samples = all.filter((s) => s?.timing === "gpu-timestamp" && Number.isFinite(s?.gpu?.sim_ms));
   const med = (arr) => { const a = arr.filter(Number.isFinite).sort((x, y) => x - y); return a.length ? a[Math.floor(a.length / 2)] : null; };
   const pick = (f) => med(samples.map(f));
   const out = {
     label,
-    particles: samples.at(-1)?.particles ?? null,
+    particles: all.at(-1)?.particles ?? null,
     sim_ms: pick((s) => s?.gpu?.sim_ms),
     fps: pick((s) => s?.frame_avg_ms ? 1000 / s.frame_avg_ms : null),
     frame_ms: pick((s) => s?.frame_avg_ms),
     scatter: pick((s) => s?.gpu?.sections?.scatter),
     g2p: pick((s) => s?.gpu?.sections?.g2p),
     sort: pick((s) => s?.gpu?.sections?.sort),
-    timing: samples.at(-1)?.timing ?? null,
+    timing: all.at(-1)?.timing ?? null,
+    n_gpu: samples.length, n_total: all.length,
   };
   console.log(`  ${label}: ` + JSON.stringify(out));
   return out;
@@ -216,6 +219,31 @@ async function perf(page) {
   return rows;
 }
 
+// DUEL: at ONE count, alternate OFF and ON(N) for REPS rounds with short windows
+// so slow thermal/clock drift hits both arms equally. Reports the paired median
+// sim_ms/scatter/g2p and the per-round OFF-minus-ON delta (drift-robust verdict).
+async function duel(page) {
+  const count = parseInt(process.env.DUEL_COUNT || "13400000", 10);
+  const N = parseInt(process.env.DUEL_N || "8", 10);
+  const reps = parseInt(process.env.DUEL_REPS || "6", 10);
+  console.log(`\n=== DUEL count=${count} ON(N=${N}) vs OFF, ${reps} interleaved rounds ===`);
+  const base = {
+    "grid.res_x": GRID, "grid.res_y": GRID, "grid.res_z": GRID,
+    "particles.count": count, "particles.density": 8, "render.hero.debug_view": 0,
+  };
+  const offS = [], onS = [];
+  for (let r = 0; r < reps; r++) {
+    const off = await measure(page, { ...base, "dev.particle_sort": 0 }, `r${r} OFF`);
+    const on = await measure(page, { ...base, "dev.particle_sort": 1, "dev.particle_sort_period": N }, `r${r} ON`);
+    offS.push(off.sim_ms); onS.push(on.sim_ms);
+    console.log(`  round ${r}: OFF sim=${off.sim_ms} ON sim=${on.sim_ms} delta(OFF-ON)=${(off.sim_ms - on.sim_ms).toFixed(1)}`);
+  }
+  const med = (a) => { const s = a.filter(Number.isFinite).sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : null; };
+  const dOff = med(offS), dOn = med(onS);
+  console.log(`  MEDIAN OFF sim=${dOff?.toFixed(1)}  ON sim=${dOn?.toFixed(1)}  ON faster by ${(dOff - dOn).toFixed(1)}ms (${(100 * (dOff - dOn) / dOff).toFixed(1)}%)`);
+  writeFileSync(join(OUT, `duel_${count}_N${N}.json`), JSON.stringify({ count, N, offS, onS, dOff, dOn }, null, 2));
+}
+
 const { default: puppeteer } = await import("puppeteer-core");
 const browser = await puppeteer.launch({
   executablePath: CHROME,
@@ -234,6 +262,7 @@ try {
 
   if (MODE === "det" || MODE === "all") detPass = await determinism(page);
   if (MODE === "perf" || MODE === "all") await perf(page);
+  if (MODE === "duel") await duel(page);
 } finally {
   await browser.close();
 }

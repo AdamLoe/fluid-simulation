@@ -1569,29 +1569,34 @@ impl Default for Registry {
                 id: "dev.particle_sort",
                 label: "Particle spatial sort",
                 category: Category::Diagnostics,
-                // DEFAULT OFF: the sort is verified bit-identical (permutation-only)
-                // but is a NET PERFORMANCE LOSS at the high particle counts it was
-                // designed for. It speeds up g2p ~4x (coherent gather) but ~doubles
-                // the fused integer-atomic P2G scatter (sorted particles collide on
-                // the same grid-face atomic addresses), and at 13M/22M the scatter
-                // regression dominates (sim ~20-28% slower). Kept as an opt-in dev
-                // toggle for further investigation; see decisions/performance.md.
-                default: Value::U32(0),
-                value: Value::U32(0),
+                // DEFAULT ON: the sort is verified bit-identical (permutation-only)
+                // AND a net perf win at high counts once paired with the
+                // WORKGROUP-LOCAL pre-accumulation scatter (scatter_local.wgsl). The
+                // sort makes g2p ~4x faster (coherent gather); the local-accum
+                // scatter cuts the global-atomic contention that the plain sorted
+                // scatter suffered. Drift-robust interleaved A/B captures (RTX class
+                // dev GPU, grid 128, N=4): ~17% faster sim at both 13.4M (~12ms) and
+                // 21.6M (~19ms median). See decisions/performance.md.
+                default: Value::U32(1),
+                value: Value::U32(1),
                 validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Dev-only: reorders particles by grid cell. Speeds up G2P but slows the P2G scatter; net slower at high counts. Off by default."),
-                technical_tooltip: Some("Reset-class. GPU counting sort by linear cell index inserted before P2G. Verified permutation-only (integer P2G atomics make sorted vs unsorted bit-identical). NET PERF LOSS at high count: sorted scatter atomics collide on shared addresses. Needs a second particle buffer; falls back to unsorted if it cannot allocate."),
+                tooltip: Some("Reorders particles by grid cell so the P2G/G2P transfers hit coherent memory. With the workgroup-local scatter this is a net speedup at high particle counts. On by default."),
+                technical_tooltip: Some("Reset-class. GPU counting sort by linear cell index inserted before P2G. Permutation-only (integer P2G atomics make sorted vs unsorted bit-identical). On the sorted path the fused scatter switches to scatter_local.wgsl, which pre-accumulates each workgroup's taps in a shared-memory hash table and flushes one global atomic per touched face — cutting the same-address atomic contention. Net win at 13M/22M (~17% faster sim). Needs a second particle buffer; falls back to unsorted if it cannot allocate."),
                 apply: ApplyClass::Reset,
             },
             Setting {
                 id: "dev.particle_sort_period",
                 label: "Particle sort period",
                 category: Category::Diagnostics,
-                default: Value::U32(2),
-                value: Value::U32(2),
+                // N=4: the CFL clamp holds motion under ~1 cell/step, so re-sorting
+                // every 4 substeps keeps the transfers coherent while amortizing the
+                // sort's own cost. Measured best/robust cadence in the A/B sweep
+                // (N=1 pays full sort cost each substep; N=8 was noisier).
+                default: Value::U32(4),
+                value: Value::U32(4),
                 validation: Validation::U32Range { min: 1, max: 16 },
-                tooltip: Some("When the dev spatial sort is on, re-sort every N substeps. The CFL clamp keeps motion under ~1 cell/step, so periodic re-sorting stays coherent and amortizes the sort cost."),
-                technical_tooltip: Some("Reset-class. N=1 sorts every substep (max coherence); larger N amortizes the sort's own cost. Only relevant when dev.particle_sort=1 (off by default; net perf loss at high count)."),
+                tooltip: Some("When the spatial sort is on, re-sort every N substeps. The CFL clamp keeps motion under ~1 cell/step, so periodic re-sorting stays coherent and amortizes the sort cost."),
+                technical_tooltip: Some("Reset-class. N=1 sorts every substep (max coherence); larger N amortizes the sort's own cost. Only relevant when dev.particle_sort=1. Default 4: best/robust cadence in the high-count A/B capture."),
                 apply: ApplyClass::Reset,
             },
         ];
