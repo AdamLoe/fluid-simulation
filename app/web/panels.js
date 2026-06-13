@@ -340,9 +340,48 @@ function buildConfigPanel(container, app, tabId, allSettings = safeConfigJson(ap
     return;
   }
 
+  if (tabId === "scenario") {
+    appendScenarioSummary(container, app);
+  }
+
   const rowEls = {};
   appendCategorySections(container, settings, rowEls, app, pendingApplyIds);
   appendResetDefaultsAction(container, app, tabId, settings);
+}
+
+// A small read-only readout at the top of the Scenario tab. It shows the grid
+// resolution and the EFFECTIVE particle count the current density + grid + scenario
+// resolve to, so the user can see what the "Particle density (/cell)" control yields
+// without opening the Profiler. Values come from stats_json (the live resolved
+// count); count is Reset-class, so it reflects the last applied reset.
+function appendScenarioSummary(container, app) {
+  const stats = safeStatsJson(app);
+  if (!stats) return;
+
+  const gridRes = stats.grid_res ?? stats.grid_n;
+  const totalCells = stats.total_cells;
+  const requested = stats.requested_particles;
+  const actual = stats.particles;
+
+  const box = document.createElement("div");
+  box.className = "cfg-scenario-summary";
+  box.style.cssText =
+    "margin:0 0 10px;padding:8px 10px;background:#11151f;border:1px solid #2a3142;" +
+    "border-radius:6px;font-size:11px;line-height:1.5;color:#aeb8cc;";
+
+  const fmtN = (n) => (typeof n === "number" ? n.toLocaleString() : "—");
+  box.innerHTML =
+    `<div style="font-weight:600;color:#cdd6e4;margin-bottom:3px;">Effective scenario</div>` +
+    `<div>Grid: <span style="color:#cdd6e4;">${gridRes ?? "—"}</span>` +
+    ` &nbsp;·&nbsp; Total cells: <span style="color:#cdd6e4;">${fmtN(totalCells)}</span></div>` +
+    `<div>Particles (resolved): <span style="color:#7dd3fc;">${fmtN(requested)}</span>` +
+    (typeof actual === "number" && actual !== requested
+      ? ` &nbsp;·&nbsp; seeded: <span style="color:#cdd6e4;">${fmtN(actual)}</span>`
+      : "") +
+    `</div>` +
+    `<div style="color:#6b7689;margin-top:2px;">Density &times; grid &times; scenario fill. Changes apply on Reset.</div>`;
+
+  container.appendChild(box);
 }
 
 function buildModesPanel(container, app, settings, pendingApplyIds = new Set()) {

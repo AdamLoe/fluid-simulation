@@ -54,8 +54,11 @@ settings button remains the open/close control.
 
 Tabs are derived from registry metadata in `app.config_json()`, grouped by
 `tab_group`, sorted by `tab_order`, and followed by a Profiler tab. Rows support
-slider+number controls, dropdowns, color pickers, log2 particle-count sliders,
-per-setting reset buttons, and help affordances.
+slider+number controls, dropdowns, color pickers, log2 sliders (the color swatches),
+per-setting reset buttons, and help affordances. The Scenario tab also renders a
+read-only "Effective scenario" summary at its top (grid resolution, total cells, and
+the resolved particle count from `stats_json`), so the derived `particles.density`
+count is visible without opening the Profiler.
 
 Changes call `app.set_setting_result_json(id, value)` and persist visible non-default
 overrides to `localStorage` under `fluidlab.config.v1`. The result JSON reports

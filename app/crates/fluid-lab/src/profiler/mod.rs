@@ -143,7 +143,7 @@ struct GpuSample {
     /// Detailed (per-section) breakdown present?
     detailed: bool,
     /// Per-section frame totals (ms), indexed by `gpu::timing::FINE_SECTIONS`.
-    sections: [f32; 27],
+    sections: [f32; crate::gpu::FINE_SECTIONS.len()],
     /// CG category frame totals (ms): [spmv, reduce, update, scalars].
     cg_cats: [f32; 4],
     cg_iters: u32,

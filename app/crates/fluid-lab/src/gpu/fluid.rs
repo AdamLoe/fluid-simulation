@@ -146,7 +146,7 @@ pub struct GpuFluid {
     clear_pl: wgpu::ComputePipeline,
     mark_pl: wgpu::ComputePipeline,
     classify_pl: wgpu::ComputePipeline,
-    scatter_pl: [wgpu::ComputePipeline; 3],
+    scatter_pl: wgpu::ComputePipeline,
     normalize_pl: wgpu::ComputePipeline,
     save_vel_pl: wgpu::ComputePipeline,
     gravity_pl: [wgpu::ComputePipeline; 3],
@@ -172,7 +172,7 @@ pub struct GpuFluid {
     pressure_clear_bg: (wgpu::BindGroup, u32),
     mark_bg: wgpu::BindGroup,
     classify_bg: wgpu::BindGroup,
-    scatter_bg: [wgpu::BindGroup; 3],
+    scatter_bg: wgpu::BindGroup,
     normalize_bg: [wgpu::BindGroup; 3],
     save_vel_bg: [wgpu::BindGroup; 3],
     gravity_bg: [wgpu::BindGroup; 3],
@@ -206,6 +206,7 @@ impl GpuFluid {
         settings: &Registry,
         scene: &SceneConfig,
         max_compute_workgroups_per_dimension: u32,
+        max_storage_buffers_per_stage: u32,
     ) -> Self {
         // Uniform cell size; the tank is made rectangular by per-axis cell counts.
         let nx = settings.grid_res_x();
@@ -367,12 +368,18 @@ impl GpuFluid {
             "main",
             &[],
         );
+        // Fused P2G scatter: one pass reads each particle once and scatters all
+        // three MAC face components. Needs params(uniform) + particles(read) +
+        // 6 atomic accumulation buffers = 7 storage buffers. Assert the probed
+        // per-stage storage-buffer budget covers it; the dev/target adapters all
+        // report well above the common floor of 8.
+        assert!(
+            max_storage_buffers_per_stage >= 8,
+            "fused P2G scatter needs >= 8 storage buffers per stage \
+             (params is uniform; 7 storage buffers used), adapter reports {max_storage_buffers_per_stage}"
+        );
         let scatter_src = include_str!("shaders/scatter.wgsl");
-        let scatter_pl = [
-            compute(device, "scatter_u", scatter_src, "main", &[("AXIS", 0.0)]),
-            compute(device, "scatter_v", scatter_src, "main", &[("AXIS", 1.0)]),
-            compute(device, "scatter_w", scatter_src, "main", &[("AXIS", 2.0)]),
-        ];
+        let scatter_pl = compute(device, "scatter_all", scatter_src, "main", &[]);
         let normalize_pl = compute(
             device,
             "normalize",
@@ -597,23 +604,13 @@ impl GpuFluid {
             &classify_pl,
             &[&params_buf, &occupancy, &cell_type, &stats],
         );
-        let scatter_bg = [
-            bg(
-                "scatter_u",
-                &scatter_pl[0],
-                &[&params_buf, &particles, &u_num, &u_den],
-            ),
-            bg(
-                "scatter_v",
-                &scatter_pl[1],
-                &[&params_buf, &particles, &v_num, &v_den],
-            ),
-            bg(
-                "scatter_w",
-                &scatter_pl[2],
-                &[&params_buf, &particles, &w_num, &w_den],
-            ),
-        ];
+        let scatter_bg = bg(
+            "scatter_all",
+            &scatter_pl,
+            &[
+                &params_buf, &particles, &u_num, &u_den, &v_num, &v_den, &w_num, &w_den,
+            ],
+        );
         let normalize_bg = [
             bg(
                 "norm_u",
@@ -1001,16 +998,16 @@ impl GpuFluid {
     }
     /// Number of `dispatch_workgroups` calls issued per substep (prep + pressure +
     /// finish, assuming pressure is enabled). Formula:
-    ///   prep    = 27 (clear×10, mark, classify, scatter×3, normalize×3,
-    ///                 save_vel×3, gravity×3, enforce×3)
+    ///   prep    = 25 (clear×10, mark, classify, scatter×1 (fused u/v/w),
+    ///                 normalize×3, save_vel×3, gravity×3, enforce×3)
     ///   pressure= 5 + 9*pressure_iters (divergence, cg_init, init-reduce×3;
     ///                 per iter: spmv, reduce, reduce_final, alpha, update,
     ///                 reduce, reduce_final, beta, dir)
     ///   finish  = 7 (gradient×3, enforce×3, g2p) when pressure enabled
-    /// Total = 39 + 9*pressure_iters. Warm-start skips the pressure_a prep clear,
-    /// so its total is 38 + 9*pressure_iters.
+    /// Total = 37 + 9*pressure_iters. Warm-start skips the pressure_a prep clear,
+    /// so its total is 36 + 9*pressure_iters.
     pub fn dispatches_per_substep(&self) -> u32 {
-        39 + 9 * self.pressure_iters - u32::from(self.pressure_warm_start)
+        37 + 9 * self.pressure_iters - u32::from(self.pressure_warm_start)
     }
     /// Live CG iteration count (for sizing detailed timing slots).
     pub fn pressure_iters(&self) -> u32 {
@@ -1161,9 +1158,7 @@ impl GpuFluid {
         self.dispatch_clear(pass);
         self.dispatch_mark(pass);
         self.dispatch_classify(pass);
-        for a in 0..3 {
-            self.dispatch_scatter(pass, a);
-        }
+        self.dispatch_scatter(pass);
         for a in 0..3 {
             self.dispatch_normalize(pass, a);
         }
@@ -1204,9 +1199,9 @@ impl GpuFluid {
         pass.set_bind_group(0, &self.classify_bg, &[]);
         pass.dispatch_workgroups(self.cell_count.div_ceil(WG), 1, 1);
     }
-    pub fn dispatch_scatter(&self, pass: &mut wgpu::ComputePass<'_>, a: usize) {
-        pass.set_pipeline(&self.scatter_pl[a]);
-        pass.set_bind_group(0, &self.scatter_bg[a], &[]);
+    pub fn dispatch_scatter(&self, pass: &mut wgpu::ComputePass<'_>) {
+        pass.set_pipeline(&self.scatter_pl);
+        pass.set_bind_group(0, &self.scatter_bg, &[]);
         self.dispatch_particles(pass);
     }
     pub fn dispatch_normalize(&self, pass: &mut wgpu::ComputePass<'_>, a: usize) {

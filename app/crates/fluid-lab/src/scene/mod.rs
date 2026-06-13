@@ -90,14 +90,13 @@ impl SceneConfig {
             settings.grid_res_z(),
         );
         let preset = ScenePreset::from_u32(settings.scene_preset());
+        let blocks = preset_blocks(preset, settings.drop_height());
         Self {
             name: preset.name().to_string(),
             preset,
             grid_resolution: res,
-            particle_count: settings.particle_count(),
-            initial_liquid: InitialLiquidConfig {
-                blocks: preset_blocks(preset, settings.drop_height()),
-            },
+            particle_count: resolved_particle_count(settings, res, &blocks),
+            initial_liquid: InitialLiquidConfig { blocks },
         }
     }
 
@@ -109,16 +108,54 @@ impl SceneConfig {
             settings.grid_res_y(),
             settings.grid_res_z(),
         );
+        let blocks = preset_blocks(ScenePreset::FallingBlob, settings.drop_height());
         Self {
             name: ScenePreset::FallingBlob.name().to_string(),
             preset: ScenePreset::FallingBlob,
             grid_resolution: res,
-            particle_count: settings.particle_count(),
-            initial_liquid: InitialLiquidConfig {
-                blocks: preset_blocks(ScenePreset::FallingBlob, settings.drop_height()),
-            },
+            particle_count: resolved_particle_count(settings, res, &blocks),
+            initial_liquid: InitialLiquidConfig { blocks },
         }
     }
+}
+
+/// Fraction of the tank volume occupied by the seeded liquid blocks, in normalized
+/// [0,1]^3 tank space. Blocks are treated as disjoint (the shipped presets are), so
+/// their normalized volumes simply sum. Multiplying by the total grid-cell count
+/// gives the number of grid cells the fluid initially fills ("seeded cells").
+fn seeded_volume_fraction(blocks: &[LiquidBlock]) -> f32 {
+    blocks
+        .iter()
+        .map(|b| {
+            let ext = b.max - b.min;
+            (ext.x.max(0.0) * ext.y.max(0.0) * ext.z.max(0.0)).max(0.0)
+        })
+        .sum::<f32>()
+        .clamp(0.0, 1.0)
+}
+
+/// Resolve the spawn particle count.
+///
+/// "Per cell" means **per seeded fluid cell**, not per total grid cell: the seeded
+/// region is the liquid-block volume measured in grid cells
+/// (`seeded_volume_fraction * total_grid_cells`), and the density is particles per
+/// one of those cells. This keeps the default 64^3 scene near the historical ~250k
+/// particles (~8/seeded-cell) and scales correctly with grid resolution and with how
+/// much of the tank a scenario fills.
+///
+/// The advanced `particles.count` override wins when it is nonzero; `0` means Auto.
+fn resolved_particle_count(settings: &Registry, res: UVec3, blocks: &[LiquidBlock]) -> u32 {
+    let override_count = settings.particle_count_override();
+    if override_count > 0 {
+        return override_count;
+    }
+    let total_cells = (res.x as f64) * (res.y as f64) * (res.z as f64);
+    let seeded_cells = total_cells * seeded_volume_fraction(blocks) as f64;
+    let density = settings.particle_density().max(0.0) as f64;
+    let count = (seeded_cells * density).round();
+    // Keep a small floor so degenerate scenes still seed something the solver and
+    // the GPU dispatch can handle.
+    (count as u32).max(1_024)
 }
 
 /// The deterministic liquid layout for each preset (normalized [0,1]^3, y up).
@@ -192,6 +229,47 @@ mod tests {
             .blocks[0];
         assert!((high.min.y - 0.65).abs() < 1.0e-6);
         assert!((high.max.y - 1.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn default_density_derives_count_from_seeded_cells() {
+        // Default registry: density 8/seeded-cell, 64^3 grid, falling-blob preset.
+        // Seeded fraction of the falling blob is 0.6*0.35*0.6 = 0.126, so
+        // count ≈ 8 * 0.126 * 64^3 ≈ 264k — near the historical ~254k default.
+        let scene = SceneConfig::from_settings(&Registry::default());
+        assert!(
+            (264_000..=264_500).contains(&scene.particle_count),
+            "default count {} should be ~264k (8/seeded-cell)",
+            scene.particle_count
+        );
+    }
+
+    #[test]
+    fn density_scales_count_with_grid_resolution() {
+        let mut settings = Registry::default();
+        settings.set_value_f64("grid.res_x", 128.0);
+        settings.set_value_f64("grid.res_z", 128.0);
+        // 128x64x128, density 8, falling blob -> 8 * 0.126 * 1_048_576 ≈ 1.057M.
+        let blob = SceneConfig::from_settings(&settings).particle_count;
+        assert!(
+            (1_050_000..=1_065_000).contains(&blob),
+            "falling-blob count {blob} should be ~1.06M"
+        );
+
+        // Dam break fills ~0.30 of the tank, so the same density seeds far more.
+        settings.set_value_f64("scene.preset", ScenePreset::DamBreak as u32 as f64);
+        let dam = SceneConfig::from_settings(&settings).particle_count;
+        assert!(
+            (2_400_000..=2_600_000).contains(&dam),
+            "dam-break count {dam} should be ~2.5M"
+        );
+    }
+
+    #[test]
+    fn nonzero_particle_count_override_wins_over_density() {
+        let mut settings = Registry::default();
+        settings.set_value_f64("particles.count", 500_000.0);
+        assert_eq!(SceneConfig::from_settings(&settings).particle_count, 500_000);
     }
 
     #[test]

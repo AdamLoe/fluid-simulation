@@ -10,7 +10,7 @@
 //!   are FRAME TOTALS (summed over the substeps that actually ran).
 //!
 //! * DETAILED (dev toggle `dev.detailed_gpu_profiling`, Reset-class): each substep
-//!   gets one begin/end pair per fine SECTION (clear, mark, classify, scatter_*,
+//!   gets one begin/end pair per fine SECTION (clear, mark, classify, scatter,
 //!   …, g2p) plus, per CG iteration, the three category passes (spmv / reduce /
 //!   update) and a small `cg_scalars` pass. Per-section ms are summed over substeps.
 //!
@@ -29,13 +29,11 @@ const THROTTLE: u32 = 20;
 
 /// Fine sections timed per substep (each is one begin/end pair). The CG-iteration
 /// category passes are appended AFTER these, `CG_CATS_PER_ITER` pairs per iter.
-pub const FINE_SECTIONS: [&str; 27] = [
+pub const FINE_SECTIONS: [&str; 25] = [
     "clear",
     "mark",
     "classify",
-    "scatter_u",
-    "scatter_v",
-    "scatter_w",
+    "scatter",
     "normalize_u",
     "normalize_v",
     "normalize_w",
@@ -58,7 +56,7 @@ pub const FINE_SECTIONS: [&str; 27] = [
     "bound_post_w",
     "g2p",
 ];
-const N_FINE: usize = FINE_SECTIONS.len(); // 27
+const N_FINE: usize = FINE_SECTIONS.len(); // 25
 
 /// CG reported categories (frame totals), in `Readout.cg_cats` order:
 ///   0 = cg_spmv   : q = A·d

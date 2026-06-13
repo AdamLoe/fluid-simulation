@@ -46,6 +46,34 @@ possible outcome was distinguishable.
 allows; the timestep controller still drops excess accumulated time when the natural
 substep count exceeds the cap.
 
+### Particle density and derived count
+
+The seeded particle count is **derived**, not a fixed absolute number. The primary
+control is `particles.density` (Reset-class `f32`, default `8`, range `1..32`): the
+particles-per-cell crowding of the seeded liquid at reset.
+
+"Per cell" means **per seeded fluid cell**, not per total grid cell. The seeded region
+is the liquid-block volume measured in cells, i.e. `seeded_volume_fraction *
+res_x*res_y*res_z`, where `seeded_volume_fraction` is the fraction of the normalized
+[0,1]^3 tank the scenario's liquid blocks occupy. The resolved count is
+`round(density * seeded_volume_fraction * total_cells)`, floored at 1024. This keeps
+the default 64³ falling-blob scene near the historical ~254k particles (~264k at
+density 8) and scales correctly when grid resolution or scenario changes. The
+derivation lives in `scene/mod.rs::resolved_particle_count`; `gpu` reads the resolved
+`SceneConfig::particle_count`, so seeding, validation, and the reported "requested"
+count all agree.
+
+`particles.count` is now an **advanced manual override** (Reset-class `u32`, default
+`0` = Auto, range `0..134_217_728`). `0` means derive from `particles.density`; a
+nonzero value pins an exact absolute count and ignores density. The registry accessors
+are `particle_density()` and `particle_count_override()`; resolution happens in
+`SceneConfig::from_settings`. The override no longer uses a log2 slider.
+
+Grid resolution (`grid.res_x/y/z`) and `particles.density` are the prominent
+Scenario-tab controls; the web panel shows the resolved effective particle count in a
+read-only summary at the top of that tab (sourced from `stats_json`), so users can see
+what a density yields before reset.
+
 `solver.pressure_residual_tolerance` is a Live `f32` pressure setting. Default `0`
 means disabled; finite inputs clamp to the registry's conservative relative-residual
 range before the GPU scalar tolerance slot is updated.

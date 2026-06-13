@@ -68,7 +68,7 @@ on the first render pass and its end timestamp on the final render pass, so
 `gpu.render_ms` is one coarse total for the whole render path. `Readout.prep_ms`,
 `pressure_ms`, `finish_ms` are **frame totals** summed across all substeps that ran.
 
-**DETAILED (dev toggle):** each substep gets one begin/end pair per fine section. Fine sections are the 27 passes in `app/crates/fluid-lab/src/gpu/timing.rs → FINE_SECTIONS`. In addition, per CG iteration, six contiguous passes are timed and bucketed into four reported categories: `spmv` (SpMV pass), `reductions` (both dot-product passes — d·q and r·r), `updates` (the vector update p += α·d; r -= α·q), `scalars` (the alpha/beta/dir one-thread dispatches). All values are frame totals summed across substeps.
+**DETAILED (dev toggle):** each substep gets one begin/end pair per fine section. Fine sections are the 25 passes in `app/crates/fluid-lab/src/gpu/timing.rs → FINE_SECTIONS` (the P2G scatter is a single fused pass covering all three MAC components). In addition, per CG iteration, six contiguous passes are timed and bucketed into four reported categories: `spmv` (SpMV pass), `reductions` (both dot-product passes — d·q and r·r), `updates` (the vector update p += α·d; r -= α·q), `scalars` (the alpha/beta/dir one-thread dispatches). All values are frame totals summed across substeps.
 
 **Query-set sizing.** The `QuerySet` is sized at construction from `max_substeps × pressure_iters`, capped at 8192 slots. If a large dev config would exceed the cap, the timed CG iters are reduced and the reduction is logged via `crate::log()` — never silently. If live `pressure_iters` later exceeds the reset-time allocation, timed iters are clamped and logged once via `clamp_cg_iters`.
 

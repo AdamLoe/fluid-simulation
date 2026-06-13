@@ -25,7 +25,7 @@ The host reference for grid math and indexing lives in `app/crates/fluid-lab/src
 - **WGSL shaders** (in `app/crates/fluid-lab/src/gpu/shaders/`): `clear.wgsl`, `mark.wgsl`, `classify.wgsl`, `scatter.wgsl`, `normalize.wgsl`, `save_vel.wgsl`, `forces.wgsl`, `boundaries.wgsl`, `divergence.wgsl`, `gradient.wgsl`, `g2p.wgsl`, `impulse.wgsl`; pressure and CG kernels owned by `pressure-solver.md`
 - **Deterministic particle init** — `app/crates/fluid-lab/src/gpu/fluid.rs → generate_particles` (lattice + seeded LCG jitter; volume-proportional split across scene blocks)
 - **Escaped-particle recovery and wall contact** — wall-aware MAC sampling, clamp + zero-normal recovery, and optional tangential damping in `app/crates/fluid-lab/src/gpu/shaders/g2p.wgsl`
-- **Volume / compactness knobs** — `particles.count` and scene seeding define initial mass/distribution; `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp` add occupancy-driven divergence bias for anti-clump volume correction; `classify.liquid_threshold` and `classify.surface_dilation` choose the liquid-cell active set; `render.particle_size` is visual only
+- **Volume / compactness knobs** — `particles.density` (per-seeded-cell, default 8) plus the scene seeding define initial mass/distribution; the spawn count is derived from density × grid × scenario fill (`particles.count` is an advanced absolute override, `0` = Auto); `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp` add occupancy-driven divergence bias for anti-clump volume correction; `classify.liquid_threshold` and `classify.surface_dilation` choose the liquid-cell active set; `render.particle_size` is visual only
 - **Interaction impulses** — manual slosh and scheduled wave-maker impulses (`app/crates/fluid-lab/src/gpu/shaders/impulse.wgsl`, triggered by `app/crates/fluid-lab/src/gpu/fluid.rs → apply_impulse`)
 
 ---
@@ -42,8 +42,13 @@ MARK / CLASSIFY
   ├─ mark.wgsl          → atomicAdd occupancy counts for classification and volume correction
   └─ classify.wgsl      → boundary→Solid, occupied-interior→Liquid, else→Air
 
-P2G SCATTER  [×3 axes]
-  └─ scatter.wgsl       → i32 atomicAdd into u/v/w_num + u/v/w_den (FIXED_SCALE 2^16)
+P2G SCATTER  [fused: 1 pass, all 3 components]
+  └─ scatter.wgsl       → reads each particle once, computes the cell-space position
+                          and trilinear weights once, then i32 atomicAdds all three
+                          velocity components into u/v/w_num + u/v/w_den
+                          (FIXED_SCALE 2^16). Each component keeps its own MAC
+                          half-cell offset and +1 face dim. (Was 3 per-axis passes;
+                          fused into one — 7 storage buffers + 1 uniform.)
 
 P2G NORMALIZE  [×3 axes]
   └─ normalize.wgsl     → float u/v/w_vel = num/den (den==0 → vel=0, face invalid)
@@ -79,8 +84,8 @@ G2P + ADVECT + RECOVER
 
 **Per-axis indexing drives every kernel.** The host contract (`app/crates/fluid-lab/src/sim/mod.rs → GridDims`, `cell_idx`/`u_idx`/`v_idx`/`w_idx`, `world_to_cell`, `cell_center_world`) is fully per-axis: cell index `i + nx*(j + ny*k)`, staggered face counts `(nx+1)·ny·nz` / `nx·(ny+1)·nz` / `nx·ny·(nz+1)`, scalar `h`. The WGSL port mirrors it: any shader that decomposes a linear cell index uses `i = c%nx; j = (c/nx)%ny; k = c/(nx*ny)` and the per-axis staggered face dims, reading `nx/ny/nz` from `params.gdim` (total cells `nx*ny*nz`). The sim/CG kernels that decompose indices all carry the `gdim` mirror; the scalar kernels (e.g. `clear`, `normalize`, `save_vel`) keep a shorter prefix `Params`. To find the set, `grep params.gdim` over `app/crates/fluid-lab/src/gpu/shaders/`.
 
-**Particle-linear passes use one tiled particle index contract.** Mark, scatter U/V/W,
-G2P, and the standalone impulse pass all compute particle index from 2D workgroup
+**Particle-linear passes use one tiled particle index contract.** Mark, the fused
+scatter, G2P, and the standalone impulse pass all compute particle index from 2D workgroup
 coordinates plus `local_invocation_index`, not from `global_invocation_id.x` alone.
 The contract is shared with `gpu/fluid.rs → particle_dispatch_shape`: same
 `@workgroup_size(64, 1, 1)`, same row-major workgroup flattening, same
@@ -123,7 +128,7 @@ local frame.
 
 **Escaped-particle recovery is deterministic and non-bouncing.** `g2p.wgsl` clamps position to one epsilon inside the walls and zeroes the velocity component normal to the crossed wall. No random perturbation, no restitution.
 
-**Compactness is split across physics and rendering.** `render.particle_size` only changes how large particles look. `particles.count` plus the selected scene preset control the initial seeded mass/distribution and require Reset. `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp` are the volume-correction trio: sufficiently occupied liquid cells above the rest particles/cell target receive a clamped negative divergence bias so projection pushes crowded regions outward. `classify.liquid_threshold` and `classify.surface_dilation` decide which occupied cells participate as liquid; the default dilation is 0 so thin cells are not automatically expanded. `solver.pressure_iterations` controls incompressibility quality/perf, not visual particle overlap.
+**Compactness is split across physics and rendering.** `render.particle_size` only changes how large particles look. `particles.density` (per-seeded-cell, default 8) plus the selected scene preset control the initial seeded mass/distribution and require Reset; the spawn count is derived as `round(density * seeded_volume_fraction * total_cells)`, with `particles.count` as an advanced absolute override (`0` = Auto). `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp` are the volume-correction trio: sufficiently occupied liquid cells above the rest particles/cell target receive a clamped negative divergence bias so projection pushes crowded regions outward. `classify.liquid_threshold` and `classify.surface_dilation` decide which occupied cells participate as liquid; the default dilation is 0 so thin cells are not automatically expanded. `solver.pressure_iterations` controls incompressibility quality/perf, not visual particle overlap.
 
 **Pressure solve ceiling (~19.2k liquid cells at 64³) is FLIP volume loss, not solver deficit.** Both CG-30 and brute-force Jacobi-400 plateau at the same occupied-cell count. The default GPU pressure path remains a zero-initial, fixed-iteration loop; `solver.pressure_residual_tolerance` and `solver.pressure_warm_start` are opt-in Live controls that preserve the fixed dispatch loop and avoid normal-frame readback. See `pressure-solver.md` and `../decisions/pressure.md`.
 

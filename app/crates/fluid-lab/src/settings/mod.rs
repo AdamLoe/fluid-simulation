@@ -488,17 +488,28 @@ impl Default for Registry {
                 apply: ApplyClass::Reset,
             },
             Setting {
-                id: "particles.count",
-                label: "Particle count",
+                id: "particles.density",
+                label: "Particle density (/cell)",
                 category: Category::Particles,
-                default: Value::U32(254_144),
-                value: Value::U32(254_144),
+                default: Value::F32(8.0),
+                value: Value::F32(8.0),
+                validation: Validation::F32Range { min: 1.0, max: 32.0 },
+                tooltip: Some("How many particles seed each fluid cell at reset. The actual particle count is derived from this density, the grid resolution, and how much of the tank the scenario fills — so it stays sane when you change grid size."),
+                technical_tooltip: Some("Reset-class particles-per-seeded-cell density. The spawn count is round(density * seeded_volume_fraction * total_grid_cells); 'seeded cells' are the liquid-block volume in cell units, not every grid cell. Set Particle count (advanced) to a nonzero value to override this derivation."),
+                apply: ApplyClass::Reset,
+            },
+            Setting {
+                id: "particles.count",
+                label: "Particle count (advanced override)",
+                category: Category::Particles,
+                default: Value::U32(0),
+                value: Value::U32(0),
                 validation: Validation::U32Range {
-                    min: 1_024,
+                    min: 0,
                     max: 134_217_728,
                 },
-                tooltip: Some("Sets how much liquid is seeded at reset; more particles look smoother but cost more."),
-                technical_tooltip: Some("Reset-class initial mass/distribution control. The slider steps by powers of two, while the number box accepts any value in range; large requests may hit device limits."),
+                tooltip: Some("Advanced: pin an exact particle count, ignoring Particle density. 0 means Auto — derive the count from density and grid resolution (recommended)."),
+                technical_tooltip: Some("Reset-class manual override. 0 = Auto (count derived from particles.density). A nonzero value pins the absolute seed target across grid-resolution changes; the slider steps by powers of two and large requests may hit device limits."),
                 apply: ApplyClass::Reset,
             },
             Setting {
@@ -1589,8 +1600,19 @@ impl Registry {
     pub fn grid_res_z(&self) -> u32 {
         self.get("grid.res_z").map(|s| s.as_u32()).unwrap_or(64)
     }
-    pub fn particle_count(&self) -> u32 {
+    /// Raw value of the advanced `particles.count` override. `0` means Auto
+    /// (the spawn count is derived from `particles.density`). Use
+    /// [`SceneConfig::from_settings`] for the resolved count; this is the
+    /// unresolved override knob.
+    pub fn particle_count_override(&self) -> u32 {
         self.get("particles.count").map(|s| s.as_u32()).unwrap_or(0)
+    }
+    /// Particles-per-seeded-cell density used to derive the spawn count when the
+    /// advanced override is Auto (0).
+    pub fn particle_density(&self) -> f32 {
+        self.get("particles.density")
+            .map(|s| s.as_f32())
+            .unwrap_or(8.0)
     }
     pub fn fixed_dt(&self) -> f32 {
         self.get("physics.fixed_dt")
@@ -2051,7 +2073,7 @@ fn legacy_hidden_setting_id(id: &str) -> bool {
 
 fn settings_tab(setting: &Setting) -> SettingsTab {
     let id = setting.id;
-    if id.starts_with("scene.") || id.starts_with("grid.") || id == "particles.count" {
+    if id.starts_with("scene.") || id.starts_with("grid.") || id.starts_with("particles.") {
         return SettingsTab::Scenario;
     }
     if id.starts_with("interaction.") {
@@ -2175,11 +2197,11 @@ fn enum_options(id: &str) -> Option<&'static [&'static str]> {
 /// Optional non-linear scale for a setting's *slider*. `"log2"` makes each slider
 /// notch double the value (powers of two from `min` to `max`), keeping a slider
 /// usable across a huge range; the number input still accepts any exact value in
-/// `[min, max]`. Both `min` and `max` should be powers of two for clean stepping
-/// (`particles.count` runs 2^10 .. 2^27). Returns `None` for linear sliders.
+/// `[min, max]`. Both `min` and `max` should be powers of two for clean stepping.
+/// Currently only color swatches use a non-linear scale. Returns `None` for linear
+/// sliders.
 fn slider_scale(id: &str) -> Option<&'static str> {
     match id {
-        "particles.count" => Some("log2"),
         "render.particle_slow_color"
         | "render.particle_fast_color"
         | "render.hero.absorption_color"
@@ -2452,6 +2474,7 @@ mod tests {
             "grid.res_x",
             "grid.res_y",
             "grid.res_z",
+            "particles.density",
             "particles.count",
             "physics.fixed_dt",
             "physics.max_substeps",
