@@ -3,6 +3,7 @@ status:        active
 owner:         unassigned
 last_updated:  2026-06-13
 okay_to_delete: false
+phase_3_designed: true
 long_lived:    false
 owning_docs:
   - architecture/simulation.md
@@ -49,6 +50,69 @@ owning_docs:
   non-default densities is still untested and remains the user's call.
 - **Phases 2, 3, and the open measurement question (#1) remain.** This plan
   stays `active`, not shipped.
+
+## Status update (2026-06-13) — high-count refocus, Phase 3 designed
+
+The user wants to push perf at **HIGH particle counts** (well past the original
+4.13M repro). Fresh measured baseline (RTX 3080 Ti, grid 128×64×128, default
+settings, throttled detailed profiling):
+
+| density | particles | fps |
+|--------:|----------:|----:|
+| 8       | ~1.5M     | 40  |
+| 32      | ~6M       | 26  |
+| 32      | ~22M      | 6   |
+
+The sim is **per-PARTICLE bound** at these counts: P2G `scatter` + `g2p`
+dominate; per-cell passes and the CG solve are cheap because only ~36% of cells
+are liquid (~373k of ~1.05M cells at 128×64×128). Phase 1 (scatter fusion)
+already shipped — scatter is **one** fused pass reading each particle once
+(`scatter.wgsl`, 7 storage + 1 uniform). The prior benchmark concluded fusion
+did **not** move the atomic-traffic floor, so the remaining scatter cost is
+**atomic contention + incoherent memory access**, not redundant reads. That is
+exactly what a **particle spatial sort** attacks, and it is the designed Phase 3
+below (replacing the old "measure, then maybe" placeholder). The mark-fold and
+workgroup-local-accumulation levers are re-sequenced as smaller follow-ons.
+
+**Ranked levers (gain / effort / risk), high-count regime:**
+
+| # | Lever | Mechanism | Expected gain | Effort | Risk | Determinism |
+|---|-------|-----------|---------------|--------|------|-------------|
+| 1 | **Particle spatial sort (cell-bucketed counting sort)** | reorder particles by linear cell index every N steps so scatter atomics and g2p gathers hit coherent grid memory → less same-address atomic contention + far better cache/bandwidth | **largest** — targets the actual scatter/g2p floor; literature & memory-bound reasoning suggest 1.3–2× on the ~per-particle budget at 6–22M, net of the sort's own cost | High | Med | preserved (see argument) |
+| 2 | Workgroup-local scatter pre-accumulation | combine same-face contributions in `var<workgroup>` before one global atomic | small/uncertain **unless** particles are already sorted; near-useless on unsorted input (low intra-WG cell coherence). Best framed as a *rider on lever 1* | Med | Med | preserved if integer accum |
+| 3 | Mark-fold into scatter | drop the 4th particle sweep (`mark`) by doing the occupancy `atomicAdd` inside fused scatter | ~one particle-sweep (~2% at high count); gated on binding budget ≥ 9 | Low | Low | preserved |
+| 4 | Particle SoA split (pos / vel buffers) | scatter & mark read only `pos`; g2p reads+writes both. Splitting AoS{pos,vel} into two buffers halves bytes touched by the read-only passes | modest bandwidth win at 22M (particle buffer is 32B×22M ≈ 700MB); compounds with lever 1 | Med | Low | preserved |
+| 5 | g2p gather micro-tuning | hoist shared base/t; the 3 axes stagger differently so sharing is limited | low | Low | Med (wall-aware invariant) |
+| 6 | Workgroup-size / occupancy sweep | try WG 128/256 for scatter & g2p | low, free to try | Low | Low | preserved |
+
+**Recommended top lever: the particle spatial sort (lever 1), designed as
+Phase 3 below.** A periodic counting sort by linear cell index makes both the
+scatter atomics and the g2p gathers spatially coherent, which is the only thing
+that moves the contention/bandwidth floor those two passes now sit on. At 6–22M
+particles the per-particle budget is essentially all of the frame, so even a
+1.3–1.5× cut there is the single biggest available win. The sort is a GPU
+counting sort (clear-histogram → count → prefix-sum → scatter-into-sorted-order)
+that runs at most once per step (optionally every N steps), and its cost is
+small relative to the scatter+g2p it accelerates.
+
+**Determinism:** preserved and argued in Phase 3. The sort key is the integer
+linear cell index `i + nx*(j + ny*k)` computed from `floor((pos-origin)/h)`
+(identical to `mark.wgsl`), so it is a pure deterministic function of state. P2G
+stays i32 fixed-point atomics, which are order-independent, so any permutation
+of particles yields **bit-identical** grid `num`/`den`. g2p reads/writes each
+particle independently, so reordered storage gives identical per-particle
+results. The only requirement is a **stable, deterministic** sort (ties broken
+by original index) so a given input always produces one permutation — satisfied
+by a counting sort with a deterministic intra-bucket order.
+
+**User decision needed before implementation:** re-sort cadence — **every step**
+(max coherence, ~full sort cost each frame) vs **every N steps** (amortized sort
+cost; coherence degrades between sorts as particles advect across cells, ~≤1
+cell/step under the CFL clamp so N=4–8 is cheap-and-safe). This is a perf/perf
+tradeoff (no quality change). Recommended default: re-sort every step at high
+counts and measure N=2/4/8 in the same capture sweep. The implementer should
+also decide whether the sort is gated on a particle-count threshold (skip it at
+low counts where it is net-negative).
 
 ## Mission
 
@@ -212,70 +276,247 @@ velocities land on the wrong faces.
 
 ---
 
-### Phase 2 — Optionally fold `mark` into the fused scatter (SMALL, MEDIUM RISK)
+### Phase 3 — Particle spatial sort (PRIMARY high-count lever) — IMPLEMENTER-READY
 
-**Idea.** `mark.wgsl` is a fourth per-particle scatter (`atomicAdd(occ[c], 1)`
-into the occupancy buffer) costing 0.52 ms. Since the fused scatter already
-reads each particle's position and computes its containing cell, it could also
-do the occupancy `atomicAdd` in the same pass, removing a whole particle-linear
-dispatch.
+**Status:** designed, not started. This is the top remaining lever at 6–22M
+particles. It is the concrete replacement for the old "measure, then maybe"
+Phase 3 placeholder.
 
-**Expected ms saved.** ~0.5 ms/frame (small). Real value is removing one
-particle-buffer sweep, not the arithmetic.
+#### Why this is the lever
 
-**Files.** `scatter.wgsl` (fused) gains the `occupancy` binding; `mark.wgsl` and
-its pipeline/bind-group/dispatch removed from `record_prep`. **Binding budget:**
-adds `occupancy`(binding 8, `read_write atomic<u32>`) → **8 storage buffers**.
-This is exactly at the common limit; on an 8-buffer adapter there is zero
-headroom and this fusion may not build. **Gate it on
-`max_storage_buffers_per_stage >= 9`**, else keep `mark` separate.
+After Phase 1, the scatter floor is set by **same-address atomic contention**
+(N particles × 8 stencil corners × 2 `atomicAdd`s into 6 face buffers) and by
+**incoherent memory** — particles in storage order are spread across the grid,
+so consecutive lanes in a 64-wide workgroup touch unrelated cache lines (both on
+the scatter `atomicAdd` targets and on the g2p `u/v/w_vel`/`_saved` gathers).
+The particle layout is seeded as a lattice (`generate_particles` in `fluid.rs`)
+and then advects freely; after a few seconds it is effectively random w.r.t.
+cell index. Reordering particles so that particles in the same cell (and nearby
+cells) are **contiguous in the buffer** makes:
 
-**Risk.** *Medium* — purely the binding-budget ceiling (8 vs 9). No determinism
-or visual risk (integer `atomicAdd`, same counts). Sequencing: do Phase 2 only
-after Phase 1 lands, as a small bolt-on; if it pushes past the binding limit,
-drop it without affecting Phase 1.
+- scatter `atomicAdd`s from a workgroup land on a small, shared set of face
+  addresses → fewer cross-warp atomic collisions and better L2 residency;
+- g2p gathers read a small working set of grid faces per workgroup → cache hits
+  instead of misses.
 
-**Verification.** Same as Phase 1; additionally confirm `classify` still sees
-the same occupancy counts (liquid-cell count `gpu.liquid_cells` unchanged in the
-throttled readout).
+Both dominant passes are per-particle and memory-bound at high count, so this is
+the only structural lever that moves their floor.
+
+#### Algorithm: GPU counting sort by linear cell index
+
+Sort key per particle: `key = i + nx*(j + ny*k)` where
+`(i,j,k) = clamp(floor((pos - origin)/h), 0, n-1)` — **identical** to the cell
+index `mark.wgsl` already computes. Range is `[0, cell_count)` (≤ ~1.05M at
+128×64×128), small enough for a single-pass counting sort (no multi-digit radix
+needed). Five GPU passes, all already-supported dispatch shapes:
+
+1. **clear_hist** (cell-linear): zero `cell_hist: array<atomic<u32>>` of length
+   `cell_count`. (Reuse the existing `clear.wgsl` + a clear bind group, or fold
+   into the existing clear list.)
+2. **count** (particle-linear): each particle computes `key`,
+   `atomicAdd(&cell_hist[key], 1u)`. This is *exactly* the work `mark.wgsl`
+   already does — see "mark merge" below; the histogram **is** the occupancy
+   buffer.
+3. **prefix-sum** (exclusive scan of `cell_hist` → `cell_offset`): produces the
+   start offset of each cell's bucket in the sorted array. `cell_count` ≤ ~1M, so
+   a standard work-efficient block scan + block-offset fixup (two cell-linear
+   dispatches + a small spine scan) suffices; the existing `cg_reduce`/
+   `cg_reduce_final` two-level reduction pattern is the template to copy. The
+   scan is on **cells**, not particles, so it is cheap (per-cell work is already
+   "free" at this scale).
+4. **scatter_into_order** (particle-linear): each particle recomputes `key`, does
+   `dst = atomicAdd(&cell_offset[key], 1u)` (a running cursor), and writes its
+   record to `particles_sorted[dst]`. To keep the sort **deterministic** (stable)
+   the running-cursor order is *not* guaranteed stable by itself (atomic return
+   order is nondeterministic), so either (a) accept "deterministic grid, possibly
+   non-stable particle permutation" — which is still bit-identical for the sim
+   because P2G is order-independent and g2p is per-particle (see determinism
+   argument) — or (b) make it strictly stable with a per-particle rank. **Take
+   option (a):** it is correct and bit-identical at the simulation level; do NOT
+   pay for strict stability. (Documented and argued below.)
+5. **(no separate reindex pass)** — passes 4 writes the fully reordered particle
+   records directly; no permutation indirection is needed downstream because every
+   particle-linear pass already addresses `particles[p]` by dense index.
+
+Then **ping-pong**: subsequent passes (mark/scatter/.../g2p) read from
+`particles_sorted`; next step's sort writes back into `particles`. Maintain two
+particle buffers (`particles_a`, `particles_b`) and swap which is "current" each
+sorted step, exactly like the pressure ping-pong already in this file.
+
+#### Buffer changes
+
+- **Second particle buffer** `particles_b` (same size as `particles`,
+  `particle_count * 32` B). At 22M this is ~700MB extra — assess against device
+  budget; the plan must surface this VRAM cost as a gate (lever 4, SoA split,
+  reduces it). The existing `particles` becomes `particles_a`.
+- **`cell_offset: array<atomic<u32>>`** length `cell_count` (the scan output +
+  running cursor). The histogram input is the **existing `occupancy` buffer**
+  (see mark merge) so no new histogram buffer is needed; if mark stays separate,
+  add `cell_hist` of length `cell_count`.
+- All bind groups that bind `particles` (mark, scatter, g2p, impulse, the
+  renderer's particle vertex buffer, `reset`) must be built **for both**
+  `particles_a` and `particles_b` and selected by the current-buffer flag, OR
+  rebuilt on swap. Building both up front (as the code already does for CG
+  ping-pong reduce groups) is cleaner and avoids per-frame bind-group creation.
+- `reset()` rewrites `initial` into the current buffer and resets the
+  current-buffer flag to a known side so the first step is deterministic.
+
+#### Storage-binding budget (per new pass)
+
+- **clear_hist**: 1 storage (reuse clear). OK.
+- **count**: `params`(uniform) + `particles`(read) + `cell_hist`(rw atomic) = 2
+  storage. OK. (Identical to `mark` → merge.)
+- **prefix-sum** block scan: `params`(uniform) + `cell_hist`(read) +
+  `cell_offset`(write) + `spine`(rw) = 3 storage. OK.
+- **scatter_into_order**: `params`(uniform) + `particles_src`(read) +
+  `particles_dst`(write) + `cell_offset`(rw atomic cursor) = 3 storage. **Well
+  under the 8 floor.** No budget pressure anywhere in the sort — the tight
+  pass remains the existing fused `scatter` (7) and `g2p` (8), which the sort
+  does not touch. Keep the runtime `assert max_storage_buffers_per_stage >= 8`.
+
+#### Mark merge (free win, fold lever 3 in here)
+
+`mark.wgsl` already does pass 2's `atomicAdd(&occ[key], 1u)` with the **same key
+math**. So the counting-sort histogram **is** the occupancy buffer: run `mark`
+(renamed conceptually "count") to fill `occupancy`, run the prefix-sum to derive
+`cell_offset` from `occupancy`, then `scatter_into_order`. This removes the
+separate `cell_hist` buffer and means the sort adds only **prefix-sum +
+scatter_into_order** as genuinely new particle/cell work on top of the existing
+mark. (classify still reads `occupancy` unchanged — read it *before* any
+in-place scan mutates it, so the scan must write `cell_offset` as a separate
+buffer, not overwrite `occupancy`.)
+
+#### Dispatch wiring
+
+New helpers in `fluid.rs` mirroring the existing ones:
+`dispatch_clear_hist`, `dispatch_prefix_sum`, `dispatch_sort_scatter`, plus a
+`current particle buffer` selector used by `dispatch_mark/scatter/g2p/impulse`
+and `g2p`'s in-place write target. Sequencing inside the step (cadence-gated):
+
+```
+record_prep:
+  clear (incl. occupancy)         // existing
+  mark/count -> occupancy         // existing
+  [if sort_this_step]:
+     prefix_sum(occupancy -> cell_offset)
+     sort_scatter(particles_src -> particles_dst); swap current buffer
+  classify                        // reads occupancy (unchanged)
+  scatter (fused P2G)             // reads current particle buffer
+  ... normalize/savevel/forces/enforce
+```
+
+Note the sort must happen **after** mark/count (needs the histogram) and
+**before** scatter/g2p (so they read sorted order), and classify must read
+`occupancy` regardless. The detailed profiler (`timing.rs FINE_SECTIONS`,
+`gpu/mod.rs record_substep_detailed`) gains up to **2 new sections**
+(`prefix_sum`, `sort_scatter`); update `N_FINE`, the `sec!` indices, the
+coarse-rollup is unaffected (both land in `prep`), and `dispatches_per_substep`
+grows by the sort's dispatch count when sorting. Follow the
+`PREP_END`/`FINISH_START` by-name boundary convention already in `timing.rs`.
+
+#### Cadence (the user decision)
+
+Re-sort **every step** (max coherence) vs **every N steps** (amortize sort cost;
+coherence decays as particles advect, but the CFL clamp limits motion to ~≤1
+cell/step so N=4–8 keeps buckets nearly-coherent). Implement a
+`sort_period` (Reset-class, or a dev knob) and a particle-count threshold below
+which sorting is skipped (it is net-negative at ~1.5M). **Default for the first
+capture: sort every step; sweep N∈{1,2,4,8} at 6M and 22M to find the knee.**
+
+#### Determinism argument (load-bearing — must hold bit-identically)
+
+The sim must stay deterministic (host tests + capture screenshot diff). The sort
+preserves this:
+
+1. **Key is a pure function of state.** `key(pos)` uses the same integer cell
+   math as `mark.wgsl`; no float reduction, no time/order dependence.
+2. **P2G is order-independent.** Scatter accumulates i32 fixed-point `atomicAdd`s
+   into `num`/`den`. Integer addition is associative and commutative, so **any**
+   permutation of the particle array produces **bit-identical** `num`/`den`, hence
+   bit-identical normalized grid velocity. The sort only permutes which lane
+   processes which particle — the multiset of `atomicAdd`s is unchanged.
+3. **g2p is per-particle independent.** Each invocation reads grid velocity
+   (identical, from 2) and reads+writes **only its own** `particles[p]`. The
+   result for a given particle depends only on its own pos/vel and the (identical)
+   grid — not on neighbors or buffer position. So reordered storage gives every
+   particle the identical updated pos/vel; the *set* of particles is identical.
+4. **No pass depends on absolute buffer index meaning.** Particles are an
+   unordered set; nothing keys off `p` as an identity (the renderer draws all
+   instances; impulse hits all uniformly). So a non-stable permutation in pass 4
+   (option a) is fine — the simulation state (grid + particle multiset) is
+   bit-identical regardless of which slot a particle lands in.
+
+Therefore the sort changes performance only, not results. **The one thing that
+would break determinism** is introducing any float accumulation into the key or
+the histogram, or letting the scan read a partially-cleared histogram — both
+avoided by the integer key and the clear→count→scan→scatter ordering.
+
+Host tests: the existing host reference (`cargo test --lib`) does not run the GPU
+sort, so it stays green by construction. Add a **host unit test for the
+prefix-sum / counting-sort logic** (a CPU mirror of the scan + cursor scatter)
+asserting: (a) every particle lands in exactly one slot (permutation is a
+bijection), (b) all particles in a bucket share the same cell key, (c) bucket
+order matches the exclusive prefix sum. Put it next to the existing
+`particle_dispatch_shape` tests in `fluid.rs` (pure functions, no GPU).
+
+#### Expected gain (do NOT claim without a capture)
+
+Memory-bound reasoning: at 6–22M the per-particle budget is ~all of the frame;
+sorted access typically buys 1.3–2× on memory-bound scatter/gather kernels. Net
+of the sort's own cost (one counting sort ≈ a few particle-sweeps + a cell scan,
+i.e. small vs the scatter+g2p it accelerates), expect a **material** scatter+g2p
+drop at high count. **No number ships without the capture below.**
+
+#### Capture to prove it (the acceptance signal)
+
+Real-GPU `app/tools/capture.mjs` (it drives `window.__fluid.set_setting`, and
+honors `PARTICLES=` + `DETAILED=1` env). Run a **before/after sweep at the high
+counts**, detailed profiling on, same seed/scene/grid (128×64×128):
+
+- Set `grid.res_x/y/z` = 128/64/128 and `particles.density` = 32 (the 6M and 22M
+  configs) via `EVAL`/`set_setting`; capture detailed timing.
+- Record `scatter` + `g2p` section ms/frame **before** (current `main`) and
+  **after** (sort landed), at 6M and 22M, plus fps / `real_time_factor`.
+- Acceptance: `scatter`+`g2p` total drops materially at 6M **and** 22M, frame
+  total drops / fps rises, `gpuDeviceStatus:"ok"`, and a screenshot at a fixed
+  seed/frame **matches** the pre-change capture (the determinism check that can't
+  be faked). If 22M can't allocate the second particle buffer, that gates the
+  VRAM cost (do lever 4 SoA split first, or sort in place — but in-place sort is
+  not a counting sort; flag as a separate design).
+
+#### Risk
+
+*Medium.* New buffers + ping-pong + 2 new passes, but every piece reuses an
+existing pattern (atomic histogram = mark; scan = cg_reduce two-level; ping-pong
+= pressure buffers; particle dispatch = the tiled contract). The determinism
+argument is airtight given integer P2G. The real risks are (1) the +700MB second
+particle buffer at 22M (gate on device budget), and (2) getting the prefix-sum
+exclusive-scan boundary fixup right — covered by the host unit test.
 
 ---
 
-### Phase 3 — Atomic-contention / memory-access tuning in scatter & g2p (RISKIER, MEASURE FIRST)
+### Phase 4 — Mark-fold + workgroup-local scatter accumulation (SMALL, ride on Phase 3)
 
-**Idea.** After fusion, the scatter floor is **atomic contention** (4M particles
-× 8 stencil corners × 2 `atomicAdd`s, at ~11 particles/cell → heavy
-same-address contention). Candidate mitigations, each needs its own capture
-before committing:
+These two were the old Phase 2/3 placeholders; at high count they are smaller
+than the sort and **partly subsumed by it**.
 
-- **Workgroup-local pre-accumulation.** Particles in a 64-lane workgroup that hit
-  the same face could combine contributions in workgroup-shared memory before one
-  `atomicAdd` to global — but particle order is not spatially sorted, so hit rate
-  is unknown without a capture. Risky and possibly net-negative.
-- **Particle spatial reordering (Z-order/cell-bucketed).** Sorting particles by
-  cell would make scatter atomics and g2p gathers cache/contention-friendly, but
-  adds a sort pass and a particle-buffer permutation each substep — a large piece
-  of work with its own cost. Out of scope for this plan beyond naming it; would
-  need its own plan and a measured cost case.
-- **g2p memory access.** `g2p.wgsl` does 3 separate trilinear gathers, each
-  reading a `_vel` and a `_saved` buffer with per-corner `*_touches_static_solid`
-  branch divergence. There may be a modest win from hoisting the shared
-  `base`/`t` per axis, but the three axes have different staggering so sharing is
-  limited. Low expected payoff; measure before touching the wall-aware sampling
-  (it encodes a free-slip invariant — see `simulation.md` "G2P samples skip
-  static wall-zeroed face stencils").
+**Mark-fold** is now folded into the Phase 3 sort design (the histogram *is*
+occupancy; mark = the counting-sort count pass), so there is no separate
+mark-fold task once Phase 3 lands. If Phase 3 is deferred, mark-fold remains a
+standalone ~one-sweep win, gated on `max_storage_buffers_per_stage >= 9` (it
+would add `occupancy` as binding 8 to the already-7-binding fused scatter).
 
-**Expected ms saved.** Unknown; **do not promise a number** without a capture.
-This phase is explicitly "measure, then maybe."
+**Workgroup-local scatter pre-accumulation** becomes worthwhile **only after the
+sort**: with particles sorted by cell, a 64-lane workgroup mostly touches a small
+set of faces, so accumulating contributions in `var<workgroup>` shared memory and
+emitting one global `atomicAdd` per (face,workgroup) cuts global-atomic traffic
+sharply. On *unsorted* input the intra-workgroup cell coherence is low and this
+is near-useless or net-negative — which is why it is sequenced after Phase 3, not
+before. Keep accumulation **integer** (i32 fixed-point) so determinism holds.
+Measure as a rider on the Phase 3 capture.
 
-**Risk.** *High* for the sort path (new architecture, new buffers, perf claim
-needs evidence per `decisions/performance.md`). *Medium* for g2p tweaks (the
-wall-aware sampling invariant is load-bearing for visual quality). Gate all of
-Phase 3 behind a fresh capture that isolates contention as the remaining cost.
-
-**Verification.** `cargo test --lib` green; capture must show a real `scatter`/
-`g2p` reduction *and* an unchanged screenshot diff. Any sort path is a separate
-plan.
+**Risk.** Low/Medium. Pure perf riders; do them only with a capture showing they
+add on top of the sort.
 
 ---
 
@@ -323,6 +564,20 @@ Phase 1 (the shippable unit):
   pre-change capture at the same seed/frame (no visual regression). No
   performance claim ships without this capture (`decisions/performance.md`).
 
+Phase 3 (the particle spatial sort, shippable unit):
+
+- `cargo test --lib` green, including the **new host counting-sort/prefix-sum
+  unit test** (bijection, per-bucket key equality, exclusive-scan bucket order).
+- `cargo build --target wasm32-unknown-unknown` compiles (new pipelines build on
+  the dev adapter; second particle buffer allocates).
+- Real-GPU before/after detailed sweep at **6M and 22M** (grid 128×64×128,
+  `particles.density`=32): `scatter`+`g2p` section total drops materially at both
+  counts, frame total down / fps up, `gpuDeviceStatus:"ok"`, and a fixed
+  seed/frame screenshot **matches** the pre-sort capture (bit-identical sim, per
+  the determinism argument). If the 22M second particle buffer can't allocate,
+  that result gates the VRAM cost (lever 4 SoA split first). No perf claim ships
+  without this capture.
+
 ## Discipline rules
 
 - **Determinism is non-negotiable.** Any scatter change stays integer/fixed-point
@@ -347,9 +602,16 @@ Phase 1 (the shippable unit):
    billing artifact. This gates any "reduce dispatch/barrier count" follow-on.
 2. **Particle density target (Phase D)** — user must choose particles/cell (keep
    ~11, or 8, or 6) before that lever is applied.
-3. **Phase 3 contention** — needs a post-Phase-1 capture isolating atomic
-   contention before any workgroup-local-accumulation or particle-sort work is
-   justified.
+3. **Phase 3 sort cadence (USER DECISION)** — re-sort every step (max coherence)
+   vs every N steps (amortized; pick N at the captured knee, likely 4–8 under the
+   CFL clamp). Perf/perf tradeoff, no quality change. Plus: gate the sort on a
+   particle-count threshold so it is skipped at low counts where it is
+   net-negative.
+4. **Phase 3 VRAM (gate, not a free decision)** — the counting sort needs a
+   second particle buffer (~700MB at 22M). If a target device can't allocate it,
+   either do lever 4 (SoA pos/vel split) first to shrink it, or treat in-place
+   reordering as a separate design. Confirm against the device budget in the
+   capture.
 
 ## Migration notes (filled in at ship time)
 
@@ -364,8 +626,21 @@ On ship, route facts/decisions into:
 - `decisions/performance.md` — the scatter-fusion decision and its binding-budget
   rationale (extends "Respect the per-stage storage-buffer limit — split passes":
   fuse *only* when the budget and a capture both allow it); if Phase D is taken,
-  a particles/cell density decision with the perf-vs-fidelity tradeoff.
-- `architecture/gpu-resources.md` — if buffer bindings/ownership shift.
+  a particles/cell density decision with the perf-vs-fidelity tradeoff. **Phase 3:**
+  the particle-spatial-sort decision — a periodic GPU counting sort by linear
+  cell index, the determinism argument (integer-P2G order-independence makes any
+  permutation bit-identical), the sort-cadence tradeoff, and the second-particle-
+  buffer VRAM cost as a high-count gate.
+- `architecture/gpu-resources.md` — if buffer bindings/ownership shift. **Phase 3:**
+  the second particle buffer (ping-pong), `cell_offset` (scan output), the
+  occupancy-as-histogram reuse, and the per-pass binding budgets for clear_hist /
+  prefix_sum / sort_scatter (all ≤ 3 storage, well under the floor).
+- `architecture/simulation.md` (Phase 3) — the sort passes inserted between
+  mark/count and the fused scatter in the step sequence; the current-particle-
+  buffer ping-pong; the determinism note that the sort is perf-only.
+- `architecture/profiler.md` (Phase 3) — the new `prefix_sum` / `sort_scatter`
+  `FINE_SECTIONS`, the bumped `N_FINE`, and the `dispatches_per_substep` growth
+  when sorting.
 
 List exactly what landed where so a reviewer can confirm `okay_to_delete: true`.
 

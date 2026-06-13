@@ -1565,6 +1565,28 @@ impl Default for Registry {
                 technical_tooltip: Some("Reset-class dev toggle. Detailed mode allocates a larger timestamp query set and adds timestamp writes around fine compute passes and CG iterations."),
                 apply: ApplyClass::Reset,
             },
+            Setting {
+                id: "dev.particle_sort",
+                label: "Particle spatial sort",
+                category: Category::Diagnostics,
+                default: Value::U32(1),
+                value: Value::U32(1),
+                validation: Validation::U32Range { min: 0, max: 1 },
+                tooltip: Some("Periodically reorders particles by grid cell so the P2G scatter and G2P passes touch coherent memory (faster at high particle counts)."),
+                technical_tooltip: Some("Reset-class. GPU counting sort by linear cell index inserted before P2G. Permutation-only: integer P2G atomics make sorted vs unsorted runs bit-identical. Needs a second particle buffer; falls back to unsorted if it cannot allocate."),
+                apply: ApplyClass::Reset,
+            },
+            Setting {
+                id: "dev.particle_sort_period",
+                label: "Particle sort period",
+                category: Category::Diagnostics,
+                default: Value::U32(2),
+                value: Value::U32(2),
+                validation: Validation::U32Range { min: 1, max: 16 },
+                tooltip: Some("Re-sort particles every N substeps. The CFL clamp keeps motion under ~1 cell/step, so re-sorting periodically stays coherent and amortizes the sort cost."),
+                technical_tooltip: Some("Reset-class. N=1 sorts every substep (max coherence); larger N amortizes the sort's own cost. Swept empirically; 2 was the fps knee on the test GPU."),
+                apply: ApplyClass::Reset,
+            },
         ];
         Self { settings }
     }
@@ -1819,6 +1841,16 @@ impl Registry {
         self.get("dev.detailed_gpu_profiling")
             .map(|s| s.as_u32() != 0)
             .unwrap_or(false)
+    }
+    pub fn particle_sort(&self) -> bool {
+        self.get("dev.particle_sort")
+            .map(|s| s.as_u32() != 0)
+            .unwrap_or(true)
+    }
+    pub fn particle_sort_period(&self) -> u32 {
+        self.get("dev.particle_sort_period")
+            .map(|s| s.as_u32().max(1))
+            .unwrap_or(2)
     }
 
     fn f32_or(&self, id: &str, default: f32) -> f32 {
@@ -2173,6 +2205,8 @@ fn settings_tab(setting: &Setting) -> SettingsTab {
         || id.starts_with("classify.")
         || id.starts_with("solver.")
         || id == "dev.detailed_gpu_profiling"
+        || id == "dev.particle_sort"
+        || id == "dev.particle_sort_period"
     {
         return SettingsTab::Simulation;
     }
@@ -2504,6 +2538,8 @@ mod tests {
             "physics.fixed_dt",
             "physics.max_substeps",
             "dev.detailed_gpu_profiling",
+            "dev.particle_sort",
+            "dev.particle_sort_period",
         ] {
             let setting = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
             assert_eq!(

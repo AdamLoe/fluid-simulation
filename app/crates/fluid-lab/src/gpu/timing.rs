@@ -29,9 +29,10 @@ const THROTTLE: u32 = 20;
 
 /// Fine sections timed per substep (each is one begin/end pair). The CG-iteration
 /// category passes are appended AFTER these, `CG_CATS_PER_ITER` pairs per iter.
-pub const FINE_SECTIONS: [&str; 25] = [
+pub const FINE_SECTIONS: [&str; 26] = [
     "clear",
     "mark",
+    "sort",
     "classify",
     "scatter",
     "normalize_u",
@@ -56,7 +57,7 @@ pub const FINE_SECTIONS: [&str; 25] = [
     "bound_post_w",
     "g2p",
 ];
-const N_FINE: usize = FINE_SECTIONS.len(); // 25
+const N_FINE: usize = FINE_SECTIONS.len(); // 26
 
 /// Coarse-rollup boundaries over FINE_SECTIONS (kept next to the array so a future
 /// renumber updates here, not in a magic-number sum buried in the readback callback):

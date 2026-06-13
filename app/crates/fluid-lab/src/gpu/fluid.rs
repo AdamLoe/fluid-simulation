@@ -111,8 +111,13 @@ pub struct GpuFluid {
     buffer_bytes: u64,
 
     // buffers
-    /// Interleaved particles {pos:vec4, vel:vec4} (32 B each).
+    /// Interleaved particles {pos:vec4, vel:vec4} (32 B each). The "A" side of the
+    /// spatial-sort ping-pong; `particles_b` is the "B" side. `sort_cur` selects
+    /// which holds the live particle state (the renderer/g2p/impulse read the
+    /// current side). When the sort is disabled (or its buffer can't allocate) the
+    /// current side is always A and `particles_b` is an unused placeholder.
     particles: wgpu::Buffer,
+    particles_b: wgpu::Buffer,
     initial: Vec<[f32; 8]>,
     u_num: wgpu::Buffer,
     u_den: wgpu::Buffer,
@@ -131,6 +136,12 @@ pub struct GpuFluid {
     pressure_b: wgpu::Buffer,
     divergence: wgpu::Buffer,
     occupancy: wgpu::Buffer,
+    /// Counting-sort exclusive-prefix-sum output (cell bucket starts), then the
+    /// per-cell running cursor during sort_scatter. Length = cell_count.
+    cell_offset: wgpu::Buffer,
+    /// Per-block totals for the two-level occupancy prefix sum. Length =
+    /// ceil(cell_count/256).
+    scan_spine: wgpu::Buffer,
     cell_type: wgpu::Buffer,
     /// stats[0] = liquid cell count (liveness counter), read back throttled.
     stats: wgpu::Buffer,
@@ -156,6 +167,11 @@ pub struct GpuFluid {
     rbgs_black_pl: wgpu::ComputePipeline,
     gradient_pl: [wgpu::ComputePipeline; 3],
     g2p_pl: wgpu::ComputePipeline,
+    // particle spatial sort pipelines
+    scan_block_pl: wgpu::ComputePipeline,
+    scan_spine_pl: wgpu::ComputePipeline,
+    scan_add_pl: wgpu::ComputePipeline,
+    sort_scatter_pl: wgpu::ComputePipeline,
     // CG pipelines
     cg_init_pl: wgpu::ComputePipeline,
     cg_spmv_pl: wgpu::ComputePipeline,
@@ -170,9 +186,11 @@ pub struct GpuFluid {
     // bind groups (built once; buffers are stable)
     clear_bg: Vec<(wgpu::BindGroup, u32)>, // (bind group, element count)
     pressure_clear_bg: (wgpu::BindGroup, u32),
-    mark_bg: wgpu::BindGroup,
+    /// Particle-reading passes are built for BOTH ping-pong sides; `sort_cur`
+    /// (0 = A/`particles`, 1 = B/`particles_b`) selects the live side each step.
+    mark_bg: [wgpu::BindGroup; 2],
     classify_bg: wgpu::BindGroup,
-    scatter_bg: wgpu::BindGroup,
+    scatter_bg: [wgpu::BindGroup; 2],
     normalize_bg: [wgpu::BindGroup; 3],
     save_vel_bg: [wgpu::BindGroup; 3],
     gravity_bg: [wgpu::BindGroup; 3],
@@ -180,7 +198,14 @@ pub struct GpuFluid {
     divergence_bg: wgpu::BindGroup,
     rbgs_bg: wgpu::BindGroup, // kept for reference, no longer dispatched
     gradient_bg: [wgpu::BindGroup; 3], // read pressure_a
-    g2p_bg: wgpu::BindGroup,
+    g2p_bg: [wgpu::BindGroup; 2],
+    // particle spatial sort bind groups
+    scan_block_bg: wgpu::BindGroup,
+    scan_spine_bg: wgpu::BindGroup,
+    scan_add_bg: wgpu::BindGroup,
+    /// sort_scatter for current side `c`: reads side `c`, writes side `1-c`.
+    /// Index by `sort_cur` to get the src→dst group for this step's sort.
+    sort_scatter_bg: [wgpu::BindGroup; 2],
     // CG bind groups
     cg_init_bg: wgpu::BindGroup,
     cg_spmv_bg: wgpu::BindGroup,
@@ -196,7 +221,21 @@ pub struct GpuFluid {
     // impulse pass
     impulse_buf: wgpu::Buffer,
     impulse_pl: wgpu::ComputePipeline,
-    impulse_bg: wgpu::BindGroup,
+    impulse_bg: [wgpu::BindGroup; 2],
+
+    // ── particle spatial sort state ────────────────────────────────────────
+    /// Whether the periodic spatial sort runs. False when the user disabled it OR
+    /// the second particle buffer could not be allocated (VRAM fallback).
+    sort_enabled: bool,
+    /// Re-sort every `sort_period` substeps (cadence). 1 = every substep.
+    sort_period: u32,
+    /// Live ping-pong side holding current particle state: 0 = A, 1 = B.
+    sort_cur: std::cell::Cell<u32>,
+    /// Monotonic substep counter driving the sort cadence.
+    sort_tick: std::cell::Cell<u64>,
+    /// Set true by `record_prep` on the substeps where it swapped the live side, so
+    /// `mod.rs` can rebind the renderer's particle buffer to the new current side.
+    sort_swapped: std::cell::Cell<bool>,
 }
 
 impl GpuFluid {
@@ -207,6 +246,9 @@ impl GpuFluid {
         scene: &SceneConfig,
         max_compute_workgroups_per_dimension: u32,
         max_storage_buffers_per_stage: u32,
+        max_buffer_size: u64,
+        sort_requested: bool,
+        sort_period: u32,
     ) -> Self {
         // Uniform cell size; the tank is made rectangular by per-axis cell counts.
         let nx = settings.grid_res_x();
@@ -281,6 +323,37 @@ impl GpuFluid {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
+        // Particle spatial sort needs a second particle buffer for the counting-sort
+        // ping-pong (~particle_count * 32 B; ~700MB at 22M). Gate on the device
+        // buffer-size limit so a low-VRAM/limit-constrained adapter falls back to
+        // running WITHOUT the sort rather than tripping a device error. The fallback
+        // allocates a tiny placeholder so the field is always present and the
+        // ping-pong bind groups still build (they just never get selected).
+        let particles_bytes = (particle_count as u64) * 32;
+        let sort_enabled = sort_requested && particles_bytes <= max_buffer_size;
+        if sort_requested && !sort_enabled {
+            log(&format!(
+                "[fluid-lab][gpu] particle spatial sort DISABLED: second particle buffer \
+                 {particles_bytes} B exceeds max_buffer_size {max_buffer_size} B; running unsorted"
+            ));
+        }
+        let particles_b = if sort_enabled {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("particles_b"),
+                size: particles_bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        } else {
+            // 32 B placeholder (one Particle): never bound as the live side.
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("particles_b (placeholder)"),
+                size: 32,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+
         let mk = |label: &str, elems: u32| -> wgpu::Buffer {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -307,6 +380,10 @@ impl GpuFluid {
         let pressure_b = mk("pressure_b", cell_count);
         let divergence = mk("divergence", cell_count);
         let occupancy = mk("occupancy", cell_count);
+        // Spatial-sort scan buffers (cheap: per-cell, not per-particle).
+        let scan_blocks = cell_count.div_ceil(256);
+        let cell_offset = mk("cell_offset", cell_count);
+        let scan_spine = mk("scan_spine", scan_blocks.max(1));
         let cell_type = mk("cell_type", cell_count);
         let stats = mk("stats", 1);
         // CG solver buffers
@@ -340,11 +417,17 @@ impl GpuFluid {
             + (u_count as u64) + (v_count as u64) + (w_count as u64)        // u_vel, v_vel, w_vel
             + (u_count as u64) + (v_count as u64) + (w_count as u64)        // u_saved, v_saved, w_saved
             + (cell_count as u64) * 5                     // pressure_a/b, divergence, occupancy, cell_type
+            + (cell_count as u64)                         // cell_offset (sort scan output / cursor)
+            + (scan_blocks as u64)                        // scan_spine (sort scan per-block totals)
             + 1                                           // stats
             + (cell_count as u64) * 2                     // cg_d, cg_q
             + (red_wgs as u64)                            // cg_partials
             + (CG_SCALAR_COUNT as u64); // cg_scalars
-        let buffer_bytes: u64 = storage_elems * 4 + (particle_count as u64) * 32;
+        // particles (A) + particles_b (the sort ping-pong second buffer; a 32 B
+        // placeholder when the sort is disabled / its buffer couldn't allocate).
+        let particles_b_bytes = if sort_enabled { particles_bytes } else { 32 };
+        let buffer_bytes: u64 =
+            storage_elems * 4 + (particle_count as u64) * 32 + particles_b_bytes;
 
         // --- pipelines ---
         let clear_pl = compute(
@@ -484,6 +567,38 @@ impl GpuFluid {
         ];
         let g2p_pl = compute(device, "g2p", include_str!("shaders/g2p.wgsl"), "main", &[]);
 
+        // --- particle spatial sort pipelines ---
+        // Each pass binds <= 4 storage buffers (well under the >=8 floor asserted
+        // for fused scatter), so no extra capability gate is needed here.
+        let scan_block_pl = compute(
+            device,
+            "sort_scan_block",
+            include_str!("shaders/sort_scan_block.wgsl"),
+            "main",
+            &[],
+        );
+        let scan_spine_pl = compute(
+            device,
+            "sort_scan_spine",
+            include_str!("shaders/sort_scan_spine.wgsl"),
+            "main",
+            &[],
+        );
+        let scan_add_pl = compute(
+            device,
+            "sort_scan_add",
+            include_str!("shaders/sort_scan_add.wgsl"),
+            "main",
+            &[],
+        );
+        let sort_scatter_pl = compute(
+            device,
+            "sort_scatter",
+            include_str!("shaders/sort_scatter.wgsl"),
+            "main",
+            &[],
+        );
+
         // --- CG pipelines ---
         let cg_init_pl = compute(
             device,
@@ -598,19 +713,31 @@ impl GpuFluid {
             cell_count,
         );
 
-        let mark_bg = bg("mark", &mark_pl, &[&params_buf, &particles, &occupancy]);
+        let mark_bg = [
+            bg("mark_a", &mark_pl, &[&params_buf, &particles, &occupancy]),
+            bg("mark_b", &mark_pl, &[&params_buf, &particles_b, &occupancy]),
+        ];
         let classify_bg = bg(
             "classify",
             &classify_pl,
             &[&params_buf, &occupancy, &cell_type, &stats],
         );
-        let scatter_bg = bg(
-            "scatter_all",
-            &scatter_pl,
-            &[
-                &params_buf, &particles, &u_num, &u_den, &v_num, &v_den, &w_num, &w_den,
-            ],
-        );
+        let scatter_bg = [
+            bg(
+                "scatter_all_a",
+                &scatter_pl,
+                &[
+                    &params_buf, &particles, &u_num, &u_den, &v_num, &v_den, &w_num, &w_den,
+                ],
+            ),
+            bg(
+                "scatter_all_b",
+                &scatter_pl,
+                &[
+                    &params_buf, &particles_b, &u_num, &u_den, &v_num, &v_den, &w_num, &w_den,
+                ],
+            ),
+        ];
         let normalize_bg = [
             bg(
                 "norm_u",
@@ -719,20 +846,50 @@ impl GpuFluid {
                 &[&params_buf, &pressure_a, &cell_type, &w_vel],
             ),
         ];
-        let g2p_bg = bg(
-            "g2p",
-            &g2p_pl,
-            &[
-                &params_buf,
-                &particles,
-                &u_vel,
-                &v_vel,
-                &w_vel,
-                &u_saved,
-                &v_saved,
-                &w_saved,
-            ],
+        let g2p_bg = [
+            bg(
+                "g2p_a",
+                &g2p_pl,
+                &[
+                    &params_buf, &particles, &u_vel, &v_vel, &w_vel, &u_saved, &v_saved, &w_saved,
+                ],
+            ),
+            bg(
+                "g2p_b",
+                &g2p_pl,
+                &[
+                    &params_buf, &particles_b, &u_vel, &v_vel, &w_vel, &u_saved, &v_saved,
+                    &w_saved,
+                ],
+            ),
+        ];
+
+        // --- particle spatial sort bind groups ---
+        let scan_block_bg = bg(
+            "sort_scan_block",
+            &scan_block_pl,
+            &[&params_buf, &occupancy, &cell_offset, &scan_spine],
         );
+        let scan_spine_bg = bg("sort_scan_spine", &scan_spine_pl, &[&params_buf, &scan_spine]);
+        let scan_add_bg = bg(
+            "sort_scan_add",
+            &scan_add_pl,
+            &[&params_buf, &cell_offset, &scan_spine],
+        );
+        // sort_scatter: when current side is A (0) we read A and write B; when
+        // current side is B (1) we read B and write A. cell_offset is the cursor.
+        let sort_scatter_bg = [
+            bg(
+                "sort_scatter_a2b",
+                &sort_scatter_pl,
+                &[&params_buf, &particles, &particles_b, &cell_offset],
+            ),
+            bg(
+                "sort_scatter_b2a",
+                &sort_scatter_pl,
+                &[&params_buf, &particles_b, &particles, &cell_offset],
+            ),
+        ];
 
         // --- CG bind groups ---
         let cg_init_bg = bg(
@@ -847,11 +1004,18 @@ impl GpuFluid {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let impulse_bg = bg(
-            "impulse",
-            &impulse_pl,
-            &[&params_buf, &impulse_buf, &particles],
-        );
+        let impulse_bg = [
+            bg(
+                "impulse_a",
+                &impulse_pl,
+                &[&params_buf, &impulse_buf, &particles],
+            ),
+            bg(
+                "impulse_b",
+                &impulse_pl,
+                &[&params_buf, &impulse_buf, &particles_b],
+            ),
+        ];
 
         log(&format!(
             "[fluid-lab][gpu] fluid init: dims={nx}x{ny}x{nz} h={h:.4} particles={particle_count} particle_dispatch={}x{}x1 capacity={} cells={cell_count} press_iters={pressure_iters}",
@@ -874,6 +1038,7 @@ impl GpuFluid {
             pressure_warm_start: settings.pressure_warm_start(),
             buffer_bytes,
             particles,
+            particles_b,
             initial,
             u_num,
             u_den,
@@ -891,6 +1056,8 @@ impl GpuFluid {
             pressure_b,
             divergence,
             occupancy,
+            cell_offset,
+            scan_spine,
             cell_type,
             stats,
             cg_d,
@@ -912,6 +1079,10 @@ impl GpuFluid {
             rbgs_black_pl,
             gradient_pl,
             g2p_pl,
+            scan_block_pl,
+            scan_spine_pl,
+            scan_add_pl,
+            sort_scatter_pl,
             cg_init_pl,
             cg_spmv_pl,
             cg_reduce_pl,
@@ -934,6 +1105,10 @@ impl GpuFluid {
             rbgs_bg,
             gradient_bg,
             g2p_bg,
+            scan_block_bg,
+            scan_spine_bg,
+            scan_add_bg,
+            sort_scatter_bg,
             cg_init_bg,
             cg_spmv_bg,
             cg_reduce_rr_bg,
@@ -947,6 +1122,11 @@ impl GpuFluid {
             impulse_buf,
             impulse_pl,
             impulse_bg,
+            sort_enabled,
+            sort_period: sort_period.max(1),
+            sort_cur: std::cell::Cell::new(0),
+            sort_tick: std::cell::Cell::new(0),
+            sort_swapped: std::cell::Cell::new(false),
         }
     }
 
@@ -956,8 +1136,25 @@ impl GpuFluid {
     pub fn particle_dispatch_shape(&self) -> ParticleDispatchShape {
         self.particle_dispatch
     }
+    /// The particle buffer holding the current live state (the side the last g2p
+    /// wrote). With the sort disabled this is always `particles`. The renderer
+    /// binds this; rebind it (via `take_sort_swapped`) whenever the side flips.
     pub fn particle_buffer(&self) -> &wgpu::Buffer {
-        &self.particles
+        if self.sort_cur.get() == 0 {
+            &self.particles
+        } else {
+            &self.particles_b
+        }
+    }
+    /// True if the spatial sort is active (requested AND its buffer allocated).
+    pub fn sort_enabled(&self) -> bool {
+        self.sort_enabled
+    }
+    /// Consume the "live side swapped this step" flag. When true the caller must
+    /// rebind anything that caches the particle buffer (the renderer) to
+    /// `particle_buffer()`. Cleared on read.
+    pub fn take_sort_swapped(&self) -> bool {
+        self.sort_swapped.replace(false)
     }
     pub fn stats_buffer(&self) -> &wgpu::Buffer {
         &self.stats
@@ -1005,9 +1202,11 @@ impl GpuFluid {
     ///                 reduce, reduce_final, beta, dir)
     ///   finish  = 7 (gradient×3, enforce×3, g2p) when pressure enabled
     /// Total = 37 + 9*pressure_iters. Warm-start skips the pressure_a prep clear,
-    /// so its total is 36 + 9*pressure_iters.
+    /// so its total is 36 + 9*pressure_iters. The spatial sort adds up to 4
+    /// dispatches (scan_block, scan_spine, scan_add, sort_scatter) on sort substeps.
     pub fn dispatches_per_substep(&self) -> u32 {
-        37 + 9 * self.pressure_iters - u32::from(self.pressure_warm_start)
+        let sort = if self.sort_enabled { 4 } else { 0 };
+        37 + sort + 9 * self.pressure_iters - u32::from(self.pressure_warm_start)
     }
     /// Live CG iteration count (for sizing detailed timing slots).
     pub fn pressure_iters(&self) -> u32 {
@@ -1121,7 +1320,9 @@ impl GpuFluid {
                 timestamp_writes: None,
             });
             p.set_pipeline(&self.impulse_pl);
-            p.set_bind_group(0, &self.impulse_bg, &[]);
+            // Impulse hits the live side uniformly (it adds dv to every particle,
+            // so it is order-independent like the rest of the sim).
+            p.set_bind_group(0, &self.impulse_bg[self.sort_cur.get() as usize], &[]);
             self.dispatch_particles(&mut p);
         }
         queue.submit(std::iter::once(enc.finish()));
@@ -1139,7 +1340,13 @@ impl GpuFluid {
     }
 
     pub fn reset(&mut self, queue: &wgpu::Queue) {
+        // Always rewrite the canonical A side and snap the sort ping-pong back to it
+        // so the first step after a reset is deterministic regardless of which side
+        // the sort last left live.
         queue.write_buffer(&self.particles, 0, bytemuck::cast_slice(&self.initial));
+        self.sort_cur.set(0);
+        self.sort_tick.set(0);
+        self.sort_swapped.set(true);
         let zeros = vec![0.0f32; self.cell_count as usize];
         queue.write_buffer(&self.pressure_a, 0, bytemuck::cast_slice(&zeros));
     }
@@ -1157,6 +1364,12 @@ impl GpuFluid {
     pub fn record_prep(&self, pass: &mut wgpu::ComputePass<'_>) {
         self.dispatch_clear(pass);
         self.dispatch_mark(pass);
+        // Spatial sort (cadence-gated): after mark fills occupancy, before scatter
+        // so the fused P2G and g2p read coherently-ordered particles. Flips the live
+        // ping-pong side, so scatter/g2p below select the sorted buffer.
+        if self.advance_sort_tick() {
+            self.dispatch_sort(pass);
+        }
         self.dispatch_classify(pass);
         self.dispatch_scatter(pass);
         for a in 0..3 {
@@ -1191,7 +1404,7 @@ impl GpuFluid {
     }
     pub fn dispatch_mark(&self, pass: &mut wgpu::ComputePass<'_>) {
         pass.set_pipeline(&self.mark_pl);
-        pass.set_bind_group(0, &self.mark_bg, &[]);
+        pass.set_bind_group(0, &self.mark_bg[self.sort_cur.get() as usize], &[]);
         self.dispatch_particles(pass);
     }
     pub fn dispatch_classify(&self, pass: &mut wgpu::ComputePass<'_>) {
@@ -1199,9 +1412,53 @@ impl GpuFluid {
         pass.set_bind_group(0, &self.classify_bg, &[]);
         pass.dispatch_workgroups(self.cell_count.div_ceil(WG), 1, 1);
     }
+
+    /// True iff this substep should re-sort (cadence + sort enabled). Advances the
+    /// per-substep tick. Called EXACTLY ONCE per substep by both the coarse and the
+    /// detailed record paths, in lockstep, so the tick stays consistent.
+    pub fn advance_sort_tick(&self) -> bool {
+        if !self.sort_enabled {
+            return false;
+        }
+        let t = self.sort_tick.get();
+        self.sort_tick.set(t + 1);
+        t % (self.sort_period as u64) == 0
+    }
+
+    /// The 5-pass spatial sort (clear-of-histogram is the existing occupancy clear;
+    /// the count is the existing `mark`/occupancy pass) reduced to the genuinely new
+    /// work: the two-level exclusive prefix sum over the occupancy histogram
+    /// (scan_block → scan_spine → scan_add) then the cursor scatter that reorders
+    /// particles by cell into the OTHER ping-pong side. Flips the live side and
+    /// records the swap so the renderer can rebind.
+    ///
+    /// Must run AFTER `mark` (needs the filled occupancy) and BEFORE `scatter`/`g2p`
+    /// (so they read sorted order). `classify` reads `occupancy`, which the scan
+    /// leaves untouched (it writes `cell_offset`).
+    pub fn dispatch_sort(&self, pass: &mut wgpu::ComputePass<'_>) {
+        let blocks = self.cell_count.div_ceil(256);
+        // Exclusive prefix sum: occupancy -> cell_offset (bucket starts).
+        pass.set_pipeline(&self.scan_block_pl);
+        pass.set_bind_group(0, &self.scan_block_bg, &[]);
+        pass.dispatch_workgroups(blocks, 1, 1);
+        pass.set_pipeline(&self.scan_spine_pl);
+        pass.set_bind_group(0, &self.scan_spine_bg, &[]);
+        pass.dispatch_workgroups(1, 1, 1);
+        pass.set_pipeline(&self.scan_add_pl);
+        pass.set_bind_group(0, &self.scan_add_bg, &[]);
+        pass.dispatch_workgroups(self.cell_count.div_ceil(WG), 1, 1);
+        // Cursor scatter: src(cur) -> dst(1-cur), advancing per-cell cursors.
+        let cur = self.sort_cur.get();
+        pass.set_pipeline(&self.sort_scatter_pl);
+        pass.set_bind_group(0, &self.sort_scatter_bg[cur as usize], &[]);
+        self.dispatch_particles(pass);
+        // Flip the live side; mark the swap so the renderer rebinds.
+        self.sort_cur.set(1 - cur);
+        self.sort_swapped.set(true);
+    }
     pub fn dispatch_scatter(&self, pass: &mut wgpu::ComputePass<'_>) {
         pass.set_pipeline(&self.scatter_pl);
-        pass.set_bind_group(0, &self.scatter_bg, &[]);
+        pass.set_bind_group(0, &self.scatter_bg[self.sort_cur.get() as usize], &[]);
         self.dispatch_particles(pass);
     }
     pub fn dispatch_normalize(&self, pass: &mut wgpu::ComputePass<'_>, a: usize) {
@@ -1231,7 +1488,7 @@ impl GpuFluid {
     }
     pub fn dispatch_g2p(&self, pass: &mut wgpu::ComputePass<'_>) {
         pass.set_pipeline(&self.g2p_pl);
-        pass.set_bind_group(0, &self.g2p_bg, &[]);
+        pass.set_bind_group(0, &self.g2p_bg[self.sort_cur.get() as usize], &[]);
         self.dispatch_particles(pass);
     }
     pub fn dispatch_divergence(&self, pass: &mut wgpu::ComputePass<'_>) {
@@ -1535,3 +1792,4 @@ fn generate_particles(
     }
     out
 }
+

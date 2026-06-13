@@ -24,6 +24,9 @@ pub struct ParticleRenderer {
     thickness_pipeline: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Kept so the bind group can be rebuilt when the simulation's particle buffer
+    /// changes side (the spatial-sort ping-pong swaps which buffer is live).
+    bgl: wgpu::BindGroupLayout,
     base_radius: f32,
     radius_scale: f32,
     particle_volume: f32,
@@ -261,6 +264,7 @@ impl ParticleRenderer {
             thickness_pipeline,
             camera_buffer,
             bind_group,
+            bgl,
             base_radius: radius,
             radius_scale: 1.0,
             particle_volume: 1.0,
@@ -273,6 +277,25 @@ impl ParticleRenderer {
             shading: 0.25,
             splat_scale: 1.3,
         }
+    }
+
+    /// Rebind the instanced particle position buffer. Called when the simulation's
+    /// spatial-sort ping-pong flips which buffer holds the live particle state.
+    pub fn set_particle_buffer(&mut self, device: &wgpu::Device, positions: &wgpu::Buffer) {
+        self.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("particles bind group"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: positions.as_entire_binding(),
+                },
+            ],
+        });
     }
 
     pub fn set_radius_scale(&mut self, s: f32) {

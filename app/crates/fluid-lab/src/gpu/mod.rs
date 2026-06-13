@@ -324,6 +324,9 @@ impl GpuContext {
             scene,
             caps.max_compute_workgroups_per_dimension,
             caps.max_storage_buffers_per_stage,
+            caps.max_buffer_size,
+            settings.particle_sort(),
+            settings.particle_sort_period(),
         );
         // Splat radius tracks the seeded inter-particle spacing so density is
         // volume-neutral (see SPLAT_RADIUS_PER_SPACING). At the reference density
@@ -545,6 +548,9 @@ impl GpuContext {
             scene,
             self.caps.max_compute_workgroups_per_dimension,
             self.caps.max_storage_buffers_per_stage,
+            self.caps.max_buffer_size,
+            settings.particle_sort(),
+            settings.particle_sort_period(),
         );
         // Volume-neutral splat radius (see SPLAT_RADIUS_PER_SPACING); recomputed on
         // every reset so a density/count/fill_level change updates it.
@@ -992,6 +998,12 @@ impl GpuContext {
             }
             self.queue.submit(std::iter::once(encoder.finish()));
         }
+        // If the spatial sort flipped the live ping-pong side this frame, rebind the
+        // particle renderer to the new current buffer so it draws the live state.
+        if self.fluid.take_sort_swapped() {
+            self.particles
+                .set_particle_buffer(&self.device, self.fluid.particle_buffer());
+        }
     }
 
     /// COARSE substep: three monolithic timestamped compute passes
@@ -1046,41 +1058,49 @@ impl GpuContext {
         sec!(0, "d.clear", |p: &mut wgpu::ComputePass| f
             .dispatch_clear(p));
         sec!(1, "d.mark", |p: &mut wgpu::ComputePass| f.dispatch_mark(p));
-        sec!(2, "d.classify", |p: &mut wgpu::ComputePass| f
+        // Spatial sort (cadence-gated): the cadence tick advances every substep so
+        // coarse/detailed stay in lockstep; the 4 sort dispatches only record on
+        // sort substeps. Empty section on non-sort substeps (zero timed span).
+        sec!(2, "d.sort", |p: &mut wgpu::ComputePass| {
+            if f.advance_sort_tick() {
+                f.dispatch_sort(p);
+            }
+        });
+        sec!(3, "d.classify", |p: &mut wgpu::ComputePass| f
             .dispatch_classify(p));
         // Fused P2G scatter (all three MAC components) is a single section.
-        sec!(3, "d.scatter", |p: &mut wgpu::ComputePass| f
+        sec!(4, "d.scatter", |p: &mut wgpu::ComputePass| f
             .dispatch_scatter(p));
-        sec!(4, "d.normalize_u", |p: &mut wgpu::ComputePass| f
+        sec!(5, "d.normalize_u", |p: &mut wgpu::ComputePass| f
             .dispatch_normalize(p, 0));
-        sec!(5, "d.normalize_v", |p: &mut wgpu::ComputePass| f
+        sec!(6, "d.normalize_v", |p: &mut wgpu::ComputePass| f
             .dispatch_normalize(p, 1));
-        sec!(6, "d.normalize_w", |p: &mut wgpu::ComputePass| f
+        sec!(7, "d.normalize_w", |p: &mut wgpu::ComputePass| f
             .dispatch_normalize(p, 2));
-        sec!(7, "d.savevel_u", |p: &mut wgpu::ComputePass| f
+        sec!(8, "d.savevel_u", |p: &mut wgpu::ComputePass| f
             .dispatch_savevel(p, 0));
-        sec!(8, "d.savevel_v", |p: &mut wgpu::ComputePass| f
+        sec!(9, "d.savevel_v", |p: &mut wgpu::ComputePass| f
             .dispatch_savevel(p, 1));
-        sec!(9, "d.savevel_w", |p: &mut wgpu::ComputePass| f
+        sec!(10, "d.savevel_w", |p: &mut wgpu::ComputePass| f
             .dispatch_savevel(p, 2));
-        sec!(10, "d.forces_u", |p: &mut wgpu::ComputePass| f
+        sec!(11, "d.forces_u", |p: &mut wgpu::ComputePass| f
             .dispatch_forces(p, 0));
-        sec!(11, "d.forces_v", |p: &mut wgpu::ComputePass| f
+        sec!(12, "d.forces_v", |p: &mut wgpu::ComputePass| f
             .dispatch_forces(p, 1));
-        sec!(12, "d.forces_w", |p: &mut wgpu::ComputePass| f
+        sec!(13, "d.forces_w", |p: &mut wgpu::ComputePass| f
             .dispatch_forces(p, 2));
-        sec!(13, "d.bound_pre_u", |p: &mut wgpu::ComputePass| f
+        sec!(14, "d.bound_pre_u", |p: &mut wgpu::ComputePass| f
             .dispatch_enforce(p, 0));
-        sec!(14, "d.bound_pre_v", |p: &mut wgpu::ComputePass| f
+        sec!(15, "d.bound_pre_v", |p: &mut wgpu::ComputePass| f
             .dispatch_enforce(p, 1));
-        sec!(15, "d.bound_pre_w", |p: &mut wgpu::ComputePass| f
+        sec!(16, "d.bound_pre_w", |p: &mut wgpu::ComputePass| f
             .dispatch_enforce(p, 2));
 
-        // 16,17 = pressure-prelude sections; the CG iterations follow.
+        // 17,18 = pressure-prelude sections; the CG iterations follow.
         if self.pressure_enabled {
-            sec!(16, "d.divergence", |p: &mut wgpu::ComputePass| f
+            sec!(17, "d.divergence", |p: &mut wgpu::ComputePass| f
                 .dispatch_divergence(p));
-            sec!(17, "d.cg_init", |p: &mut wgpu::ComputePass| f
+            sec!(18, "d.cg_init", |p: &mut wgpu::ComputePass| f
                 .dispatch_cg_init(p));
 
             // CG iterations — clamp the timed count to the allocated slots (extra
@@ -1131,22 +1151,22 @@ impl GpuContext {
             }
         }
 
-        // 18..25 = finish sections (gradient_*, bound_post_*, g2p).
+        // 19..26 = finish sections (gradient_*, bound_post_*, g2p).
         if self.pressure_enabled {
-            sec!(18, "d.gradient_u", |p: &mut wgpu::ComputePass| f
+            sec!(19, "d.gradient_u", |p: &mut wgpu::ComputePass| f
                 .dispatch_gradient(p, 0));
-            sec!(19, "d.gradient_v", |p: &mut wgpu::ComputePass| f
+            sec!(20, "d.gradient_v", |p: &mut wgpu::ComputePass| f
                 .dispatch_gradient(p, 1));
-            sec!(20, "d.gradient_w", |p: &mut wgpu::ComputePass| f
+            sec!(21, "d.gradient_w", |p: &mut wgpu::ComputePass| f
                 .dispatch_gradient(p, 2));
-            sec!(21, "d.bound_post_u", |p: &mut wgpu::ComputePass| f
+            sec!(22, "d.bound_post_u", |p: &mut wgpu::ComputePass| f
                 .dispatch_enforce(p, 0));
-            sec!(22, "d.bound_post_v", |p: &mut wgpu::ComputePass| f
+            sec!(23, "d.bound_post_v", |p: &mut wgpu::ComputePass| f
                 .dispatch_enforce(p, 1));
-            sec!(23, "d.bound_post_w", |p: &mut wgpu::ComputePass| f
+            sec!(24, "d.bound_post_w", |p: &mut wgpu::ComputePass| f
                 .dispatch_enforce(p, 2));
         }
-        sec!(24, "d.g2p", |p: &mut wgpu::ComputePass| f.dispatch_g2p(p));
+        sec!(25, "d.g2p", |p: &mut wgpu::ComputePass| f.dispatch_g2p(p));
     }
 
     /// Opaque pass for the optical/simple particle modes: clear the swapchain +

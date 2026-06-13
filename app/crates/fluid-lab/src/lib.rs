@@ -1107,3 +1107,156 @@ mod shader_contract_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod particle_sort_tests {
+    //! Host mirror of the GPU counting-sort scan + cursor scatter (the spatial sort
+    //! in `gpu/shaders/sort_scan_block|spine|add.wgsl` + `sort_scatter.wgsl`).
+    //! Pure-logic, no GPU — runs under `cargo test --lib` on the native target
+    //! (the `gpu` module itself is wasm-only). Asserts the three invariants the
+    //! determinism argument relies on:
+    //!   (a) the permutation is a bijection (every particle written exactly once),
+    //!   (b) every particle in a bucket shares the same linear cell key,
+    //!   (c) bucket starts equal the EXCLUSIVE prefix sum of the occupancy histogram.
+
+    /// Linear cell key — IDENTICAL math to mark.wgsl / sort_scatter.wgsl:
+    /// key = i + nx*(j + ny*k), (i,j,k) = clamp(floor((pos-origin)/h), 0, n-1).
+    fn cell_key(pos: [f32; 3], origin: [f32; 3], h: f32, dims: [u32; 3]) -> u32 {
+        let g = [
+            (pos[0] - origin[0]) / h,
+            (pos[1] - origin[1]) / h,
+            (pos[2] - origin[2]) / h,
+        ];
+        let i = (g[0].floor().clamp(0.0, (dims[0] - 1) as f32)) as u32;
+        let j = (g[1].floor().clamp(0.0, (dims[1] - 1) as f32)) as u32;
+        let k = (g[2].floor().clamp(0.0, (dims[2] - 1) as f32)) as u32;
+        i + dims[0] * (j + dims[1] * k)
+    }
+
+    /// Exclusive prefix sum (net effect of sort_scan_block → scan_spine → scan_add).
+    fn exclusive_scan(hist: &[u32]) -> Vec<u32> {
+        let mut out = vec![0u32; hist.len()];
+        let mut acc = 0u32;
+        for (c, &h) in hist.iter().enumerate() {
+            out[c] = acc;
+            acc += h;
+        }
+        out
+    }
+
+    /// CPU mirror of the full sort: histogram → exclusive scan → cursor scatter.
+    /// Returns (`perm` where sorted[d] == particles[perm[d]], the per-particle keys).
+    fn counting_sort(
+        positions: &[[f32; 3]],
+        origin: [f32; 3],
+        h: f32,
+        dims: [u32; 3],
+    ) -> (Vec<u32>, Vec<u32>) {
+        let cells = (dims[0] * dims[1] * dims[2]) as usize;
+        let keys: Vec<u32> = positions
+            .iter()
+            .map(|p| cell_key(*p, origin, h, dims))
+            .collect();
+        let mut hist = vec![0u32; cells];
+        for &k in &keys {
+            hist[k as usize] += 1;
+        }
+        let mut cursor = exclusive_scan(&hist);
+        let mut perm = vec![u32::MAX; positions.len()];
+        for (p, &k) in keys.iter().enumerate() {
+            let dst = cursor[k as usize];
+            cursor[k as usize] += 1;
+            perm[dst as usize] = p as u32;
+        }
+        (perm, keys)
+    }
+
+    /// Deterministic spread of particles across the domain (LCG, no GPU).
+    fn sample_positions(n: usize, origin: [f32; 3], h: f32, dims: [u32; 3]) -> Vec<[f32; 3]> {
+        let extent = [dims[0] as f32 * h, dims[1] as f32 * h, dims[2] as f32 * h];
+        let mut st = 0x9E37_79B9u32;
+        let mut rng = move || {
+            st = st.wrapping_mul(1664525).wrapping_add(1013904223);
+            (st >> 8) as f32 / (1u32 << 24) as f32
+        };
+        (0..n)
+            .map(|_| {
+                [
+                    origin[0] + rng() * extent[0],
+                    origin[1] + rng() * extent[1],
+                    origin[2] + rng() * extent[2],
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn exclusive_scan_matches_definition() {
+        let hist = [3u32, 0, 5, 1, 0, 4];
+        let off = exclusive_scan(&hist);
+        assert_eq!(off, [0, 3, 3, 8, 9, 9]);
+        assert_eq!(off[5] + hist[5], hist.iter().sum::<u32>());
+    }
+
+    #[test]
+    fn permutation_is_a_bijection() {
+        let dims = [16u32, 8, 16];
+        let (h, origin) = (0.1, [-0.8, -0.4, -0.8]);
+        let pos = sample_positions(5000, origin, h, dims);
+        let (perm, _) = counting_sort(&pos, origin, h, dims);
+        assert_eq!(perm.len(), pos.len());
+        let mut seen = vec![false; pos.len()];
+        for &src in &perm {
+            assert!((src as usize) < pos.len(), "dst slot unfilled");
+            assert!(!seen[src as usize], "particle {src} placed twice");
+            seen[src as usize] = true;
+        }
+        assert!(seen.iter().all(|&b| b), "some particle never placed");
+    }
+
+    #[test]
+    fn each_bucket_shares_one_key_and_is_monotone() {
+        let dims = [12u32, 6, 10];
+        let (h, origin) = (0.1, [-0.6, -0.3, -0.5]);
+        let pos = sample_positions(4000, origin, h, dims);
+        let (perm, keys) = counting_sort(&pos, origin, h, dims);
+        let mut prev = 0u32;
+        for &src in &perm {
+            let k = keys[src as usize];
+            assert!(k >= prev, "sorted keys not monotone: {k} after {prev}");
+            prev = k;
+        }
+        let cells = (dims[0] * dims[1] * dims[2]) as usize;
+        let mut hist = vec![0u32; cells];
+        for &k in &keys {
+            hist[k as usize] += 1;
+        }
+        let starts = exclusive_scan(&hist);
+        for c in 0..cells {
+            let s = starts[c] as usize;
+            let e = s + hist[c] as usize;
+            for d in s..e {
+                assert_eq!(
+                    keys[perm[d] as usize], c as u32,
+                    "bucket {c} slot {d} wrong key"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clamps_out_of_bounds_positions_into_edge_cells() {
+        let dims = [4u32, 4, 4];
+        let (h, origin) = (1.0, [0.0, 0.0, 0.0]);
+        let pos = vec![[-100.0, -100.0, -100.0], [100.0, 100.0, 100.0]];
+        let (perm, keys) = counting_sort(&pos, origin, h, dims);
+        let cells = dims[0] * dims[1] * dims[2];
+        for &k in &keys {
+            assert!(k < cells, "key {k} out of range {cells}");
+        }
+        assert_eq!(keys.iter().copied().min().unwrap(), 0);
+        assert_eq!(keys.iter().copied().max().unwrap(), 63);
+        assert_eq!(perm.len(), 2);
+        assert!(perm.contains(&0) && perm.contains(&1));
+    }
+}
