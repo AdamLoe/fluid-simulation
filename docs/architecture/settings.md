@@ -124,8 +124,10 @@ Visible core water toggles are:
 - `render.hero.wall_contact_enabled`
 
 The cheap wall-contact snap remains visible through
-`render.hero.flat_water.strength`, `render.hero.flat_water.epsilon`, and
-`render.hero.flat_water.depth_strength`.
+`render.hero.flat_water.strength`, `render.hero.flat_water.epsilon`,
+`render.hero.flat_water.depth_strength`, and `render.hero.flat_water.contact_fill` (the
+contact-band coverage lift for a flush, see-through aquarium contact — see
+[`rendering.md`](rendering.md)).
 
 Screen-space surface quality is tuned by the `render.hero.smooth_*`,
 `render.hero.normal_*`, and `render.hero.feature_preservation` Live controls. The last

@@ -137,8 +137,12 @@ unrelated effects.
 **Decision** - Caustics, temporal stabilization, wet walls, and dense wall fill are
 not shipped runtime feature groups. Their modules, shaders, pass scheduling, visible
 settings, debug views, and resource allocations are removed. Old persisted ids replay
-safely as hidden compatibility no-ops. The cheap wall-contact normal/depth snap
-remains.
+safely as hidden compatibility no-ops. The cheap wall-contact normal/depth/coverage snap
+remains — including a `flat_water.contact_fill` term that lifts the near-wall contact
+band's effective thickness so water reads as a flush, see-through sheet at the wall. That
+fill stays inside the screen-space composite (no new pass or buffer); the **dense**
+wall-fill atlas remains removed and would still require a fresh decision, owned
+allocation, and measured captures to return.
 
 **Why** - Default Water should be a coherent liquid body with a small, understandable
 control surface. The removed add-ons had cost, artifacts, or weak visual value without

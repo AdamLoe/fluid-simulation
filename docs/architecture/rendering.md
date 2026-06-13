@@ -96,9 +96,17 @@ There is no wet-wall material path. The environment shader has one bind group: t
 camera/material uniform. The right and front tank faces remain open viewing faces.
 
 `render.hero.wall_contact_enabled` keeps the cheap near-wall snap. It gates
-`render.hero.flat_water.strength`, `render.hero.flat_water.epsilon`, and
-`render.hero.flat_water.depth_strength`, which flatten near-wall normals/depth in the
-composite without allocating a dense wall-fill atlas.
+`render.hero.flat_water.strength`, `render.hero.flat_water.epsilon`,
+`render.hero.flat_water.depth_strength`, and `render.hero.flat_water.contact_fill`, which
+flatten near-wall normals/depth **and** lift the contact-band coverage in the composite
+without allocating a dense wall-fill atlas. The `contact_fill` term lifts the near-wall
+band's effective thickness (ramped by the same wall-proximity weight as the normal/depth
+snap) so water reads as a continuous sheet flush to the wall instead of a faded fringe
+that lets the dark matte wall show through; it is kept moderate so the water still
+refracts the background (see-through), and it is routed through the composite
+`Cam.flat.w` slot. This is the aquarium-contact look achieved within the surviving cheap
+screen-space snap — a dense wall-fill pass is still **not** allocated (see "Removed
+features" and [`../decisions/rendering.md`](../decisions/rendering.md)).
 
 `render.hero.debug_view` routes retained intermediate views only: scene color/depth,
 thickness, refraction offset, Fresnel, absorption, final water, reflection, environment,

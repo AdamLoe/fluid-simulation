@@ -25,7 +25,7 @@ struct Hero {
 // box_eye_local: camera eye in box-local space (xyz, w=unused).
 // box_rot_col0/1/2: box-local→world rotation columns.
 // tank_lo/hi: tank bounds in box-local space (xyz, w=unused).
-// flat: x=flat_water_strength, y=flat_water_epsilon, z=depth_strength, w=unused.
+// flat: x=flat_water_strength, y=flat_water_epsilon, z=depth_strength, w=contact_fill.
 struct Cam {
     eye_to_world:  mat4x4<f32>,
     box_eye_local: vec4<f32>,
@@ -34,7 +34,7 @@ struct Cam {
     box_rot_col2:  vec4<f32>,
     tank_lo:       vec4<f32>,
     tank_hi:       vec4<f32>,
-    flat:          vec4<f32>, // x=strength, y=epsilon, z=depth_strength, w=unused
+    flat:          vec4<f32>, // x=strength, y=epsilon, z=depth_strength, w=contact_fill
 };
 
 @group(0) @binding(0) var thickness_sampler: sampler;
@@ -157,7 +157,7 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let dims = vec2<i32>(i32(dims_u.x), i32(dims_u.y));
     let pixel = clamp(vec2<i32>(floor(in.clip.xy)), vec2<i32>(0, 0), dims - vec2<i32>(1, 1));
 
-    let thickness = max(0.0, textureSample(thickness_tex, thickness_sampler, in.uv).r);
+    var thickness = max(0.0, textureSample(thickness_tex, thickness_sampler, in.uv).r);
     var front_z = load_z(pixel, dims);
     let has_water = thickness > 1.0e-4 && front_z < 60000.0;
     var n = water_normal(pixel, dims);
@@ -338,6 +338,19 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
                     front_z = mix(front_z, front_z_flat, snap_w);
                 }
             }
+        }
+
+        // --- Contact coverage fill (aquarium flush) ---
+        // Near a wall the water thins out, so opacity drops and the dark matte wall
+        // shows through a faded fringe instead of a continuous sheet flush to the
+        // glass. Lift the contact-band effective thickness toward a floor, ramped by
+        // best_t (the same wall-proximity weight the normal/depth snap uses), so the
+        // band reads as a continuous sheet meeting the wall. Kept moderate so the
+        // water still refracts the background through it (see-through, not opaque wall
+        // paint). flat.w (render.hero.flat_water.contact_fill) gates it.
+        let contact_fill = cam.flat.w;
+        if best_plane > 0 && best_t > 0.0 && contact_fill > 0.001 {
+            thickness = max(thickness, contact_fill * best_t * 0.6);
         }
     }
 

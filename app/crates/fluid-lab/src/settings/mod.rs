@@ -410,6 +410,11 @@ pub struct HeroParams {
     /// At 1.0 the depth is fully coplanar with the glass for near-wall pixels, eliminating
     /// bumpy sphere silhouettes at the glass. Live. Default 0.8.
     pub flat_water_depth_strength: f32,
+    /// Coverage fill for the near-wall contact band (0–1). Lifts the band's effective
+    /// thickness so water reads as a continuous flush sheet meeting the wall instead of a
+    /// faded fringe that lets the dark wall show through. Kept moderate so the water still
+    /// refracts the background (see-through). Live. Default 0.6.
+    pub flat_water_contact_fill: f32,
 }
 
 /// A flat snapshot of the surface-foam settings. Like [`HeroParams`] these are
@@ -1387,6 +1392,17 @@ impl Default for Registry {
                 technical_tooltip: Some("Live. In composite.wgsl, intersects the box-local eye ray with the nearest in-epsilon tank plane and mixes front_z toward the hit by depth_strength*ramp before the refraction depth guard. Routed via composite CamUniform flat.z."),
                 apply: ApplyClass::Live,
             },
+            Setting {
+                id: "render.hero.flat_water.contact_fill",
+                label: "Flat water contact fill",
+                category: Category::Water,
+                default: Value::F32(0.6),
+                value: Value::F32(0.6),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Fills the near-wall contact band so water reads as a continuous sheet flush to the glass instead of a faded fringe that lets the dark wall show through. Kept moderate so the water stays see-through."),
+                technical_tooltip: Some("Live. In composite.wgsl, lifts the contact-band effective thickness toward a floor ramped by the wall-proximity weight (best_t) used by the normal/depth snap. Routed via composite CamUniform flat.w; gated by wall_contact_enabled."),
+                apply: ApplyClass::Live,
+            },
             // --- Screen-space surface quality (v1.19 polish). All Live: sliders
             // rebuild the HeroParams uniform via the existing render.hero.* batch
             // route. smooth_iterations/smooth_radius wire through smoothing.rs;
@@ -1949,6 +1965,7 @@ impl Registry {
             flat_water_strength: self.f32_or("render.hero.flat_water.strength", 0.8),
             flat_water_epsilon: self.f32_or("render.hero.flat_water.epsilon", 0.04),
             flat_water_depth_strength: self.f32_or("render.hero.flat_water.depth_strength", 0.8),
+            flat_water_contact_fill: self.f32_or("render.hero.flat_water.contact_fill", 0.6),
         }
     }
 
@@ -2687,6 +2704,7 @@ mod tests {
             "render.hero.flat_water.strength",
             "render.hero.flat_water.epsilon",
             "render.hero.flat_water.depth_strength",
+            "render.hero.flat_water.contact_fill",
         ];
         for id in ids {
             let s = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
@@ -2745,6 +2763,10 @@ mod tests {
         assert!(
             (hero.flat_water_depth_strength - 1.0).abs() < 1e-5,
             "flat_water_depth_strength default 1.0"
+        );
+        assert!(
+            (hero.flat_water_contact_fill - 0.6).abs() < 1e-5,
+            "flat_water_contact_fill default 0.6"
         );
     }
 

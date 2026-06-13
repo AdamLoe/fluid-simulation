@@ -52,7 +52,7 @@ struct CamUniform {
     box_rot_col2: [f32; 4],
     tank_lo: [f32; 4],
     tank_hi: [f32; 4],
-    flat: [f32; 4], // x=strength, y=epsilon, z=depth_strength, w=unused
+    flat: [f32; 4], // x=strength, y=epsilon, z=depth_strength, w=contact_fill
 }
 
 fn hero_uniform(hero: &HeroParams) -> HeroUniform {
@@ -459,7 +459,11 @@ impl CompositeRenderer {
                 } else {
                     0.0
                 },
-                0.0,
+                if hero.wall_contact_enabled {
+                    hero.flat_water_contact_fill.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
             ],
         };
         queue.write_buffer(&self.cam_buf, 0, bytemuck::bytes_of(&cam));
