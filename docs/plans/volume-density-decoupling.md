@@ -364,6 +364,23 @@ double splash = suspended drops scaled by `fill`. `Registry::fill_level()` maps 
 0.097 / 0.191 / 0.442 / 0.909 (monotone, ~linear; 100% ≈ full tank). Geometry in
 `preset_blocks` (the old `apply_fill_level` is gone).
 
+**Anti-clump rest coupling — motion-neutral density. ✅ DONE (2026-06-12).** The
+remaining "density changes the *motion/volume* of the water" divergence (distinct from
+the seeded-body coverage handled by the splat scaling) was root-caused to the divergence
+anti-clump source `min(stiff·(occ − rest)/rest, clamp)`: `occ` is the raw per-cell
+particle count (scales with `particles.density`) but `rest` (`physics.rest_density`) was
+frozen at 8, so `occ/rest` diverged badly across densities (puffy at 32, flat at 1). Fix:
+the effective `rest` (divergence `spc[0]`) now tracks the scene's effective particles-per-
+cell — `scene/mod.rs → effective_rest_density` (`manual > 0 ? manual : density`),
+`gpu/fluid.rs → effective_rest_density` (build + Live). `physics.rest_density` is now an
+optional manual override (`0` = Auto, new default). Host test
+`auto_rest_density_tracks_particle_density`. Verification
+(`app/tools/density_motion_sweep.mjs`, `particles.density ∈ {1,8,32}`, fixed falling-blob,
+no rotation): `liquid_cells` held within ~12% (d1/d8/d32 vs d8 ratios at t1/4/8s all inside
+0.93–1.12) vs ~38–44% baseline spread; settled screenshots show the same pool level at all
+three densities. Rest coupling alone cleared the ~15% bar, so the secondary `flip_blend`
+density trim was deliberately **not** added. See `decisions/simulation.md`.
+
 **Phase 2 — remaining.** The pixel/thickness coverage metric + the
 `SPLAT_RADIUS_PER_SPACING` tuning loop (tighten `liquid_cells` invariance and the
 visual coverage tolerance), and the SDF/level-set surface rewrite (separate plan).

@@ -283,6 +283,25 @@ pub fn effective_particle_density(settings: &Registry, res: UVec3, blocks: &[Liq
     (count / seeded_cells).max(1.0e-3) as f32
 }
 
+/// Effective anti-clump rest target (particles per liquid cell) the divergence
+/// pass should aim for, given the user's manual `physics.rest_density` setting and
+/// the scene's effective particle density.
+///
+/// `manual_rest > 0` pins a fixed target (the historical behavior). `manual_rest <= 0`
+/// is Auto: the target tracks the actual seeded particles-per-cell so the anti-clump
+/// source sees `occ/rest ~= 1` at every density. Because `occ` is the raw per-cell
+/// particle count (which scales linearly with density), a frozen target made the
+/// water look like a different *volume* in motion across densities; coupling the
+/// target to the density makes density motion-neutral. Pure host-side (no GPU types)
+/// so it is unit-testable.
+pub fn effective_rest_density(manual_rest: f32, density: f32) -> f32 {
+    if manual_rest > 0.0 {
+        manual_rest
+    } else {
+        density.max(1.0e-3)
+    }
+}
+
 /// Effective one-ring surface dilation for the classify pass, given the user's
 /// `classify.surface_dilation` setting and the scene's effective particle density.
 ///
@@ -567,6 +586,30 @@ mod fill_level_tests {
                 "effective density {eff} should track slider {d}"
             );
         }
+    }
+
+    #[test]
+    fn auto_rest_density_tracks_particle_density() {
+        // Auto (manual_rest = 0): the anti-clump target equals the scene's effective
+        // particles-per-cell at every density, so occ/rest ~= 1 and density is
+        // motion-neutral. A nonzero manual value overrides.
+        let res = UVec3::new(64, 64, 64);
+        for &d in &[1.0f32, 8.0, 32.0] {
+            let settings = registry(ScenePreset::DamBreak, 0.5, d);
+            let blocks = preset_blocks(ScenePreset::DamBreak, DEFAULT_DROP_HEIGHT, 0.5);
+            let eff_density = effective_particle_density(&settings, res, &blocks);
+            // Auto: rest target follows the actual density.
+            let auto = effective_rest_density(settings.rest_density(), eff_density);
+            assert!(
+                (auto - d).abs() / d < 0.02,
+                "auto rest target {auto} should track density {d}"
+            );
+            // Manual override wins regardless of density.
+            assert_eq!(effective_rest_density(12.5, eff_density), 12.5);
+        }
+        // Degenerate density floors at a tiny positive value (never 0, which would
+        // disable the anti-clump source in the shader).
+        assert!(effective_rest_density(0.0, 0.0) > 0.0);
     }
 
     #[test]

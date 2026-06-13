@@ -588,11 +588,11 @@ impl Default for Registry {
                 id: "physics.rest_density",
                 label: "Rest particles/cell",
                 category: Category::Physics,
-                default: Value::F32(8.0),
-                value: Value::F32(8.0),
-                validation: Validation::F32Range { min: 1.0, max: 32.0 },
-                tooltip: Some("Sets the crowding target for anti-clump volume correction."),
-                technical_tooltip: Some("Live target particles per liquid cell. Cells above this target receive volume-correction bias through the pressure projection."),
+                default: Value::F32(0.0),
+                value: Value::F32(0.0),
+                validation: Validation::F32Range { min: 0.0, max: 32.0 },
+                tooltip: Some("Crowding target for anti-clump volume correction. 0 = Auto: tracks the scene's actual particle density so the water moves the same at any density. Set a nonzero value to pin a manual target."),
+                technical_tooltip: Some("Live target particles per liquid cell fed to the divergence anti-clump source. 0 = Auto, which derives the target from the scene's effective particles-per-seeded-cell so occ/rest ~= 1 at every density (density becomes motion-neutral). A nonzero value overrides with a fixed target. Cells above the target receive volume-correction bias through the pressure projection."),
                 apply: ApplyClass::Live,
             },
             Setting {
@@ -1657,10 +1657,12 @@ impl Registry {
             .map(|s| s.as_f32())
             .unwrap_or(0.0)
     }
+    /// Manual anti-clump rest target (particles/cell), or 0.0 for Auto (track the
+    /// scene's effective particle density). See [`crate::scene::effective_rest_density`].
     pub fn rest_density(&self) -> f32 {
         self.get("physics.rest_density")
             .map(|s| s.as_f32())
-            .unwrap_or(8.0)
+            .unwrap_or(0.0)
     }
     pub fn volume_stiffness(&self) -> f32 {
         self.get("physics.volume_stiffness")

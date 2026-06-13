@@ -77,10 +77,14 @@ fidelity/cost knob and is made **volume-neutral**: the visible body stays the sa
 size as density drops, just blobbier. This is achieved cheaply by (a) scaling the
 render splat radius with the seeded inter-particle spacing
 (`radius = H · effective_density^(-1/3) · SPLAT_RADIUS_PER_SPACING`, constant `0.7`
-to reproduce today at density 8) and (b) auto-enabling the existing one-ring
+to reproduce today at density 8), (b) auto-enabling the existing one-ring
 `classify.wgsl` surface dilation below the reference density (8/cell) so the physics
-liquid region stays hole-free. The **SDF / marching-cubes surface rewrite — the
-"proper" coverage fix — is deliberately deferred** to a future plan.
+liquid region stays hole-free, and (c) coupling the divergence anti-clump rest target
+to the actual particle density (`effective_rest_density`) so the *dynamics* are
+density-invariant too — without it, the occupancy-driven outward push scaled with
+density and the water moved like a different volume (see `decisions/simulation.md`).
+The **SDF / marching-cubes surface rewrite — the "proper" coverage fix — is
+deliberately deferred** to a future plan.
 
 **Why** — The visible water is built from particle splats, not liquid cells, so a
 fixed-radius splat made lowering density *look like less water* even though the

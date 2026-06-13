@@ -16,6 +16,8 @@ mod timing;
 pub use timing::Readout as GpuReadout;
 pub use timing::FINE_SECTIONS;
 
+pub(crate) use fluid::effective_rest_density;
+
 use crate::log;
 use crate::scene::SceneConfig;
 use crate::settings::{self, Registry};

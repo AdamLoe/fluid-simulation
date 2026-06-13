@@ -256,7 +256,7 @@ impl GpuFluid {
             origin: [origin[0], origin[1], origin[2], 0.0],
             grav: [0.0, settings.gravity(), 0.0, 0.0],
             spc: [
-                settings.rest_density(),
+                effective_rest_density(settings, scene),
                 settings.volume_stiffness(),
                 settings.drift_clamp(),
                 0.0,
@@ -1398,6 +1398,19 @@ pub(crate) fn effective_surface_dilation(settings: &Registry, scene: &SceneConfi
         &scene.initial_liquid.blocks,
     );
     crate::scene::effective_surface_dilation(settings.surface_dilation(), density)
+}
+
+/// Effective anti-clump rest target (particles/cell) fed to the divergence pass:
+/// the user's manual `physics.rest_density` when nonzero, else Auto = the scene's
+/// effective particles-per-seeded-cell so density stays motion-neutral. See
+/// [`crate::scene::effective_rest_density`].
+pub(crate) fn effective_rest_density(settings: &Registry, scene: &SceneConfig) -> f32 {
+    let density = crate::scene::effective_particle_density(
+        settings,
+        scene.grid_resolution,
+        &scene.initial_liquid.blocks,
+    );
+    crate::scene::effective_rest_density(settings.rest_density(), density)
 }
 
 pub(crate) fn estimated_particle_count(settings: &Registry, scene: &SceneConfig) -> u32 {

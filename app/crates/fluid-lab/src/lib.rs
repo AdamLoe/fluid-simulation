@@ -697,8 +697,14 @@ impl FluidApp {
                 log(&format!("[fluid-lab] live wall_friction = {value}"));
             }
             "physics.rest_density" => {
-                self.gpu.set_rest_density(value as f32);
-                log(&format!("[fluid-lab] live rest_density = {value}"));
+                // Anti-clump target tracks actual particle density: 0 (Auto) resolves
+                // to the scene's effective particles-per-cell so density is
+                // motion-neutral; a nonzero value pins a manual target.
+                let eff = gpu::effective_rest_density(&self.settings, &self.scene);
+                self.gpu.set_rest_density(eff);
+                log(&format!(
+                    "[fluid-lab] live rest_density = {value} (effective {eff})"
+                ));
             }
             "physics.volume_stiffness" => {
                 self.gpu.set_volume_stiffness(value as f32);

@@ -159,10 +159,40 @@ be planned later if it earns the solver risk.
 **Applies to** — `architecture/app-shell.md`, `architecture/simulation.md`,
 `architecture/settings.md`.
 
+## Anti-clump rest target tracks particle density (density is motion-neutral)
+
+**Decision** — The anti-clump divergence source's rest target tracks the scene's
+**actual** particle density by default, instead of a frozen constant. `physics.rest_density`
+becomes an optional manual override (`0` = Auto, the new default; nonzero pins a fixed
+target). The effective `rest` fed to `divergence.wgsl`'s `spc[0]` is
+`manual > 0 ? manual : effective_particle_density(scene)`.
+
+**Why** — The divergence anti-clump source biases a cell by
+`min(stiff·(occ − rest)/rest, clamp)`, where `occ` is the **raw per-cell particle
+count** and so scales linearly with `particles.density`. With a frozen `rest = 8`,
+density 32 gave `occ ≫ rest` (strong outward push, puffy water) and density 1 gave
+`occ < rest` (no push, flat water) — so changing density made the water look like a
+different *volume in motion*. Coupling `rest` to the density keeps `occ/rest ≈ 1` at
+every density, so the dynamics are density-invariant. The 2026-06-12 verification
+sweep (`tools/density_motion_sweep.mjs`, `particles.density ∈ {1,8,32}`, fixed
+falling-blob scene, no rotation) held `liquid_cells` within ~12% across a 32×
+particle-count range (vs ~38–44% spread before), and the settled screenshots show the
+same pool level at all three densities. The rest coupling alone cleared the ~15% bar,
+so the secondary `flip_blend`-vs-density trim was **not** added (kept minimal).
+
+**Tradeoffs** — Power users lose the old fixed `rest = 8` default, but can still pin
+any target via the override. Still a pragmatic liveness/compactness correction, not
+physical mass conservation.
+
+**Applies to** — `architecture/simulation.md`, `settings/mod.rs (physics.rest_density)`,
+`gpu/fluid.rs`, `scene/mod.rs`.
+
 ## Keep the current occupancy-bias defaults until a stronger volume metric exists
 
-**Decision** — Keep `physics.rest_density = 8`, `physics.volume_stiffness = 0.45`,
-and `physics.drift_clamp = 0.5` as the default volume-correction surface. Do not add
+**Decision** — Keep `physics.volume_stiffness = 0.45` and `physics.drift_clamp = 0.5`
+as the default volume-correction surface (the rest target is now auto-coupled to
+particle density — see the decision above; this superseded the prior fixed
+`physics.rest_density = 8` default). Do not add
 PBF, particle spawning/deletion, source/drain behavior, or a new divergence formula
 from the current occupied-cell proxy alone.
 
