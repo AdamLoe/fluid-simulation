@@ -17,10 +17,13 @@ const DEFAULT_DROP_HEIGHT: f32 = 0.72;
 /// and by the auto surface-dilation trigger. Mirrors `particles.density`'s default.
 pub const REFERENCE_DENSITY: f32 = 8.0;
 
-/// Default `scene.fill_level`. The per-preset waterline maps in `apply_fill_level`
-/// are calibrated so that **this** value reproduces each preset's historical
-/// geometry, keeping the default look identical to before this knob existed.
-pub const DEFAULT_FILL_LEVEL: f32 = 0.75;
+/// Default `scene.fill_level` as a [0,1] tank-fill fraction (20% of tank height).
+/// The registry stores this as a 0–100 percentage; `Registry::fill_level()`
+/// converts to this fraction. `fill_level` is a literal waterline: the resting
+/// fluid is a full-footprint floor slab from y=0 up to `fill_level` of the tank
+/// height, so `fill_level = 1.0` fills the whole tank and `0.2` fills the bottom
+/// fifth. See `preset_blocks` for how the dynamic scenarios scale with it.
+pub const DEFAULT_FILL_LEVEL: f32 = 0.2;
 
 /// Selectable scripted scenarios. The integer values are the wire format of the
 /// `scene.preset` registry setting (a small enum exposed as a dropdown in the
@@ -186,42 +189,55 @@ fn resolved_particle_count(settings: &Registry, res: UVec3, blocks: &[LiquidBloc
 
 /// The deterministic liquid layout for each preset (normalized [0,1]^3, y up).
 ///
-/// Composition order: the raw historical block, then the `drop_height` shift for
-/// suspended presets, then the `fill_level` waterline map. `fill_level` sizes the
-/// **body of water** (how deep it sits); `drop_height` only positions suspended
-/// blocks vertically. They compose: shift first, then resize about the (shifted)
-/// center, then clamp inside the tank.
+/// `fill_level` is a literal tank-fill fraction in [0,1] (0 = empty, 1 = full):
 ///
-/// The per-preset waterline maps are calibrated so that `fill_level ==
-/// DEFAULT_FILL_LEVEL` (0.75) reproduces each preset's historical geometry, so the
-/// default look is unchanged from before this knob existed.
+/// - **FallingBlob (the default / resting scene):** a single full-footprint floor
+///   slab `(0,0,0)`–`(1, fill, 1)`. The waterline sits at `fill` of the tank
+///   height, so `fill = 0.5` fills the bottom half and `fill = 1.0` fills the
+///   whole tank. `seeded_volume_fraction` then equals `fill`. This is a resting
+///   body of water, so `drop_height` does not apply to it.
+/// - **DamBreak:** a slab pinned to the -X wall over its historical x/z footprint,
+///   with its top at `fill` of the tank height (`max.y = fill`). Released, it
+///   collapses and races across the floor. More fill = a taller, heavier column.
+///   `drop_height` does not apply (floor-anchored).
+/// - **DoubleSplash:** two suspended drops near opposite walls that fall and
+///   collide. `fill` scales each drop's size about its (drop-height-shifted)
+///   center, so more fill drops a bigger pair of bodies. `drop_height` positions
+///   them vertically.
 fn preset_blocks(preset: ScenePreset, drop_height: f32, fill_level: f32) -> Vec<LiquidBlock> {
-    let blocks = match preset {
-        // Centered blob in the upper-middle — falls straight down and splashes.
-        ScenePreset::FallingBlob => vec![LiquidBlock::new([0.2, 0.55, 0.2], [0.8, 0.9, 0.8])],
-        // Tall slab pinned against the -X wall, filling the full depth/height of
-        // that side. Released, it collapses and races across the floor.
-        ScenePreset::DamBreak => vec![LiquidBlock::new([0.05, 0.05, 0.05], [0.42, 0.95, 0.95])],
-        // Two tall columns near opposite walls — fall and collide in the middle.
-        ScenePreset::DoubleSplash => vec![
-            LiquidBlock::new([0.1, 0.45, 0.3], [0.34, 0.92, 0.7]),
-            LiquidBlock::new([0.66, 0.45, 0.3], [0.9, 0.92, 0.7]),
-        ],
-    };
-
     let fill = fill_level.clamp(0.0, 1.0);
-    if preset == ScenePreset::DamBreak {
-        blocks
-            .into_iter()
-            .map(|block| apply_fill_level(block, fill, preset))
-            .collect()
-    } else {
-        let delta = drop_height.clamp(0.0, 1.0) - DEFAULT_DROP_HEIGHT;
-        blocks
+    match preset {
+        // Resting tank: a full-footprint floor slab whose waterline is at `fill`
+        // of the tank height. This is the literal "how full is the tank" scene.
+        ScenePreset::FallingBlob => {
+            let top = fill.clamp(0.0, 1.0);
+            if top <= 1.0e-4 {
+                // Empty tank: keep a vanishingly thin valid slab so the solver and
+                // GPU dispatch still seed something the floor.
+                vec![LiquidBlock::new([0.0, 0.0, 0.0], [1.0, 1.0e-3, 1.0])]
+            } else {
+                vec![LiquidBlock::new([0.0, 0.0, 0.0], [1.0, top, 1.0])]
+            }
+        }
+        // Wall slab pinned to -X over its footprint; height = fill * tank height.
+        ScenePreset::DamBreak => {
+            const CEILING: f32 = 0.98;
+            let top = (fill * CEILING).clamp(1.0e-3, CEILING);
+            vec![LiquidBlock::new([0.05, 0.0, 0.05], [0.42, top, 0.95])]
+        }
+        // Two suspended drops near opposite walls — fall and collide. `fill`
+        // scales each drop's size about its (drop-height-shifted) center.
+        ScenePreset::DoubleSplash => {
+            let delta = drop_height.clamp(0.0, 1.0) - DEFAULT_DROP_HEIGHT;
+            vec![
+                LiquidBlock::new([0.1, 0.45, 0.3], [0.34, 0.92, 0.7]),
+                LiquidBlock::new([0.66, 0.45, 0.3], [0.9, 0.92, 0.7]),
+            ]
             .into_iter()
             .map(|block| shift_block_y(block, delta))
-            .map(|block| apply_fill_level(block, fill, preset))
+            .map(|block| scale_suspended_drop(block, fill))
             .collect()
+        }
     }
 }
 
@@ -232,42 +248,22 @@ fn shift_block_y(mut block: LiquidBlock, delta: f32) -> LiquidBlock {
     block
 }
 
-/// Apply the waterline-height map for a preset. `fill` is clamped to [0,1].
+/// Scale a suspended drop (DoubleSplash) by the tank-fill fraction.
 ///
-/// - **DamBreak (floor-resting slab):** the waterline `max.y` rises linearly from
-///   the floor. The map `max.y = floor + fill * SLOPE` is tuned so `fill = 0.75`
-///   reproduces the historical `max.y = 0.95` (`SLOPE = (0.95 - 0.05) / 0.75 =
-///   1.2`); higher `fill` deepens the body, clamped just below the ceiling.
-/// - **Suspended presets (FallingBlob / DoubleSplash):** the block's vertical
-///   extent is scaled about its (drop-height-shifted) center by `fill / 0.75`, so
-///   `fill = 0.75` reproduces the historical thickness and a larger `fill` drops a
-///   bigger body that pools deeper. Clamped inside the tank.
-fn apply_fill_level(mut block: LiquidBlock, fill: f32, preset: ScenePreset) -> LiquidBlock {
-    match preset {
-        ScenePreset::DamBreak => {
-            const CEILING: f32 = 0.98;
-            let floor = block.min.y;
-            const SLOPE: f32 = (0.95 - 0.05) / 0.75;
-            let top = (floor + fill * SLOPE).clamp(floor + 1.0e-3, CEILING);
-            block.max.y = top;
-            block
-        }
-        ScenePreset::FallingBlob | ScenePreset::DoubleSplash => {
-            let center = 0.5 * (block.min.y + block.max.y);
-            let half = 0.5 * (block.max.y - block.min.y);
-            let scaled = half * (fill / DEFAULT_FILL_LEVEL);
-            // Clamp inside the tank [0,1] while preserving a valid (non-empty)
-            // block. Suspended blocks may legitimately reach the ceiling y=1.0
-            // (matching the historical drop-height clamp), so do not reserve the
-            // CEILING margin here — that margin is only for the dam-break waterline.
-            let mut lo = (center - scaled).clamp(0.0, 1.0);
-            let hi = (center + scaled).clamp(lo + 1.0e-3, 1.0);
-            lo = lo.min(hi - 1.0e-3).max(0.0);
-            block.min.y = lo;
-            block.max.y = hi;
-            block
-        }
-    }
+/// The block's vertical extent is scaled about its (drop-height-shifted) center by
+/// `fill / DEFAULT_FILL_LEVEL`, so the default fill reproduces the historical drop
+/// size and larger fills drop a bigger body. Clamped inside the tank, preserving a
+/// valid (non-empty) block.
+fn scale_suspended_drop(mut block: LiquidBlock, fill: f32) -> LiquidBlock {
+    let center = 0.5 * (block.min.y + block.max.y);
+    let half = 0.5 * (block.max.y - block.min.y);
+    let scaled = half * (fill / DEFAULT_FILL_LEVEL);
+    let mut lo = (center - scaled).clamp(0.0, 1.0);
+    let hi = (center + scaled).clamp(lo + 1.0e-3, 1.0);
+    lo = lo.min(hi - 1.0e-3).max(0.0);
+    block.min.y = lo;
+    block.max.y = hi;
+    block
 }
 
 /// The effective particles-per-seeded-cell density that the *resolved* spawn count
@@ -315,43 +311,56 @@ mod tests {
     }
 
     #[test]
-    fn default_drop_height_preserves_suspended_presets() {
+    fn default_fill_level_is_twenty_percent_floor_slab() {
+        // The default scene (Falling blob) is a full-footprint floor slab whose
+        // waterline sits at the 20% default fill, so it fills the bottom fifth.
         let falling = scene_for(ScenePreset::FallingBlob, DEFAULT_DROP_HEIGHT);
         let block = falling.initial_liquid.blocks[0];
-        assert!((block.min.y - 0.55).abs() < 1.0e-6);
-        assert!((block.max.y - 0.9).abs() < 1.0e-6);
-
-        let double = scene_for(ScenePreset::DoubleSplash, DEFAULT_DROP_HEIGHT);
-        for block in double.initial_liquid.blocks {
-            assert!((block.min.y - 0.45).abs() < 1.0e-6);
-            assert!((block.max.y - 0.92).abs() < 1.0e-6);
-        }
+        assert!((block.min - Vec3::new(0.0, 0.0, 0.0)).length() < 1.0e-6);
+        assert!((block.max.x - 1.0).abs() < 1.0e-6);
+        assert!((block.max.z - 1.0).abs() < 1.0e-6);
+        assert!(
+            (block.max.y - DEFAULT_FILL_LEVEL).abs() < 1.0e-6,
+            "default waterline {} should be {DEFAULT_FILL_LEVEL}",
+            block.max.y
+        );
     }
 
     #[test]
-    fn low_and_high_drop_height_clamp_suspended_blocks_inside_tank() {
-        let low = scene_for(ScenePreset::FallingBlob, 0.0)
-            .initial_liquid
-            .blocks[0];
+    fn falling_blob_ignores_drop_height() {
+        // The resting tank slab is floor-anchored, so drop_height does not move it.
+        let low = scene_for(ScenePreset::FallingBlob, 0.0).initial_liquid.blocks[0];
+        let high = scene_for(ScenePreset::FallingBlob, 1.0).initial_liquid.blocks[0];
+        assert!((low.min.y - high.min.y).abs() < 1.0e-6);
+        assert!((low.max.y - high.max.y).abs() < 1.0e-6);
         assert!((low.min.y - 0.0).abs() < 1.0e-6);
-        assert!((low.max.y - 0.35).abs() < 1.0e-6);
+        assert!((low.max.y - DEFAULT_FILL_LEVEL).abs() < 1.0e-6);
+    }
 
-        let high = scene_for(ScenePreset::FallingBlob, 1.0)
+    #[test]
+    fn double_splash_drop_height_clamps_inside_tank() {
+        let low = scene_for(ScenePreset::DoubleSplash, 0.0)
             .initial_liquid
             .blocks[0];
-        assert!((high.min.y - 0.65).abs() < 1.0e-6);
-        assert!((high.max.y - 1.0).abs() < 1.0e-6);
+        assert!(low.min.y >= -1.0e-6 && low.max.y <= 1.0 + 1.0e-6);
+        assert!(low.max.y > low.min.y);
+
+        let high = scene_for(ScenePreset::DoubleSplash, 1.0)
+            .initial_liquid
+            .blocks[0];
+        assert!(high.min.y >= -1.0e-6 && high.max.y <= 1.0 + 1.0e-6);
+        assert!(high.max.y > high.min.y);
     }
 
     #[test]
     fn default_density_derives_count_from_seeded_cells() {
         // Default registry: density 8/seeded-cell, 64^3 grid, falling-blob preset.
-        // Seeded fraction of the falling blob is 0.6*0.35*0.6 = 0.126, so
-        // count ≈ 8 * 0.126 * 64^3 ≈ 264k — near the historical ~254k default.
+        // The default scene is a full-footprint floor slab at 20% fill, so the
+        // seeded fraction is ~0.2 and count ≈ 8 * 0.2 * 64^3 ≈ 419k.
         let scene = SceneConfig::from_settings(&Registry::default());
         assert!(
-            (264_000..=264_500).contains(&scene.particle_count),
-            "default count {} should be ~264k (8/seeded-cell)",
+            (418_000..=420_000).contains(&scene.particle_count),
+            "default count {} should be ~419k (8/seeded-cell, 20% fill)",
             scene.particle_count
         );
     }
@@ -361,19 +370,11 @@ mod tests {
         let mut settings = Registry::default();
         settings.set_value_f64("grid.res_x", 128.0);
         settings.set_value_f64("grid.res_z", 128.0);
-        // 128x64x128, density 8, falling blob -> 8 * 0.126 * 1_048_576 ≈ 1.057M.
+        // 128x64x128, density 8, falling blob at 20% fill -> 8 * 0.2 * 1_048_576 ≈ 1.677M.
         let blob = SceneConfig::from_settings(&settings).particle_count;
         assert!(
-            (1_050_000..=1_065_000).contains(&blob),
-            "falling-blob count {blob} should be ~1.06M"
-        );
-
-        // Dam break fills ~0.30 of the tank, so the same density seeds far more.
-        settings.set_value_f64("scene.preset", ScenePreset::DamBreak as u32 as f64);
-        let dam = SceneConfig::from_settings(&settings).particle_count;
-        assert!(
-            (2_400_000..=2_600_000).contains(&dam),
-            "dam-break count {dam} should be ~2.5M"
+            (1_670_000..=1_685_000).contains(&blob),
+            "falling-blob count {blob} should be ~1.68M"
         );
     }
 
@@ -389,27 +390,41 @@ mod tests {
         let low = scene_for(ScenePreset::DamBreak, 0.0).initial_liquid.blocks[0];
         let high = scene_for(ScenePreset::DamBreak, 1.0).initial_liquid.blocks[0];
 
-        assert!((low.min.y - 0.05).abs() < 1.0e-6);
-        assert!((low.max.y - 0.95).abs() < 1.0e-6);
+        // Floor-anchored slab; only its footprint and fill-scaled height matter.
+        assert!((low.min.y - 0.0).abs() < 1.0e-6);
         assert!((high.min.y - low.min.y).abs() < 1.0e-6);
         assert!((high.max.y - low.max.y).abs() < 1.0e-6);
     }
+
+    #[test]
+    fn full_fill_fills_the_tank() {
+        // fill_level = 100% -> the default scene is a full-footprint slab spanning
+        // the whole tank, so the seeded fraction is ~1.0.
+        let mut settings = Registry::default();
+        settings.set_value_f64("scene.fill_level", 100.0);
+        let scene = SceneConfig::from_settings(&settings);
+        let frac = seeded_volume_fraction(&scene.initial_liquid.blocks);
+        assert!(frac > 0.99, "full fill seeded fraction {frac} should be ~1.0");
+    }
 }
 
-/// Waterline (`scene.fill_level`) + volume-neutral density decoupling.
+/// Tank-fill (`scene.fill_level`) + volume-neutral density decoupling.
 ///
 /// These assert the pure host derivations that back the visual feature:
-/// (a) the waterline deepens/shallows each preset's body and so is monotone in the
-/// resolved count; (b) at a fixed waterline the count scales linearly with density
-/// while the *seeded fraction* (the body of water) is density-invariant.
+/// (a) `fill_level` is a literal tank-fill fraction — the default scene's seeded
+/// fraction equals it, and it is monotone in the resolved count for every preset;
+/// (b) at a fixed fill the count scales linearly with density while the *seeded
+/// fraction* (the body of water) is density-invariant.
 #[cfg(test)]
 mod fill_level_tests {
     use super::*;
 
+    /// `fill` is a [0,1] tank-fill fraction; the registry stores it as a 0–100
+    /// percentage, so multiply by 100 here.
     fn registry(preset: ScenePreset, fill: f32, density: f32) -> Registry {
         let mut s = Registry::default();
         s.set_value_f64("scene.preset", preset as u32 as f64);
-        s.set_value_f64("scene.fill_level", fill as f64);
+        s.set_value_f64("scene.fill_level", (fill * 100.0) as f64);
         s.set_value_f64("particles.density", density as f64);
         s
     }
@@ -425,39 +440,28 @@ mod fill_level_tests {
     ];
 
     #[test]
-    fn default_fill_level_reproduces_historical_geometry() {
-        // fill_level default (0.75) must leave each preset's historical blocks
-        // unchanged, so the default look is identical to before the knob existed.
-        let blob = scene(ScenePreset::FallingBlob, DEFAULT_FILL_LEVEL, 8.0)
-            .initial_liquid
-            .blocks[0];
-        assert!((blob.min.y - 0.55).abs() < 1.0e-5, "blob min.y {}", blob.min.y);
-        assert!((blob.max.y - 0.9).abs() < 1.0e-5, "blob max.y {}", blob.max.y);
-
-        let dam = scene(ScenePreset::DamBreak, DEFAULT_FILL_LEVEL, 8.0)
-            .initial_liquid
-            .blocks[0];
-        assert!((dam.min.y - 0.05).abs() < 1.0e-5, "dam min.y {}", dam.min.y);
-        assert!((dam.max.y - 0.95).abs() < 1.0e-5, "dam max.y {}", dam.max.y);
-
-        for b in scene(ScenePreset::DoubleSplash, DEFAULT_FILL_LEVEL, 8.0)
-            .initial_liquid
-            .blocks
-        {
-            assert!((b.min.y - 0.45).abs() < 1.0e-5, "ds min.y {}", b.min.y);
-            assert!((b.max.y - 0.92).abs() < 1.0e-5, "ds max.y {}", b.max.y);
+    fn default_scene_seeded_fraction_equals_fill_fraction() {
+        // The default scene (Falling blob) is a full-footprint floor slab, so its
+        // seeded fraction equals the tank-fill fraction. 20% -> ~0.2, 100% -> ~1.0.
+        for &fill in &[0.1f32, 0.2, 0.5, 1.0] {
+            let blocks = preset_blocks(ScenePreset::FallingBlob, DEFAULT_DROP_HEIGHT, fill);
+            let frac = seeded_volume_fraction(&blocks);
+            assert!(
+                (frac - fill).abs() < 1.0e-4,
+                "fill {fill}: seeded fraction {frac} should equal the fill fraction"
+            );
         }
     }
 
     #[test]
     fn fill_level_is_monotone_in_seeded_fraction_and_count() {
-        // Higher waterline => strictly more seeded body => strictly more particles,
-        // for every preset, at fixed density and grid.
+        // Higher fill => strictly more seeded body => more particles, for every
+        // preset, at fixed density and grid.
         for preset in PRESETS {
             let res = UVec3::new(64, 64, 64);
             let mut last_frac = -1.0f32;
             let mut last_count = 0u32;
-            for &fill in &[0.25f32, 0.5, 0.75, 1.0] {
+            for &fill in &[0.1f32, 0.2, 0.5, 1.0] {
                 let blocks = preset_blocks(preset, DEFAULT_DROP_HEIGHT, fill);
                 let frac = seeded_volume_fraction(&blocks);
                 let count = resolved_particle_count(&registry(preset, fill, 8.0), res, &blocks);
@@ -478,13 +482,34 @@ mod fill_level_tests {
     }
 
     #[test]
+    fn default_scene_fill_is_roughly_linear() {
+        // For the default full-footprint floor slab the seeded fraction tracks the
+        // fill fraction linearly, so 50% seeds ~2.5x what 20% does.
+        let f20 = seeded_volume_fraction(&preset_blocks(
+            ScenePreset::FallingBlob,
+            DEFAULT_DROP_HEIGHT,
+            0.2,
+        ));
+        let f50 = seeded_volume_fraction(&preset_blocks(
+            ScenePreset::FallingBlob,
+            DEFAULT_DROP_HEIGHT,
+            0.5,
+        ));
+        let ratio = f50 / f20;
+        assert!(
+            (2.4..=2.6).contains(&ratio),
+            "50%/20% seeded ratio {ratio} should be ~2.5"
+        );
+    }
+
+    #[test]
     fn count_scales_with_density_at_fixed_fill_level() {
-        // At a fixed waterline the seeded body (fraction) is density-INVARIANT,
-        // and the resolved count scales ~linearly with density.
+        // At a fixed fill the seeded body (fraction) is density-INVARIANT, and the
+        // resolved count scales ~linearly with density.
         for preset in PRESETS {
             let res = UVec3::new(64, 64, 64);
-            let blocks_8 = preset_blocks(preset, DEFAULT_DROP_HEIGHT, 0.75);
-            let blocks_2 = preset_blocks(preset, DEFAULT_DROP_HEIGHT, 0.75);
+            let blocks_8 = preset_blocks(preset, DEFAULT_DROP_HEIGHT, 0.5);
+            let blocks_2 = preset_blocks(preset, DEFAULT_DROP_HEIGHT, 0.5);
             // Geometry (hence seeded fraction) does not depend on density.
             assert!(
                 (seeded_volume_fraction(&blocks_8) - seeded_volume_fraction(&blocks_2)).abs()
@@ -493,8 +518,8 @@ mod fill_level_tests {
                 preset.name()
             );
 
-            let c8 = resolved_particle_count(&registry(preset, 0.75, 8.0), res, &blocks_8);
-            let c2 = resolved_particle_count(&registry(preset, 0.75, 2.0), res, &blocks_2);
+            let c8 = resolved_particle_count(&registry(preset, 0.5, 8.0), res, &blocks_8);
+            let c2 = resolved_particle_count(&registry(preset, 0.5, 2.0), res, &blocks_2);
             // density 8 vs 2 -> ~4x more particles (above the 1024 floor for these
             // presets at 64^3). Allow a small tolerance for rounding/floor.
             let ratio = c8 as f64 / c2 as f64;
@@ -512,10 +537,10 @@ mod fill_level_tests {
         // spacing (hence larger splat radius). At the reference density the spacing
         // is H * 8^(-1/3) = H * 0.5, which the renderer maps to today's H*0.35.
         let res = UVec3::new(64, 64, 64);
-        let dense = scene(ScenePreset::DamBreak, 0.75, 8.0);
-        let sparse = scene(ScenePreset::DamBreak, 0.75, 2.0);
-        let reg8 = registry(ScenePreset::DamBreak, 0.75, 8.0);
-        let reg2 = registry(ScenePreset::DamBreak, 0.75, 2.0);
+        let dense = scene(ScenePreset::DamBreak, 0.5, 8.0);
+        let sparse = scene(ScenePreset::DamBreak, 0.5, 2.0);
+        let reg8 = registry(ScenePreset::DamBreak, 0.5, 8.0);
+        let reg2 = registry(ScenePreset::DamBreak, 0.5, 2.0);
         let s8 = dense.seeded_spacing(&reg8);
         let s2 = sparse.seeded_spacing(&reg2);
         assert!(s2 > s8, "spacing should grow at lower density: {s2} <= {s8}");
@@ -535,8 +560,8 @@ mod fill_level_tests {
         // is used (it is just count/seeded_cells with count = density*seeded_cells).
         let res = UVec3::new(64, 64, 64);
         for &d in &[1.0f32, 2.0, 4.0, 8.0, 16.0] {
-            let blocks = preset_blocks(ScenePreset::DamBreak, DEFAULT_DROP_HEIGHT, 0.75);
-            let eff = effective_particle_density(&registry(ScenePreset::DamBreak, 0.75, d), res, &blocks);
+            let blocks = preset_blocks(ScenePreset::DamBreak, DEFAULT_DROP_HEIGHT, 0.5);
+            let eff = effective_particle_density(&registry(ScenePreset::DamBreak, 0.5, d), res, &blocks);
             assert!(
                 (eff - d).abs() / d < 0.02,
                 "effective density {eff} should track slider {d}"

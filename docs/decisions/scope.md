@@ -64,12 +64,15 @@ that need an exact number.
 
 **Applies to** — `architecture/settings.md`.
 
-## Volume (waterline) and density are orthogonal; low-density volume is fixed by splat-radius scaling, not an SDF surface
+## Volume (tank fill) and density are orthogonal; low-density volume is fixed by splat-radius scaling, not an SDF surface
 
 **Decision** — Split the conflated density concept into two orthogonal knobs.
-`scene.fill_level` (the **waterline height**, Reset, default `0.75`) controls *how
-much* water there is — it sizes each preset's seeded body from the floor up, and the
-particle count follows automatically. `particles.density` becomes a pure
+`scene.fill_level` (the **tank-fill percentage**, Reset, stored 0–100, default `20`)
+controls *how much* water there is — it is a literal waterline (0 = empty tank,
+100 = full, 50 = halfway up by height). The default scene seeds a full-footprint
+floor slab from y=0 up to `fill` of the tank height, so the particle count follows
+automatically. The named dynamic scenarios keep their shape but scale with `fill`
+(dam-break wall height = `fill`; double-splash drop size = `fill`). `particles.density` becomes a pure
 fidelity/cost knob and is made **volume-neutral**: the visible body stays the same
 size as density drops, just blobbier. This is achieved cheaply by (a) scaling the
 render splat radius with the seeded inter-particle spacing
@@ -93,7 +96,7 @@ The fast `filled_volume` proxy (`liquid_cells × H³`) and `app/tools/vdd_sweep.
 back the invariant; the screenshots are the real acceptance. Tuning
 `SPLAT_RADIUS_PER_SPACING` and the dilation trigger is Phase-2 calibration-sweep work.
 
-**Code anchors** — `app/crates/fluid-lab/src/scene/mod.rs → apply_fill_level /
+**Code anchors** — `app/crates/fluid-lab/src/scene/mod.rs → preset_blocks /
 effective_particle_density / effective_surface_dilation / seeded_spacing`;
 `app/crates/fluid-lab/src/gpu/mod.rs → SPLAT_RADIUS_PER_SPACING`;
 `app/crates/fluid-lab/src/gpu/fluid.rs → effective_surface_dilation (cls uniform)`;

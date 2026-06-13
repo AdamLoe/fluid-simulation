@@ -445,13 +445,13 @@ impl Default for Registry {
             },
             Setting {
                 id: "scene.fill_level",
-                label: "Water level",
+                label: "Water level (%)",
                 category: Category::Scene,
-                default: Value::F32(0.75),
-                value: Value::F32(0.75),
-                validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("Sets how deep the water sits in the tank, independent of particle density. Lower fills shallower water, higher fills deeper; the particle count follows automatically. Changes apply on reset."),
-                technical_tooltip: Some("Reset-class waterline height in [0,1]. Dam Break raises the floor slab's top (max.y); suspended presets scale their block's vertical extent about the (drop-height-shifted) center. The default 0.75 reproduces each preset's historical geometry. The seeded volume fraction (hence resolved particle count) tracks this automatically; density stays volume-neutral."),
+                default: Value::F32(20.0),
+                value: Value::F32(20.0),
+                validation: Validation::F32Range { min: 0.0, max: 100.0 },
+                tooltip: Some("% of the tank filled with water (0 = empty, 100 = full). 50 fills the tank halfway up; the default 20 fills the bottom fifth. The particle count follows automatically, independent of particle density. Changes apply on reset."),
+                technical_tooltip: Some("Reset-class tank-fill percentage, stored 0–100; Registry::fill_level() maps it to a [0,1] fraction. The default scene (Falling blob) is a full-footprint floor slab from y=0 to fill*height, so the seeded volume fraction equals the fill fraction. Dam Break scales its wall-slab height by fill; Double Splash scales its suspended drops by fill. The resolved particle count tracks the seeded fraction; density stays volume-neutral."),
                 apply: ApplyClass::Reset,
             },
             Setting {
@@ -1602,14 +1602,16 @@ impl Registry {
             .map(|s| s.as_f32())
             .unwrap_or(0.72)
     }
-    /// Waterline height in [0,1]: how deep the body of water sits in the tank.
+    /// Tank-fill fraction in [0,1]: how full the tank is (0 = empty, 1 = full).
+    /// The registry stores this as a 0–100 percentage; this returns the fraction.
     /// Drives the seeded liquid block geometry (and hence the resolved particle
-    /// count) independently of `particles.density`. Default 0.75 reproduces each
-    /// preset's historical look.
+    /// count) independently of `particles.density`. Default 20% (0.2).
     pub fn fill_level(&self) -> f32 {
-        self.get("scene.fill_level")
+        let pct = self
+            .get("scene.fill_level")
             .map(|s| s.as_f32())
-            .unwrap_or(0.75)
+            .unwrap_or(20.0);
+        (pct / 100.0).clamp(0.0, 1.0)
     }
     pub fn grid_res_x(&self) -> u32 {
         self.get("grid.res_x").map(|s| s.as_u32()).unwrap_or(64)

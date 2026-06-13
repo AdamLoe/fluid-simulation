@@ -352,6 +352,18 @@ density 8 vs 2 at fill 0.75 holds the visible body (screenshots) with `liquid_ce
 within ~15% early (1.15) drifting to ~1.3 as the dynamics settle — the visible water
 is held by the splat scaling; the physics-cell ratio is the loose proxy.
 
+**Follow-up (2026-06-12): `fill_level` redefined to a literal tank-fill percentage.**
+The original per-preset waterline maps (calibrated so default 0.75 reproduced each
+preset's historical geometry) were confusing. `scene.fill_level` is now a true "how
+full is the tank" knob: stored 0–100 (%), default **20**, where the default scene
+(Falling blob) is a full-footprint floor slab `(0,0,0)`–`(1, fill, 1)`, so 100% fills
+the tank and 50% fills it halfway by height. Dam break = wall-slab height `fill * 0.98`;
+double splash = suspended drops scaled by `fill`. `Registry::fill_level()` maps the
+0–100 store to a `[0,1]` fraction. Real-GPU default-scene sweep
+(`app/tools/fill_sweep.mjs`, near-seeded): fill 10/20/50/100% → `liquid_fraction`
+0.097 / 0.191 / 0.442 / 0.909 (monotone, ~linear; 100% ≈ full tank). Geometry in
+`preset_blocks` (the old `apply_fill_level` is gone).
+
 **Phase 2 — remaining.** The pixel/thickness coverage metric + the
 `SPLAT_RADIUS_PER_SPACING` tuning loop (tighten `liquid_cells` invariance and the
 visual coverage tolerance), and the SDF/level-set surface rewrite (separate plan).

@@ -363,8 +363,8 @@ function appendScenarioSummary(container, app) {
   const requested = stats.requested_particles;
   const actual = stats.particles;
   // Effective filled-water volume proxy: liquid_cells * H^3, with the fraction of
-  // the tank it fills. Surfaces the waterline knob's effect and matches the number
-  // the volume/density calibration asserts on. Null until the GPU reports cells.
+  // the tank it fills. "tank fill" tracks the Water level (%) knob directly — on the
+  // default resting scene it is ~the set percentage. Null until the GPU reports cells.
   const filledVolume = stats.filled_volume;
   const liquidFraction = stats.liquid_fraction;
 
@@ -389,7 +389,7 @@ function appendScenarioSummary(container, app) {
     `</div>` +
     `<div>Water volume: <span style="color:#7dd3fc;">${fmtVol(filledVolume)}</span>` +
     ` &nbsp;·&nbsp; tank fill: <span style="color:#cdd6e4;">${fmtPct(liquidFraction)}</span></div>` +
-    `<div style="color:#6b7689;margin-top:2px;">Water level &amp; density. Filled volume = liquid cells &times; cell volume; density stays volume-neutral. Changes apply on Reset.</div>`;
+    `<div style="color:#6b7689;margin-top:2px;">Tank fill tracks Water level (%) (0 = empty, 100 = full). Filled volume = liquid cells &times; cell volume; density stays volume-neutral. Changes apply on Reset.</div>`;
 
   container.appendChild(box);
 }
