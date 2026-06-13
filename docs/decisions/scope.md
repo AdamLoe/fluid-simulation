@@ -64,6 +64,44 @@ that need an exact number.
 
 **Applies to** — `architecture/settings.md`.
 
+## Volume (waterline) and density are orthogonal; low-density volume is fixed by splat-radius scaling, not an SDF surface
+
+**Decision** — Split the conflated density concept into two orthogonal knobs.
+`scene.fill_level` (the **waterline height**, Reset, default `0.75`) controls *how
+much* water there is — it sizes each preset's seeded body from the floor up, and the
+particle count follows automatically. `particles.density` becomes a pure
+fidelity/cost knob and is made **volume-neutral**: the visible body stays the same
+size as density drops, just blobbier. This is achieved cheaply by (a) scaling the
+render splat radius with the seeded inter-particle spacing
+(`radius = H · effective_density^(-1/3) · SPLAT_RADIUS_PER_SPACING`, constant `0.7`
+to reproduce today at density 8) and (b) auto-enabling the existing one-ring
+`classify.wgsl` surface dilation below the reference density (8/cell) so the physics
+liquid region stays hole-free. The **SDF / marching-cubes surface rewrite — the
+"proper" coverage fix — is deliberately deferred** to a future plan.
+
+**Why** — The visible water is built from particle splats, not liquid cells, so a
+fixed-radius splat made lowering density *look like less water* even though the
+seeded region was identical — wrong, because density should be cost-only. The
+splat-radius + dilation approach decouples the two knobs at a fraction of the cost of
+an SDF surface, which would be a large graphics-surface investment ahead of the
+product need (see "Optional features are deferred").
+
+**Tradeoffs** — The splat approach is a coverage approximation: at very low density
+the body looks blobby (accepted), and the physics liquid-cell count is only
+~density-invariant within ~15% (a density-dependent dilation rind) rather than exact.
+The fast `filled_volume` proxy (`liquid_cells × H³`) and `app/tools/vdd_sweep.mjs`
+back the invariant; the screenshots are the real acceptance. Tuning
+`SPLAT_RADIUS_PER_SPACING` and the dilation trigger is Phase-2 calibration-sweep work.
+
+**Code anchors** — `app/crates/fluid-lab/src/scene/mod.rs → apply_fill_level /
+effective_particle_density / effective_surface_dilation / seeded_spacing`;
+`app/crates/fluid-lab/src/gpu/mod.rs → SPLAT_RADIUS_PER_SPACING`;
+`app/crates/fluid-lab/src/gpu/fluid.rs → effective_surface_dilation (cls uniform)`;
+`docs/plans/volume-density-decoupling.md`.
+
+**Applies to** — `architecture/simulation.md`, `architecture/rendering.md`,
+`architecture/settings.md`.
+
 ## The fluid lab is the direction, but not the first-version scope
 
 **Decision** — The long-term product is an inspectable fluid lab (particle/grid/

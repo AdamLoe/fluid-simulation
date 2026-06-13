@@ -362,6 +362,11 @@ function appendScenarioSummary(container, app) {
   const totalCells = stats.total_cells;
   const requested = stats.requested_particles;
   const actual = stats.particles;
+  // Effective filled-water volume proxy: liquid_cells * H^3, with the fraction of
+  // the tank it fills. Surfaces the waterline knob's effect and matches the number
+  // the volume/density calibration asserts on. Null until the GPU reports cells.
+  const filledVolume = stats.filled_volume;
+  const liquidFraction = stats.liquid_fraction;
 
   const box = document.createElement("div");
   box.className = "cfg-scenario-summary";
@@ -370,6 +375,9 @@ function appendScenarioSummary(container, app) {
     "border-radius:6px;font-size:11px;line-height:1.5;color:#aeb8cc;";
 
   const fmtN = (n) => (typeof n === "number" ? n.toLocaleString() : "—");
+  const fmtPct = (n) =>
+    typeof n === "number" ? `${(n * 100).toFixed(1)}%` : "—";
+  const fmtVol = (n) => (typeof n === "number" ? n.toPrecision(3) : "—");
   box.innerHTML =
     `<div style="font-weight:600;color:#cdd6e4;margin-bottom:3px;">Effective scenario</div>` +
     `<div>Grid: <span style="color:#cdd6e4;">${gridRes ?? "—"}</span>` +
@@ -379,7 +387,9 @@ function appendScenarioSummary(container, app) {
       ? ` &nbsp;·&nbsp; seeded: <span style="color:#cdd6e4;">${fmtN(actual)}</span>`
       : "") +
     `</div>` +
-    `<div style="color:#6b7689;margin-top:2px;">Density &times; grid &times; scenario fill. Changes apply on Reset.</div>`;
+    `<div>Water volume: <span style="color:#7dd3fc;">${fmtVol(filledVolume)}</span>` +
+    ` &nbsp;·&nbsp; tank fill: <span style="color:#cdd6e4;">${fmtPct(liquidFraction)}</span></div>` +
+    `<div style="color:#6b7689;margin-top:2px;">Water level &amp; density. Filled volume = liquid cells &times; cell volume; density stays volume-neutral. Changes apply on Reset.</div>`;
 
   container.appendChild(box);
 }

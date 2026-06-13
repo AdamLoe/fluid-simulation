@@ -25,7 +25,7 @@ The host reference for grid math and indexing lives in `app/crates/fluid-lab/src
 - **WGSL shaders** (in `app/crates/fluid-lab/src/gpu/shaders/`): `clear.wgsl`, `mark.wgsl`, `classify.wgsl`, `scatter.wgsl`, `normalize.wgsl`, `save_vel.wgsl`, `forces.wgsl`, `boundaries.wgsl`, `divergence.wgsl`, `gradient.wgsl`, `g2p.wgsl`, `impulse.wgsl`; pressure and CG kernels owned by `pressure-solver.md`
 - **Deterministic particle init** — `app/crates/fluid-lab/src/gpu/fluid.rs → generate_particles` (lattice + seeded LCG jitter; volume-proportional split across scene blocks)
 - **Escaped-particle recovery and wall contact** — wall-aware MAC sampling, clamp + zero-normal recovery, and optional tangential damping in `app/crates/fluid-lab/src/gpu/shaders/g2p.wgsl`
-- **Volume / compactness knobs** — `particles.density` (per-seeded-cell, default 8) plus the scene seeding define initial mass/distribution; the spawn count is derived from density × grid × scenario fill (`particles.count` is an advanced absolute override, `0` = Auto); `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp` add occupancy-driven divergence bias for anti-clump volume correction; `classify.liquid_threshold` and `classify.surface_dilation` choose the liquid-cell active set; `render.particle_size` is visual only
+- **Volume / compactness knobs** — `scene.fill_level` (the **waterline height**, default 0.75) sets *how much* water there is; `particles.density` (per-seeded-cell, default 8) is now a pure fidelity/cost knob (*how finely* it is resolved). The spawn count is derived from `density × seeded_volume_fraction × total_cells`, and `seeded_volume_fraction` follows `fill_level` — so raising the waterline deepens the body and the particle count tracks it automatically, while lowering density keeps the same body (just coarser). `particles.count` is an advanced absolute override (`0` = Auto). `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp` add occupancy-driven divergence bias for anti-clump volume correction; `classify.liquid_threshold` and `classify.surface_dilation` choose the liquid-cell active set (the one-ring dilation now auto-enables below the reference density — see below); `render.particle_size` is visual only
 - **Interaction impulses** — manual slosh and scheduled wave-maker impulses (`app/crates/fluid-lab/src/gpu/shaders/impulse.wgsl`, triggered by `app/crates/fluid-lab/src/gpu/fluid.rs → apply_impulse`)
 
 ---
@@ -128,7 +128,15 @@ local frame.
 
 **Escaped-particle recovery is deterministic and non-bouncing.** `g2p.wgsl` clamps position to one epsilon inside the walls and zeroes the velocity component normal to the crossed wall. No random perturbation, no restitution.
 
-**Compactness is split across physics and rendering.** `render.particle_size` only changes how large particles look. `particles.density` (per-seeded-cell, default 8) plus the selected scene preset control the initial seeded mass/distribution and require Reset; the spawn count is derived as `round(density * seeded_volume_fraction * total_cells)`, with `particles.count` as an advanced absolute override (`0` = Auto). `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp` are the volume-correction trio: sufficiently occupied liquid cells above the rest particles/cell target receive a clamped negative divergence bias so projection pushes crowded regions outward. `classify.liquid_threshold` and `classify.surface_dilation` decide which occupied cells participate as liquid; the default dilation is 0 so thin cells are not automatically expanded. `solver.pressure_iterations` controls incompressibility quality/perf, not visual particle overlap.
+**Volume and density are orthogonal knobs.** `scene.fill_level` (the waterline height) controls *how much* water there is; `particles.density` controls *how finely* it is resolved (fidelity/cost), and is now **volume-neutral** — lowering it keeps the same visible body, just blobbier. Both are Reset-class. The spawn count is derived as `round(density * seeded_volume_fraction * total_cells)`, with `particles.count` as an advanced absolute override (`0` = Auto). `render.particle_size` only changes how large particles look (a Live multiplier on top of the density-derived splat radius — see `rendering.md`).
+
+**Waterline (`scene.fill_level`) per preset.** Defined in `app/crates/fluid-lab/src/scene/mod.rs → apply_fill_level`. The maps are calibrated so the default `fill_level = 0.75` reproduces each preset's historical geometry. Composition order: raw block → `drop_height` shift (suspended presets only) → `fill_level` waterline → clamp inside the tank. `fill_level` *sizes* the body; `drop_height` only *positions* suspended blocks, so they compose (shift first, then resize about the shifted center).
+- **Dam break** (floor-resting slab): the waterline `max.y` rises linearly from the floor (`max.y = 0.05 + fill * 1.2`, clamped just below the ceiling), so a higher level builds a taller wall slab. `drop_height` is ignored (floor-anchored).
+- **Falling blob / Double splash** (suspended): the block's vertical extent is scaled about its (drop-height-shifted) center by `fill / 0.75`, so a higher level drops a bigger body that pools deeper. Because the blocks shrink/grow in normalized space, `seeded_volume_fraction → resolved_particle_count` track the waterline with no extra wiring.
+
+**Auto surface dilation at low density.** The render splat-radius scaling keeps the *picture* full at low density, but the *physics* liquid region (`classify.wgsl`) still pinholes when sparse cells fall below the occupancy threshold. The effective dilation is `max(user_surface_dilation, auto)` where `auto = 1` when the scene's effective particle density is **below** the reference (8/cell) and `0` at/above it — see `app/crates/fluid-lab/src/scene/mod.rs → effective_surface_dilation` (host-testable) and `gpu/fluid.rs → effective_surface_dilation` (wires it into the `cls` uniform). This reuses the already-implemented one-ring dilation in `classify.wgsl` (no shader change). At the reference density the auto ring is off to preserve the historical tight surface; the user setting still forces it on at any density.
+
+**Volume-correction trio.** `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp`: sufficiently occupied liquid cells above the rest particles/cell target receive a clamped negative divergence bias so projection pushes crowded regions outward. `classify.liquid_threshold` decides the minimum occupancy to participate as liquid. `solver.pressure_iterations` controls incompressibility quality/perf, not visual particle overlap.
 
 **Pressure solve ceiling (~19.2k liquid cells at 64³) is FLIP volume loss, not solver deficit.** Both CG-30 and brute-force Jacobi-400 plateau at the same occupied-cell count. The default GPU pressure path remains a zero-initial, fixed-iteration loop; `solver.pressure_residual_tolerance` and `solver.pressure_warm_start` are opt-in Live controls that preserve the fixed dispatch loop and avoid normal-frame readback. See `pressure-solver.md` and `../decisions/pressure.md`.
 
@@ -136,6 +144,18 @@ local frame.
 the throttled `gpu.liquid_cells` counter after reset and report an
 occupied-cell-count drift ratio. That catches gross loss/clumping cheaply, but it is
 not physical liquid volume and must not be presented as mass conservation.
+
+**`filled_volume` is the volume/density calibration proxy.** `stats_json` exposes
+`filled_volume = liquid_cells × H³` (world units) and `liquid_fraction =
+liquid_cells / total_cells` (`app/crates/fluid-lab/src/profiler/mod.rs`). With the
+auto surface dilation on, this is ~density-invariant at a fixed waterline, so it is
+the fast Phase-1 proxy the volume/density decoupling asserts on: the waterline knob
+scales it strongly, and a density sweep at fixed waterline keeps it roughly constant
+(the seeded body grows a density-dependent dilation rind, so expect ~15% spread, not
+zero — the *visible* water is held constant by the splat-radius scaling). The
+Scenario panel surfaces `filled_volume`/tank-fill next to the resolved count.
+`app/tools/vdd_sweep.mjs` drives the real-GPU sweep (waterline low/high + density 8/2)
+and reports the ratios.
 
 **`apply_impulse` submits its own command encoder.** The slosh and wave-maker impulses (`app/crates/fluid-lab/src/gpu/fluid.rs → apply_impulse`) are one-shot dispatches that run outside the main substep command buffer, writing directly to the particle buffer before the next `record_prep` clear.
 

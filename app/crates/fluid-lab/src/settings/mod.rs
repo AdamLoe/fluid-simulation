@@ -444,6 +444,17 @@ impl Default for Registry {
                 apply: ApplyClass::Reset,
             },
             Setting {
+                id: "scene.fill_level",
+                label: "Water level",
+                category: Category::Scene,
+                default: Value::F32(0.75),
+                value: Value::F32(0.75),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Sets how deep the water sits in the tank, independent of particle density. Lower fills shallower water, higher fills deeper; the particle count follows automatically. Changes apply on reset."),
+                technical_tooltip: Some("Reset-class waterline height in [0,1]. Dam Break raises the floor slab's top (max.y); suspended presets scale their block's vertical extent about the (drop-height-shifted) center. The default 0.75 reproduces each preset's historical geometry. The seeded volume fraction (hence resolved particle count) tracks this automatically; density stays volume-neutral."),
+                apply: ApplyClass::Reset,
+            },
+            Setting {
                 id: "scene.drop_height",
                 label: "Drop height",
                 category: Category::Scene,
@@ -701,8 +712,8 @@ impl Default for Registry {
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Optionally expands the liquid region by one cell to seal tiny gaps."),
-                technical_tooltip: Some("Live morphology toggle. 1 makes cells adjacent to liquid participate as liquid too, increasing pressure work slightly."),
+                tooltip: Some("Optionally expands the liquid region by one cell to seal tiny gaps. Note: at low particle density this one-ring dilation turns on automatically to keep the water hole-free; this setting forces it on at any density."),
+                technical_tooltip: Some("Live morphology toggle. 1 makes cells adjacent to liquid participate as liquid too, increasing pressure work slightly. The effective dilation is max(this setting, auto), where auto = 1 when the scene's effective particle density is below the reference (8/cell); this keeps the seeded liquid body density-invariant at low density."),
                 apply: ApplyClass::Live,
             },
             Setting {
@@ -1591,6 +1602,15 @@ impl Registry {
             .map(|s| s.as_f32())
             .unwrap_or(0.72)
     }
+    /// Waterline height in [0,1]: how deep the body of water sits in the tank.
+    /// Drives the seeded liquid block geometry (and hence the resolved particle
+    /// count) independently of `particles.density`. Default 0.75 reproduces each
+    /// preset's historical look.
+    pub fn fill_level(&self) -> f32 {
+        self.get("scene.fill_level")
+            .map(|s| s.as_f32())
+            .unwrap_or(0.75)
+    }
     pub fn grid_res_x(&self) -> u32 {
         self.get("grid.res_x").map(|s| s.as_u32()).unwrap_or(64)
     }
@@ -2470,6 +2490,7 @@ mod tests {
         let registry = Registry::default();
         for id in [
             "scene.preset",
+            "scene.fill_level",
             "scene.drop_height",
             "grid.res_x",
             "grid.res_y",

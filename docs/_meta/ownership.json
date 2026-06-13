@@ -10,7 +10,7 @@
     },
     {
       "id": "mac-simulation",
-      "summary": "Hybrid FLIP/PIC MAC-grid simulation and the per-substep loop.",
+      "summary": "Hybrid FLIP/PIC MAC-grid simulation, the per-substep loop, deterministic seeding, the waterline (scene.fill_level) and density-independent particle-count derivation, and the auto surface-dilation policy.",
       "owner": "architecture/simulation.md",
       "references": ["architecture/pressure-solver.md", "architecture/gpu-resources.md", "architecture/app-shell.md", "architecture/fluid-system-llm-brief.md"]
     },
@@ -34,7 +34,7 @@
     },
     {
       "id": "rendering",
-      "summary": "GPU-native inspection rendering, hero water path, and no-readback rule.",
+      "summary": "GPU-native inspection rendering, hero water path, the spacing-tracking splat radius for volume-neutral density (splat radius coverage / volume calibration), and the no-readback rule.",
       "owner": "architecture/rendering.md",
       "references": ["architecture/simulation.md", "architecture/gpu-resources.md", "architecture/app-shell.md", "architecture/fluid-system-llm-brief.md"]
     },
@@ -94,7 +94,7 @@
     },
     {
       "id": "dec-scope",
-      "summary": "Bounded-tank scope and deferred feature policy.",
+      "summary": "Bounded-tank scope, the volume/density (waterline vs density) knob taxonomy with deferred SDF surface, and deferred feature policy.",
       "owner": "decisions/scope.md",
       "references": []
     }

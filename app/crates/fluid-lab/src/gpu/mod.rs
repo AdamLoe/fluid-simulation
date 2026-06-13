@@ -32,6 +32,23 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// water composites over it. See [`composite`].
 const SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// Splat radius as a fraction of the seeded inter-particle lattice spacing.
+///
+/// The visible water body is built from screen-space-smoothed particle splats, so
+/// coverage stays roughly constant only when the splat radius tracks the spacing
+/// between particles. The base splat radius is `seeded_spacing * SPLAT_RADIUS_PER_SPACING`
+/// (the user's `render.particle_size` is a Live multiplier on top). This makes
+/// density a volume-neutral fidelity knob: lowering `particles.density` coarsens
+/// the lattice (larger spacing) and the splats grow to keep the body the same size,
+/// just blobbier.
+///
+/// Calibration: at the reference density (8/cell) the spacing is `H * 8^(-1/3) =
+/// H * 0.5`, so `0.5 * SPLAT_RADIUS_PER_SPACING` must equal the historical
+/// `H * 0.35` → `SPLAT_RADIUS_PER_SPACING = 0.7`. Tune this single constant if the
+/// coverage sweep shows low density under- or over-covering. (Equivalent to the
+/// plan's `k_radius` expressed as a ratio to spacing rather than to `H`.)
+const SPLAT_RADIUS_PER_SPACING: f32 = 0.7;
+
 /// How the fluid is drawn. Replaces the bare `u32 particle_view` dispatch
 /// (`render.particle_view` still maps 0/1/2 to these for compatibility). The
 /// optical/simple particle views are the explicit fallbacks the hero-water
@@ -306,7 +323,11 @@ impl GpuContext {
             caps.max_compute_workgroups_per_dimension,
             caps.max_storage_buffers_per_stage,
         );
-        let particle_radius = crate::sim::H * 0.35;
+        // Splat radius tracks the seeded inter-particle spacing so density is
+        // volume-neutral (see SPLAT_RADIUS_PER_SPACING). At the reference density
+        // this equals the historical H*0.35; the user's render.particle_size is a
+        // Live multiplier applied on top via set_radius_scale below.
+        let particle_radius = scene.seeded_spacing(settings) * SPLAT_RADIUS_PER_SPACING;
 
         let (tank_lo, tank_hi) = fluid.tank_bounds();
         let [grid_nx_init, grid_ny_init, grid_nz_init] = fluid.grid_dims();
@@ -523,7 +544,9 @@ impl GpuContext {
             self.caps.max_compute_workgroups_per_dimension,
             self.caps.max_storage_buffers_per_stage,
         );
-        let particle_radius = crate::sim::H * 0.35;
+        // Volume-neutral splat radius (see SPLAT_RADIUS_PER_SPACING); recomputed on
+        // every reset so a density/count/fill_level change updates it.
+        let particle_radius = scene.seeded_spacing(settings) * SPLAT_RADIUS_PER_SPACING;
         let (tank_lo, tank_hi) = fluid.tank_bounds();
         let [grid_nx, grid_ny, grid_nz] = fluid.grid_dims();
         self.wireframe = renderer::WireframeRenderer::new(

@@ -90,6 +90,40 @@ composite without allocating a dense wall-fill atlas.
 thickness, refraction offset, Fresnel, absorption, final water, reflection, environment,
 nearest-Z, and whitewater. Removed caustics and wall-fill debug views are gone.
 
+### Splat radius tracks particle spacing (volume-neutral density)
+
+The visible water body is built from screen-space-smoothed particle splats, so its
+apparent volume depends on splat *coverage*, not on liquid cells. A fixed splat
+radius therefore makes the body look smaller when `particles.density` drops (the
+splats stop overlapping and pinhole). To make density a pure fidelity/cost knob, the
+**base splat radius tracks the seeded inter-particle spacing**:
+
+```
+particle_radius = scene.seeded_spacing(settings) * SPLAT_RADIUS_PER_SPACING
+seeded_spacing  = H * effective_density^(-1/3)
+```
+
+`SPLAT_RADIUS_PER_SPACING` is the single tunable renderer constant
+(`app/crates/fluid-lab/src/gpu/mod.rs`). At the reference density (8/cell) the
+spacing is `H * 8^(-1/3) = H * 0.5`, so the constant is **0.7** to reproduce the
+historical `H * 0.35` exactly. Lowering density coarsens the lattice (larger
+spacing) and the splats grow to keep coverage ~constant — the body stays the same
+size, just blobbier. `effective_density` is `resolved_count / seeded_cells`, so an
+advanced `particles.count` override changes the spacing too and the splat follows
+(no silent volume change). The radius is recomputed on every Reset (density / count /
+`scene.fill_level` are all Reset-class) at both `GpuRenderer::new` and
+`recreate_fluid`. `render.particle_size` remains the **Live** user multiplier applied
+on top via `ParticleRenderer::set_radius_scale`; `recompute_volume_scale` keeps the
+kernel normalization consistent when the radius changes.
+
+Calibration: tune `SPLAT_RADIUS_PER_SPACING` if a coverage sweep shows low density
+under- or over-covering. `app/tools/vdd_sweep.mjs` runs the real-GPU density sweep
+(8 vs 2 at a fixed waterline), screenshots each, and reports the `liquid_cells` /
+`filled_volume` ratios used as the fast Phase-1 invariance proxy (the visible-volume
+acceptance is the screenshots; expect the physics-cell ratio to sit within ~15% as
+the dilation rind is density-dependent). The SDF/level-set surface rewrite — the
+"proper" coverage fix — is deliberately deferred (`../decisions/scope.md`).
+
 ## Surface foam
 
 `DiffuseSystem` is now conservative surface foam only. It is render-only and never

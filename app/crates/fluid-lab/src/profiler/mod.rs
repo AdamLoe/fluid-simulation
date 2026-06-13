@@ -540,8 +540,27 @@ impl Profiler {
         let dispatches_per_substep = f.dispatches_per_substep;
         let dispatches_this_frame = dispatches_per_substep * ts.substeps_this_frame;
 
+        // Phase-1 calibration proxy: filled water volume = liquid_cells * H^3 (world
+        // units), and the fraction of the tank it fills. With the auto surface
+        // dilation on, this is ~density-invariant at a fixed waterline, so it is the
+        // fast proxy the volume/density decoupling asserts on. Null when no GPU
+        // liquid-cell count is available yet.
+        let cell_volume = (crate::sim::H as f64).powi(3);
+        let (filled_volume, liquid_fraction) = match self.gpu {
+            Some(g) => {
+                let fv = g.liquid_cells as f64 * cell_volume;
+                let lf = if total_cells > 0 {
+                    g.liquid_cells as f64 / total_cells as f64
+                } else {
+                    0.0
+                };
+                (format!("{fv:.6}"), format!("{lf:.6}"))
+            }
+            None => ("null".to_string(), "null".to_string()),
+        };
+
         format!(
-            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"particle_dispatch_groups_x":{pdgx},"particle_dispatch_groups_y":{pdgy},"particle_dispatch_capacity":{pdcap},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"sim_buffers_mb":{sim_mb},"render_targets_mb":{rt_mb},"diffuse_mb":{diffuse_mb},"timing_mb":{timing_mb},"total_tracked_mb":{total_mb},"substeps_this_frame":{stf},"fixed_dt_ms":{fdt},"max_substeps":{max_substeps},"natural_substeps":{natural_substeps},"substep_cap_hit":{cap_hit},"sim_advanced_ms":{sim_adv},"wall_raf_ms":{wall_raf},"real_time_factor":{rtf},"timestep_policy":"{policy}","accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
+            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"filled_volume":{fv},"liquid_fraction":{lf},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"particle_dispatch_groups_x":{pdgx},"particle_dispatch_groups_y":{pdgy},"particle_dispatch_capacity":{pdcap},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"sim_buffers_mb":{sim_mb},"render_targets_mb":{rt_mb},"diffuse_mb":{diffuse_mb},"timing_mb":{timing_mb},"total_tracked_mb":{total_mb},"substeps_this_frame":{stf},"fixed_dt_ms":{fdt},"max_substeps":{max_substeps},"natural_substeps":{natural_substeps},"substep_cap_hit":{cap_hit},"sim_advanced_ms":{sim_adv},"wall_raf_ms":{wall_raf},"real_time_factor":{rtf},"timestep_policy":"{policy}","accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
             timing = self.timing_source.label(),
             sample_count = samples.len(),
             avg = fmt_ms(avg),
@@ -553,6 +572,8 @@ impl Profiler {
             gn = grid_n,
             gres = grid_res_str,
             tc = total_cells,
+            fv = filled_volume,
+            lf = liquid_fraction,
             par = particles_out,
             req = f.requested_particles,
             est = f.estimated_particles,

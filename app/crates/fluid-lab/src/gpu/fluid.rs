@@ -263,7 +263,7 @@ impl GpuFluid {
             ],
             cls: [
                 settings.liquid_threshold() as f32,
-                settings.surface_dilation() as f32,
+                effective_surface_dilation(settings, scene) as f32,
                 settings.cfl(),
                 0.0,
             ],
@@ -1387,6 +1387,19 @@ fn compute_inner(
 
 /// Exact particle count the deterministic lattice generator will produce for a
 /// scene, without allocating the particle vector.
+/// Effective one-ring surface dilation for the classify pass: combines the user's
+/// `classify.surface_dilation` setting with the scene's effective particle density
+/// via the host-testable [`crate::scene::effective_surface_dilation`]. Reuses the
+/// already-implemented dilation in `classify.wgsl` (no shader change).
+pub(crate) fn effective_surface_dilation(settings: &Registry, scene: &SceneConfig) -> u32 {
+    let density = crate::scene::effective_particle_density(
+        settings,
+        scene.grid_resolution,
+        &scene.initial_liquid.blocks,
+    );
+    crate::scene::effective_surface_dilation(settings.surface_dilation(), density)
+}
+
 pub(crate) fn estimated_particle_count(settings: &Registry, scene: &SceneConfig) -> u32 {
     let extent = [
         settings.grid_res_x() as f32 * crate::sim::H,
