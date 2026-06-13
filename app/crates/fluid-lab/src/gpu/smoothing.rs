@@ -7,6 +7,7 @@ use wgpu::util::DeviceExt;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SmoothUniform {
     axis_radius: [f32; 4], // xy = integer pixel axis as f32, z = radius, w = sigma_spatial
+    feature: [f32; 4],     // x = feature_preservation strength (0..1), yzw unused
 }
 
 pub struct WaterSmoothRenderer {
@@ -28,6 +29,7 @@ impl WaterSmoothRenderer {
         ping_view: &wgpu::TextureView,
         smooth_z_view: &wgpu::TextureView,
         radius: u32,
+        feature: f32,
     ) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water smooth shader"),
@@ -59,8 +61,8 @@ impl WaterSmoothRenderer {
             ],
         });
         let (r, sigma) = radius_sigma(radius);
-        let uniform_x = create_uniform(device, [1.0, 0.0, r, sigma], "water smooth x uniform");
-        let uniform_y = create_uniform(device, [0.0, 1.0, r, sigma], "water smooth y uniform");
+        let uniform_x = create_uniform(device, [1.0, 0.0, r, sigma], feature, "water smooth x uniform");
+        let uniform_y = create_uniform(device, [0.0, 1.0, r, sigma], feature, "water smooth y uniform");
         let bind_x = create_bind_group(
             device,
             &bind_group_layout,
@@ -157,15 +159,18 @@ impl WaterSmoothRenderer {
         );
     }
 
-    /// Update the bilateral kernel radius (and derived sigma_spatial). Call
-    /// whenever the `render.hero.smooth_radius` Live setting changes.
-    pub fn update_radius(&self, queue: &wgpu::Queue, radius: u32) {
+    /// Update the bilateral kernel radius (and derived sigma_spatial) and the
+    /// feature-preservation strength. Call whenever the `render.hero.smooth_radius`
+    /// or `render.hero.feature_preservation` Live settings change.
+    pub fn update_radius(&self, queue: &wgpu::Queue, radius: u32, feature: f32) {
         let (r, sigma) = radius_sigma(radius);
         let ux = SmoothUniform {
             axis_radius: [1.0, 0.0, r, sigma],
+            feature: [feature, 0.0, 0.0, 0.0],
         };
         let uy = SmoothUniform {
             axis_radius: [0.0, 1.0, r, sigma],
+            feature: [feature, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&self.uniform_x, 0, bytemuck::bytes_of(&ux));
         queue.write_buffer(&self.uniform_y, 0, bytemuck::bytes_of(&uy));
@@ -252,8 +257,10 @@ impl ThicknessSmoothRenderer {
             ],
         });
         let (r, sigma) = radius_sigma(radius);
-        let uniform_x = create_uniform(device, [1.0, 0.0, r, sigma], "thickness smooth x uniform");
-        let uniform_y = create_uniform(device, [0.0, 1.0, r, sigma], "thickness smooth y uniform");
+        let uniform_x =
+            create_uniform(device, [1.0, 0.0, r, sigma], 0.0, "thickness smooth x uniform");
+        let uniform_y =
+            create_uniform(device, [0.0, 1.0, r, sigma], 0.0, "thickness smooth y uniform");
         let bind_x = create_bind_group(
             device,
             &bind_group_layout,
@@ -335,13 +342,16 @@ impl ThicknessSmoothRenderer {
     }
 
     /// Match the kernel to the (shared) `render.hero.smooth_radius` Live setting.
+    /// The plain Gaussian ignores the feature field; it stays 0.
     pub fn update_radius(&self, queue: &wgpu::Queue, radius: u32) {
         let (r, sigma) = radius_sigma(radius);
         let ux = SmoothUniform {
             axis_radius: [1.0, 0.0, r, sigma],
+            feature: [0.0; 4],
         };
         let uy = SmoothUniform {
             axis_radius: [0.0, 1.0, r, sigma],
+            feature: [0.0; 4],
         };
         queue.write_buffer(&self.uniform_x, 0, bytemuck::bytes_of(&ux));
         queue.write_buffer(&self.uniform_y, 0, bytemuck::bytes_of(&uy));
@@ -374,8 +384,16 @@ fn radius_sigma(radius: u32) -> (f32, f32) {
     (r, sigma)
 }
 
-fn create_uniform(device: &wgpu::Device, axis_radius: [f32; 4], label: &str) -> wgpu::Buffer {
-    let uniform = SmoothUniform { axis_radius };
+fn create_uniform(
+    device: &wgpu::Device,
+    axis_radius: [f32; 4],
+    feature: f32,
+    label: &str,
+) -> wgpu::Buffer {
+    let uniform = SmoothUniform {
+        axis_radius,
+        feature: [feature, 0.0, 0.0, 0.0],
+    };
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(label),
         contents: bytemuck::bytes_of(&uniform),

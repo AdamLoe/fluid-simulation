@@ -393,6 +393,12 @@ pub struct HeroParams {
     /// Optional normal blur strength (0–1). Blends the raw reconstructed normal toward
     /// an averaged normal sampled over a small offset cross, further smoothing.
     pub normal_smooth_strength: f32,
+    /// Feature preservation (0–1). Narrows the depth bilateral and suppresses the
+    /// normal cross-average where local surface curvature is high, so flat sheets stay
+    /// glassy while crests, ridges, and droplet tips stay pointy. 0 = isotropic
+    /// (legacy) behaviour; the curvature is measured at a coarse stencil so per-splat
+    /// noise is not preserved.
+    pub feature_preservation: f32,
     // --- Flat-water-against-walls (v1.20) ---
     /// Blend strength for snapping water surface normals flat against tank walls/floor.
     /// At 1.0, water pressed against glass renders as a flat sheet. Live. Default 0.8.
@@ -1441,6 +1447,17 @@ impl Default for Registry {
                 technical_tooltip: Some("Live. Inline normal blur: weight to mix(pixel_normal, avg_cross_normal, strength). The avg samples the normal at 4 diagonal offsets of size stencil+1 pixels."),
                 apply: ApplyClass::Live,
             },
+            Setting {
+                id: "render.hero.feature_preservation",
+                label: "Feature preservation",
+                category: Category::Water,
+                default: Value::F32(0.6),
+                value: Value::F32(0.6),
+                validation: Validation::F32Range { min: 0.0, max: 1.0 },
+                tooltip: Some("Keeps crests, ridges, and droplet tips pointy while large faces stay glassy-smooth. 0 smooths everything equally (rounds features); higher values preserve sharp water features."),
+                technical_tooltip: Some("Live. Drives a curvature-flow term: water_smooth.wgsl narrows the depth bilateral's spatial sigma and composite.wgsl suppresses the normal cross-average where local curvature (measured at a coarse stencil, so per-splat noise is ignored) is high. Routed via SmoothUniform.feature.x and composite Hero.norm.z."),
+                apply: ApplyClass::Live,
+            },
             // --- Surface foam. All
             // Live: sliders rebuild the DiffuseParams uniform; no realloc, no reset.
             // `max_particles` is an active cap within a fixed GPU buffer capacity. ---
@@ -1927,6 +1944,7 @@ impl Registry {
                 .f32_or("render.hero.smooth_thickness_splat_scale", 1.8),
             normal_stencil: self.u32_or("render.hero.normal_stencil", 2),
             normal_smooth_strength: self.f32_or("render.hero.normal_smooth_strength", 0.5),
+            feature_preservation: self.f32_or("render.hero.feature_preservation", 0.6),
             // --- Flat-water wall-contact snap ---
             flat_water_strength: self.f32_or("render.hero.flat_water.strength", 0.8),
             flat_water_epsilon: self.f32_or("render.hero.flat_water.epsilon", 0.04),
@@ -2664,6 +2682,7 @@ mod tests {
             "render.hero.smooth_thickness_splat_scale",
             "render.hero.normal_stencil",
             "render.hero.normal_smooth_strength",
+            "render.hero.feature_preservation",
             // --- Flat-water wall-contact snap ---
             "render.hero.flat_water.strength",
             "render.hero.flat_water.epsilon",
@@ -2710,6 +2729,10 @@ mod tests {
         assert!(
             (hero.normal_smooth_strength - 0.5).abs() < 1e-5,
             "normal_smooth_strength default 0.5"
+        );
+        assert!(
+            (hero.feature_preservation - 0.6).abs() < 1e-5,
+            "feature_preservation default 0.6"
         );
         assert!(
             (hero.flat_water_strength - 0.8).abs() < 1e-5,

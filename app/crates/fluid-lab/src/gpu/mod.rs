@@ -387,6 +387,7 @@ impl GpuContext {
             &smooth_z_ping_view,
             &smooth_z_view,
             hero.smooth_radius,
+            hero.feature_preservation,
         );
         // Plain-Gaussian thickness + whitewater blurs sharing the depth pass's
         // ping scratch. Whitewater is blurred so foam reads as coherent regions
@@ -897,7 +898,7 @@ impl GpuContext {
         self.environment.set_params(&self.queue, &hero);
         self.skybox.set_params(&self.queue, &hero);
         self.smoothing
-            .update_radius(&self.queue, hero.smooth_radius);
+            .update_radius(&self.queue, hero.smooth_radius, hero.feature_preservation);
         self.thickness_smoothing
             .update_radius(&self.queue, hero.smooth_radius);
         self.whitewater_smoothing

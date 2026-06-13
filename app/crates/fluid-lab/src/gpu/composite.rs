@@ -33,7 +33,7 @@ struct HeroUniform {
     micro: [f32; 4], // x = enabled, y = strength, z = scale, w = velocity scale
     spec: [f32; 4], // x = specular strength, yzw = unused
     // --- Surface normal quality (v1.19 round-2) ---
-    norm: [f32; 4], // x = normal_stencil (as f32), y = normal_smooth_strength, zw = unused
+    norm: [f32; 4], // x = normal_stencil (as f32), y = normal_smooth_strength, z = feature_preservation, w = unused
 }
 
 /// Per-frame camera uniform for composite.wgsl.
@@ -127,7 +127,7 @@ fn hero_uniform(hero: &HeroParams) -> HeroUniform {
         norm: [
             hero.normal_stencil.clamp(1, 3) as f32,
             hero.normal_smooth_strength.clamp(0.0, 1.0),
-            0.0,
+            hero.feature_preservation.clamp(0.0, 1.0),
             0.0,
         ],
     }

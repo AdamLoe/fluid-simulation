@@ -17,7 +17,7 @@ struct Hero {
     micro: vec4<f32>,  // x = enabled, y = strength, z = scale, w = velocity scale
     spec: vec4<f32>,   // x = specular strength, yzw = unused
     // --- Surface normal quality (v1.19 round-2) ---
-    norm: vec4<f32>,   // x = normal_stencil (px), y = normal_smooth_strength, zw = unused
+    norm: vec4<f32>,   // x = normal_stencil (px), y = normal_smooth_strength, z = feature_preservation, w = unused
 };
 
 // Per-frame camera uniform for composite.wgsl.
@@ -114,7 +114,29 @@ fn water_normal(pixel: vec2<i32>, dims: vec2<i32>) -> vec3<f32> {
 
     // Optional normal smoothing: average with normals sampled at diagonal
     // offsets of stencil+1 px to further suppress residual lobes.
-    let smooth_str = clamp(hero.norm.y, 0.0, 1.0);
+    var smooth_str = clamp(hero.norm.y, 0.0, 1.0);
+
+    // Feature preservation: the depth filter keeps crests/ridges sharp, but the
+    // normal cross-average would round them right back off. Where local curvature
+    // is high (a genuine multi-pixel ridge, measured at a coarse stencil so single
+    // splat noise is ignored), suppress the cross-average so the sharp normal
+    // survives into shading/refraction. Flat sheets keep the full smoothing.
+    let feature_strength = clamp(hero.norm.z, 0.0, 1.0);
+    if feature_strength > 0.001 {
+        let cs = stencil + 1;
+        let zl = load_z(pixel + vec2<i32>(-cs, 0), dims);
+        let zr = load_z(pixel + vec2<i32>( cs, 0), dims);
+        let zd = load_z(pixel + vec2<i32>(0, -cs), dims);
+        let zu = load_z(pixel + vec2<i32>(0,  cs), dims);
+        let zlc = select(zl, c, zl >= 60000.0);
+        let zrc = select(zr, c, zr >= 60000.0);
+        let zdc = select(zd, c, zd >= 60000.0);
+        let zuc = select(zu, c, zu >= 60000.0);
+        let lap = abs((zlc + zrc + zdc + zuc) - 4.0 * c) / max(c, 0.5);
+        let feat = feature_strength * smoothstep(0.004, 0.03, lap);
+        smooth_str = smooth_str * (1.0 - feat);
+    }
+
     if smooth_str < 0.001 {
         return n;
     }

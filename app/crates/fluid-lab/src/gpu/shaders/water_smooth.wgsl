@@ -1,5 +1,6 @@
 struct Params {
     axis_radius: vec4<f32>, // xy = axis, z = radius (f32), w = sigma_spatial
+    feature: vec4<f32>,     // x = feature_preservation strength (0..1), yzw unused
 };
 
 @group(0) @binding(0) var src_z: texture_2d<f32>;
@@ -40,8 +41,38 @@ fn fs(in: VsOut) -> @location(0) f32 {
     let radius = i32(params.axis_radius.z);
     // sigma_spatial is stored in w; derived from radius on the Rust side so the
     // Gaussian is never hard-truncated (sigma ≈ radius / 2).
-    let sigma_spatial = max(params.axis_radius.w, 0.5);
+    let sigma_spatial_base = max(params.axis_radius.w, 0.5);
     let sigma_range = max(0.035, center * 0.018);
+
+    // --- Feature-preserving (curvature-flow) modulation ---
+    // An isotropic bilateral rounds *everything* equally, so smooth sheets and
+    // sharp crests cannot coexist. Here the spatial Gaussian is narrowed where the
+    // surface has high curvature (crests, ridges, droplet tips) and left wide where
+    // it is flat (glassy sheets). Curvature is measured at a COARSE stencil so a
+    // genuine multi-pixel ridge registers but single-splat noise does not — this is
+    // what keeps the filter from preserving the per-splat speckle it is meant to
+    // remove. feature_strength = 0 reproduces the plain isotropic bilateral exactly.
+    let feature_strength = clamp(params.feature.x, 0.0, 1.0);
+    var sigma_spatial = sigma_spatial_base;
+    if feature_strength > 0.001 {
+        let cs = max(2, radius / 2);
+        let zl = load_z(p + vec2<i32>(-cs, 0), dims);
+        let zr = load_z(p + vec2<i32>( cs, 0), dims);
+        let zd = load_z(p + vec2<i32>(0, -cs), dims);
+        let zu = load_z(p + vec2<i32>(0,  cs), dims);
+        // Clamp invalid (background/silhouette) taps to center so curvature stays
+        // finite; the range Gaussian below still protects the silhouette itself.
+        let zlc = select(zl, center, zl >= 60000.0);
+        let zrc = select(zr, center, zr >= 60000.0);
+        let zdc = select(zd, center, zd >= 60000.0);
+        let zuc = select(zu, center, zu >= 60000.0);
+        let lap = abs((zlc + zrc + zdc + zuc) - 4.0 * center) / max(center, 0.5);
+        let curv = smoothstep(0.004, 0.03, lap);
+        let feat = feature_strength * curv;
+        // High curvature -> kernel collapses toward ~0.3x sigma (preserve); flat -> full.
+        sigma_spatial = sigma_spatial_base * mix(1.0, 0.3, feat);
+    }
+
     var sum = 0.0;
     var weight_sum = 0.0;
 

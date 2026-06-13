@@ -66,11 +66,25 @@ for legacy replay compatibility.
 
 Water mode accumulates normalized thickness, speed-weighted whitewater, and nearest
 front-surface eye distance into `R16Float` targets. Thickness and whitewater are
-blurred with a separable Gaussian, while nearest-Z is smoothed with an edge-preserving
-bilateral filter. The composite samples the smoothed targets, reconstructs a
-screen-space normal, refracts `scene_color`, applies Beer-Lambert absorption and body
-tint, mixes a Fresnel-weighted procedural environment reflection, and writes the final
-swapchain pixel opaquely.
+blurred with a separable Gaussian, while nearest-Z is smoothed with a
+**feature-preserving** (curvature-flow) bilateral filter. The composite samples the
+smoothed targets, reconstructs a screen-space normal, refracts `scene_color`, applies
+Beer-Lambert absorption and body tint, mixes a Fresnel-weighted procedural environment
+reflection, and writes the final swapchain pixel opaquely.
+
+The depth filter (`gpu/shaders/water_smooth.wgsl`) and the normal reconstruction
+(`gpu/shaders/composite.wgsl -> water_normal`) are **curvature-adaptive**: a plain
+isotropic bilateral rounds everything equally, so glassy sheets and sharp crests cannot
+coexist. Both passes estimate local surface curvature at a *coarse* stencil — wide
+enough that a genuine multi-pixel ridge registers but a single-splat bump does not, so
+the per-splat speckle the filter exists to remove is **not** preserved — and where
+curvature is high they narrow the spatial Gaussian / suppress the normal cross-average,
+keeping crests, ridges, and droplet tips pointy while flat faces stay smooth. The single
+Live knob is `render.hero.feature_preservation` (0 reproduces the legacy isotropic
+behaviour); it routes through `gpu/smoothing.rs -> WaterSmoothRenderer` (the
+`SmoothUniform.feature` slot) and the composite `Hero.norm.z` slot. This stays entirely
+in the screen-space composite — there is still no SDF / level-set surface
+([`../decisions/rendering.md`](../decisions/rendering.md)).
 
 The environment prepass writes:
 

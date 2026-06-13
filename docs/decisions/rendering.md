@@ -67,6 +67,45 @@ timing.
 
 **Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`.
 
+## Surface fidelity uses a curvature-adaptive screen-space filter, not an extracted surface
+
+**Decision** - The front-surface depth smoothing and normal reconstruction are
+**curvature-adaptive**: where local surface curvature (measured at a coarse stencil) is
+high, the depth bilateral's spatial Gaussian narrows and the normal cross-average is
+suppressed, so crests/ridges/tips stay sharp while flat sheets stay glassy. One Live knob
+(`render.hero.feature_preservation`, 0 = legacy isotropic) drives it. It stays in the
+existing screen-space composite; no SDF / level-set / marching-cubes surface is added.
+
+**Why** - An isotropic bilateral rounds everything equally, so no single radius yields
+smooth-sheets-and-sharp-features at once (more iterations = blobbier, fewer = speckled
+spheres). Modulating by curvature separates the two regimes in one cheap pass. The
+curvature is sampled at a *coarse* stencil on purpose: a genuine ridge spans several
+pixels and registers, while a single-splat bump does not — otherwise the filter would
+preserve the per-splat speckle it exists to remove. A reconstructed surface remains a
+heavier, separate project that has not earned a runtime slot.
+
+**Alternatives considered** - A globally narrower range ("narrow-range bilateral") — but
+that preserves splat noise everywhere, not just at real features. Anisotropic
+(ellipsoid / Yu–Turk) splats — deferred as a gated stretch because they add cost to the
+per-particle hot path that is the known bottleneck
+([`performance.md`](performance.md)); screen-space curvature flow was sufficient on the
+common scenes (verified on real-GPU captures of the default scene, settled pool and
+mid-splash).
+
+**Tradeoffs** - Feature preservation reintroduces some real surface detail that reads as
+chop; at extreme settings it can surface faint per-splat structure. The default (0.6) is
+a conservative middle. Cost is a handful of extra texture taps per smoothed pixel.
+
+**Code anchors** - `crates/fluid-lab/src/gpu/shaders/water_smooth.wgsl`;
+`crates/fluid-lab/src/gpu/shaders/composite.wgsl -> water_normal`;
+`crates/fluid-lab/src/gpu/smoothing.rs -> WaterSmoothRenderer`;
+`crates/fluid-lab/src/settings/mod.rs -> HeroParams` (`feature_preservation`).
+
+**Revisit when** - Thin airborne droplet tips still read too round on violent slosh and
+anisotropic splats (Phase 2) earn their per-particle cost on measured captures.
+
+**Applies to** - `architecture/rendering.md`, `architecture/settings.md`.
+
 ## Hero water features are Live sub-features of the Water view, not new render modes
 
 **Decision** - The Water mode keeps hero-water controls as Live-toggleable sub-features

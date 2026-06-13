@@ -127,6 +127,11 @@ The cheap wall-contact snap remains visible through
 `render.hero.flat_water.strength`, `render.hero.flat_water.epsilon`, and
 `render.hero.flat_water.depth_strength`.
 
+Screen-space surface quality is tuned by the `render.hero.smooth_*`,
+`render.hero.normal_*`, and `render.hero.feature_preservation` Live controls. The last
+drives the curvature-adaptive feature-preserving filter (smooth faces + sharp crests; 0
+= legacy isotropic behaviour) — see [`rendering.md`](rendering.md).
+
 `render.diffuse.*` now means surface foam. It shares one Live snapshot path:
 `Registry::diffuse_params() -> DiffuseParams`, then
 `GpuContext::set_diffuse_params`. Visible foam controls cover enable, active particle
