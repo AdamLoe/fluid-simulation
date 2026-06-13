@@ -1009,12 +1009,28 @@ impl GpuContext {
     /// COARSE substep: three monolithic timestamped compute passes
     /// (prep / pressure / finish), one begin/end pair each, owned by substep `i`.
     fn record_substep_coarse(&self, encoder: &mut wgpu::CommandEncoder, i: u32) {
+        // Prep is split around the spatial sort so the sort's prefix-sum sub-passes
+        // get real pass-boundary memory barriers (a single compute pass does not
+        // guarantee a barrier between every dispatch — running the sort in one pass
+        // produced a nondeterministic permutation). clear+mark run first (untimed in
+        // coarse mode), then the sort in its own passes (cadence-gated), then the
+        // bulk of prep (classify..boundary) carries the coarse `prep` timestamp.
+        {
+            let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("sim.prep_pre_sort"),
+                timestamp_writes: None,
+            });
+            self.fluid.record_prep_pre_sort(&mut p);
+        }
+        if self.fluid.advance_sort_tick() {
+            self.fluid.record_sort(encoder, None);
+        }
         {
             let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("sim.prep"),
                 timestamp_writes: self.timers.as_ref().map(|t| t.prep_writes(i)),
             });
-            self.fluid.record_prep(&mut p);
+            self.fluid.record_prep_post_sort(&mut p);
         }
         {
             let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1059,13 +1075,22 @@ impl GpuContext {
             .dispatch_clear(p));
         sec!(1, "d.mark", |p: &mut wgpu::ComputePass| f.dispatch_mark(p));
         // Spatial sort (cadence-gated): the cadence tick advances every substep so
-        // coarse/detailed stay in lockstep; the 4 sort dispatches only record on
-        // sort substeps. Empty section on non-sort substeps (zero timed span).
-        sec!(2, "d.sort", |p: &mut wgpu::ComputePass| {
-            if f.advance_sort_tick() {
-                f.dispatch_sort(p);
-            }
-        });
+        // coarse/detailed stay in lockstep. On a sort substep the prefix-sum scan
+        // runs as three separate (untimed, per-cell, negligible) compute passes for
+        // correct memory barriers, then the per-particle `sort_scatter` pass carries
+        // the `d.sort` timestamp (section 2). On non-sort substeps the section is an
+        // empty timed pass (zero span) — the timestamp slot must still be written
+        // every substep so the detailed readback stays aligned.
+        if f.advance_sort_tick() {
+            // scan_block/spine/add run untimed inside record_sort; the d.sort
+            // timestamp wraps the dominant per-particle sort_scatter pass.
+            f.record_sort(encoder, Some(timers.fine_section_writes(i, 2)));
+        } else {
+            let _empty = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("d.sort"),
+                timestamp_writes: Some(timers.fine_section_writes(i, 2)),
+            });
+        }
         sec!(3, "d.classify", |p: &mut wgpu::ComputePass| f
             .dispatch_classify(p));
         // Fused P2G scatter (all three MAC components) is a single section.

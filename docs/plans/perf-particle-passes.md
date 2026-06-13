@@ -4,11 +4,66 @@ owner:         unassigned
 last_updated:  2026-06-13
 okay_to_delete: false
 phase_3_designed: true
+phase_3_implemented: true
+phase_3_shipped: false
 long_lived:    false
 owning_docs:
   - architecture/simulation.md
   - decisions/performance.md
 ---
+
+## Phase 3 RESULT (2026-06-13) — implemented, verified bit-identical, but a NET PERF LOSS at high count; NOT shipped
+
+The particle spatial sort was implemented end-to-end (4 sort shaders + Rust
+wiring + ping-pong + VRAM fallback + cadence toggle + host unit test) and
+verified on the dev GPU (Windows Chrome, `max_buffer_size=2 GiB`). Two findings:
+
+1. **Determinism: PASS (bit-identical).** Confirmed empirically. A sorted-vs-
+   unsorted screenshot pixel-diff shows ≤10/255 noise on ~250 px — but that is
+   purely **particle alpha/thickness DRAW-ORDER** noise (the sort legitimately
+   permutes the particle buffer, reordering additive blends). The
+   **order-independent** nearest_z depth stage (`render.hero.debug_view=10`) is
+   **bit-identical** (0 px diff) for sort ON vs OFF AND for ON-vs-ON, at both 6.6M
+   (128×64×128) and 13.4M (128³). So the *simulation* state is identical;
+   integer-P2G order-independence holds as argued.
+
+   **Correctness fix made while verifying:** the original WIP recorded all four
+   sort dispatches inside the single shared `prep` compute pass. That produced a
+   *nondeterministic* permutation run-to-run (ON-vs-ON depth diffs were nonzero)
+   because a single compute pass does not guarantee a memory barrier between every
+   consecutive dispatch, and the prefix-sum stages have strict read-after-write
+   deps through `scan_spine`/`cell_offset`. Splitting the sort into separate
+   compute passes (real pass-boundary barriers) made it bit-deterministic. See
+   `fluid.rs::record_sort` and the split `record_prep_pre_sort`/`_post_sort`.
+
+2. **Performance: FAIL at the target high counts.** Detailed-profiler sweep
+   (dev GPU, grid 128, default settings, 2 substeps/frame, median over a window):
+
+   | config | particles | scatter ms | g2p ms | sort ms | sim ms | fps |
+   |--------|----------:|-----------:|-------:|--------:|-------:|----:|
+   | OFF        | 6.59M | 14.9 | 9.73 | – | 36.3 | 23.5 |
+   | ON N=1     | 6.59M | 17.9 | 1.48 | 1.51 | 34.3 | 24.7 |
+   | ON N=8     | 6.59M | 18.2 | 1.23 | 0 | 31.5 | 25.2 |
+   | OFF        | 13.35M | 20.0 | 11.6 | – | 52.3 | 13.1 |
+   | ON N=1     | 13.35M | 37.5 | 3.00 | 3.68 | 62.8 | 11.4 |
+   | OFF        | 21.6M | 37.4 | 19.0 | – | 80.5 | 6.4 |
+   | ON N=1     | 21.6M | 68.4 | 5.04 | 7.28 | 103.4 | 5.2 |
+
+   **The sort makes g2p ~4× faster (coherent gather) but ~2× SLOWER on the fused
+   integer-atomic P2G scatter, and at 13M/22M the scatter regression dominates
+   (sim ~20–28% slower).** Root cause: the design assumed coherence helps both
+   passes, but sorting particles by cell makes a workgroup's scatter `atomicAdd`s
+   collide on the **same** grid-face addresses (serialized atomics), whereas the
+   unsorted layout spreads atomic targets across memory. Coherence helps the
+   gather (g2p) and *hurts* the atomic-scatter. Net: a wash at ~6.6M (~13% at N=8)
+   and a clear loss as count grows — the opposite of the high-count intent.
+
+   **Decision: NOT shipped. Left on branch `perf-spatial-sort`.** Default flipped
+   to OFF (`dev.particle_sort`). The g2p gather win is real and large; a future
+   redesign should keep the sort's coherence ONLY for g2p (and/or attack scatter
+   atomic contention directly — workgroup-local i32 pre-accumulation on sorted
+   input, lever 4 in the table) rather than feeding sorted particles into the
+   current global-atomic scatter. Until then the sort is a dev toggle only.
 
 # Perf: per-particle transfer passes (P2G scatter, G2P)
 

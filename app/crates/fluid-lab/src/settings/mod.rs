@@ -1569,11 +1569,18 @@ impl Default for Registry {
                 id: "dev.particle_sort",
                 label: "Particle spatial sort",
                 category: Category::Diagnostics,
-                default: Value::U32(1),
-                value: Value::U32(1),
+                // DEFAULT OFF: the sort is verified bit-identical (permutation-only)
+                // but is a NET PERFORMANCE LOSS at the high particle counts it was
+                // designed for. It speeds up g2p ~4x (coherent gather) but ~doubles
+                // the fused integer-atomic P2G scatter (sorted particles collide on
+                // the same grid-face atomic addresses), and at 13M/22M the scatter
+                // regression dominates (sim ~20-28% slower). Kept as an opt-in dev
+                // toggle for further investigation; see decisions/performance.md.
+                default: Value::U32(0),
+                value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
-                tooltip: Some("Periodically reorders particles by grid cell so the P2G scatter and G2P passes touch coherent memory (faster at high particle counts)."),
-                technical_tooltip: Some("Reset-class. GPU counting sort by linear cell index inserted before P2G. Permutation-only: integer P2G atomics make sorted vs unsorted runs bit-identical. Needs a second particle buffer; falls back to unsorted if it cannot allocate."),
+                tooltip: Some("Dev-only: reorders particles by grid cell. Speeds up G2P but slows the P2G scatter; net slower at high counts. Off by default."),
+                technical_tooltip: Some("Reset-class. GPU counting sort by linear cell index inserted before P2G. Verified permutation-only (integer P2G atomics make sorted vs unsorted bit-identical). NET PERF LOSS at high count: sorted scatter atomics collide on shared addresses. Needs a second particle buffer; falls back to unsorted if it cannot allocate."),
                 apply: ApplyClass::Reset,
             },
             Setting {
@@ -1583,8 +1590,8 @@ impl Default for Registry {
                 default: Value::U32(2),
                 value: Value::U32(2),
                 validation: Validation::U32Range { min: 1, max: 16 },
-                tooltip: Some("Re-sort particles every N substeps. The CFL clamp keeps motion under ~1 cell/step, so re-sorting periodically stays coherent and amortizes the sort cost."),
-                technical_tooltip: Some("Reset-class. N=1 sorts every substep (max coherence); larger N amortizes the sort's own cost. Swept empirically; 2 was the fps knee on the test GPU."),
+                tooltip: Some("When the dev spatial sort is on, re-sort every N substeps. The CFL clamp keeps motion under ~1 cell/step, so periodic re-sorting stays coherent and amortizes the sort cost."),
+                technical_tooltip: Some("Reset-class. N=1 sorts every substep (max coherence); larger N amortizes the sort's own cost. Only relevant when dev.particle_sort=1 (off by default; net perf loss at high count)."),
                 apply: ApplyClass::Reset,
             },
         ];
@@ -1845,7 +1852,7 @@ impl Registry {
     pub fn particle_sort(&self) -> bool {
         self.get("dev.particle_sort")
             .map(|s| s.as_u32() != 0)
-            .unwrap_or(true)
+            .unwrap_or(false)
     }
     pub fn particle_sort_period(&self) -> u32 {
         self.get("dev.particle_sort_period")

@@ -233,7 +233,7 @@ pub struct GpuFluid {
     sort_cur: std::cell::Cell<u32>,
     /// Monotonic substep counter driving the sort cadence.
     sort_tick: std::cell::Cell<u64>,
-    /// Set true by `record_prep` on the substeps where it swapped the live side, so
+    /// Set true by `record_sort` on the substeps where it swapped the live side, so
     /// `mod.rs` can rebind the renderer's particle buffer to the new current side.
     sort_swapped: std::cell::Cell<bool>,
 }
@@ -1361,15 +1361,21 @@ impl GpuFluid {
 
     /// Sub-pass A: clear → mark → classify → P2G (scatter+normalize) → gravity →
     /// enforce boundaries. Recorded into a caller-provided (timestamped) pass.
-    pub fn record_prep(&self, pass: &mut wgpu::ComputePass<'_>) {
+    /// Prep BEFORE the spatial sort: clear + mark (fills `occupancy`, the sort's
+    /// histogram). Split out of the old monolithic `record_prep` because the sort
+    /// must run in its OWN compute passes between mark and classify (see
+    /// `record_sort` — the prefix-sum sub-passes need pass-boundary memory
+    /// barriers, which a single shared compute pass does not guarantee between
+    /// consecutive dispatches).
+    pub fn record_prep_pre_sort(&self, pass: &mut wgpu::ComputePass<'_>) {
         self.dispatch_clear(pass);
         self.dispatch_mark(pass);
-        // Spatial sort (cadence-gated): after mark fills occupancy, before scatter
-        // so the fused P2G and g2p read coherently-ordered particles. Flips the live
-        // ping-pong side, so scatter/g2p below select the sorted buffer.
-        if self.advance_sort_tick() {
-            self.dispatch_sort(pass);
-        }
+    }
+
+    /// Prep AFTER the (optional) spatial sort: classify + fused P2G scatter +
+    /// normalize + savevel + forces + boundary. Reads the live (possibly just
+    /// re-sorted) particle side via `sort_cur`.
+    pub fn record_prep_post_sort(&self, pass: &mut wgpu::ComputePass<'_>) {
         self.dispatch_classify(pass);
         self.dispatch_scatter(pass);
         for a in 0..3 {
@@ -1425,33 +1431,74 @@ impl GpuFluid {
         t % (self.sort_period as u64) == 0
     }
 
-    /// The 5-pass spatial sort (clear-of-histogram is the existing occupancy clear;
-    /// the count is the existing `mark`/occupancy pass) reduced to the genuinely new
+    /// The spatial sort (clear-of-histogram is the existing occupancy clear; the
+    /// count is the existing `mark`/occupancy pass) reduced to the genuinely new
     /// work: the two-level exclusive prefix sum over the occupancy histogram
     /// (scan_block → scan_spine → scan_add) then the cursor scatter that reorders
     /// particles by cell into the OTHER ping-pong side. Flips the live side and
     /// records the swap so the renderer can rebind.
     ///
+    /// CRITICAL: each sub-pass runs in its OWN compute pass. The prefix-sum stages
+    /// have strict read-after-write dependencies through `scan_spine` and
+    /// `cell_offset` (scan_block writes spine → scan_spine scans it in place →
+    /// scan_add reads spine + cell_offset → sort_scatter reads cell_offset as the
+    /// cursor). A single shared compute pass does NOT guarantee a memory barrier
+    /// between every consecutive dispatch, so running them in one pass produced a
+    /// nondeterministic permutation (run-to-run pixel drift). Separate passes give
+    /// real pass-boundary barriers, making the sort a deterministic bijection and
+    /// the sim bit-identical to the unsorted path.
+    ///
     /// Must run AFTER `mark` (needs the filled occupancy) and BEFORE `scatter`/`g2p`
     /// (so they read sorted order). `classify` reads `occupancy`, which the scan
-    /// leaves untouched (it writes `cell_offset`).
-    pub fn dispatch_sort(&self, pass: &mut wgpu::ComputePass<'_>) {
+    /// leaves untouched (it writes `cell_offset`). When `scatter_ts` is provided
+    /// (detailed profiling), the per-particle `sort_scatter` pass carries it (the
+    /// scan passes are per-cell and negligible).
+    pub fn record_sort(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        scatter_ts: Option<wgpu::ComputePassTimestampWrites<'_>>,
+    ) {
         let blocks = self.cell_count.div_ceil(256);
-        // Exclusive prefix sum: occupancy -> cell_offset (bucket starts).
-        pass.set_pipeline(&self.scan_block_pl);
-        pass.set_bind_group(0, &self.scan_block_bg, &[]);
-        pass.dispatch_workgroups(blocks, 1, 1);
-        pass.set_pipeline(&self.scan_spine_pl);
-        pass.set_bind_group(0, &self.scan_spine_bg, &[]);
-        pass.dispatch_workgroups(1, 1, 1);
-        pass.set_pipeline(&self.scan_add_pl);
-        pass.set_bind_group(0, &self.scan_add_bg, &[]);
-        pass.dispatch_workgroups(self.cell_count.div_ceil(WG), 1, 1);
+        // Exclusive prefix sum: occupancy -> cell_offset (bucket starts). Three
+        // separate passes so each stage sees the previous stage's writes.
+        {
+            let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("sort.scan_block"),
+                timestamp_writes: None,
+            });
+            p.set_pipeline(&self.scan_block_pl);
+            p.set_bind_group(0, &self.scan_block_bg, &[]);
+            p.dispatch_workgroups(blocks, 1, 1);
+        }
+        {
+            let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("sort.scan_spine"),
+                timestamp_writes: None,
+            });
+            p.set_pipeline(&self.scan_spine_pl);
+            p.set_bind_group(0, &self.scan_spine_bg, &[]);
+            p.dispatch_workgroups(1, 1, 1);
+        }
+        {
+            let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("sort.scan_add"),
+                timestamp_writes: None,
+            });
+            p.set_pipeline(&self.scan_add_pl);
+            p.set_bind_group(0, &self.scan_add_bg, &[]);
+            p.dispatch_workgroups(self.cell_count.div_ceil(WG), 1, 1);
+        }
         // Cursor scatter: src(cur) -> dst(1-cur), advancing per-cell cursors.
         let cur = self.sort_cur.get();
-        pass.set_pipeline(&self.sort_scatter_pl);
-        pass.set_bind_group(0, &self.sort_scatter_bg[cur as usize], &[]);
-        self.dispatch_particles(pass);
+        {
+            let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("sort.scatter"),
+                timestamp_writes: scatter_ts,
+            });
+            p.set_pipeline(&self.sort_scatter_pl);
+            p.set_bind_group(0, &self.sort_scatter_bg[cur as usize], &[]);
+            self.dispatch_particles(&mut p);
+        }
         // Flip the live side; mark the swap so the renderer rebinds.
         self.sort_cur.set(1 - cur);
         self.sort_swapped.set(true);
