@@ -464,22 +464,64 @@ impl GpuFluid {
             "fused P2G scatter needs >= 8 storage buffers per stage \
              (params is uniform; 7 storage buffers used), adapter reports {max_storage_buffers_per_stage}"
         );
+        // EXPLICIT scatter bind-group layout, shared by BOTH the plain scatter and
+        // the workgroup-local-accumulation scatter so a single `scatter_bg` is
+        // compatible with either pipeline. Two pipelines with auto-layout derive
+        // DISTINCT (incompatible) layouts, so the local variant must share this
+        // explicit one (same auto-layout pitfall as RBGS red/black). Bindings:
+        // 0 = params (uniform); 1 = particles (read storage); 2..7 = u/v/w
+        // num/den (read_write storage, used atomically).
+        let scatter_bgl = {
+            let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::with_capacity(8);
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            });
+            for b in 1u32..8u32 {
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: b,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: b == 1 },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                });
+            }
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("scatter_bgl"),
+                entries: &entries,
+            })
+        };
+        let scatter_pll = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("scatter_pll"),
+            bind_group_layouts: &[Some(&scatter_bgl)],
+            immediate_size: 0,
+        });
         let scatter_src = include_str!("shaders/scatter.wgsl");
-        let scatter_pl = compute(device, "scatter_all", scatter_src, "main", &[]);
+        let scatter_pl =
+            compute_with_layout(device, "scatter_all", scatter_src, "main", &[], &scatter_pll);
         // Workgroup-local pre-accumulation variant of the fused scatter, used ONLY
-        // on the sorted path (gated on `sort_enabled`). Same 8 bindings / same
-        // bind-group layout as the plain scatter, so it reuses `scatter_bg`. It
-        // accumulates each workgroup's P2G taps into a shared-memory hash table
-        // first, then flushes with one global atomic per touched face slot —
-        // cutting global-atomic contention once particles are cell-sorted. Built
-        // only when the sort is active to avoid a needless pipeline compile.
+        // on the sorted path (gated on `sort_enabled`). Shares `scatter_pll` so it
+        // reuses `scatter_bg`. It accumulates each workgroup's P2G taps into a
+        // shared-memory hash table first, then flushes with one global atomic per
+        // touched face slot — cutting global-atomic contention once particles are
+        // cell-sorted. Built only when the sort is active.
         let scatter_local_pl = if sort_enabled {
-            Some(compute(
+            Some(compute_with_layout(
                 device,
                 "scatter_local",
                 include_str!("shaders/scatter_local.wgsl"),
                 "main",
                 &[],
+                &scatter_pll,
             ))
         } else {
             None
