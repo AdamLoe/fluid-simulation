@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-08
+last_updated:  2026-06-13
 okay_to_delete: false
 long_lived:    true
 owning_docs:
@@ -34,7 +34,17 @@ fresh measurement/design evidence makes it the next practical move.
 - **Surface rendering / marching-cubes-class work.** Marching cubes may be discussed
   as research context, but the previous path had major visual quality problems. Any
   future surface renderer must be a new measured product decision, not a revival of the
-  removed stack.
+  removed stack. This is also the "proper" fix for the residual low-density volume
+  divergence below — an SDF/level-set surface would replace the splat-coverage
+  approximation entirely.
+- **Tighten the volume-neutral-density residual (Phase 2 of the shipped
+  volume/density decoupling).** Density is now volume- and motion-neutral via
+  splat-radius scaling + auto surface dilation + the rest-density coupling, but the
+  physics `liquid_cells` count is only invariant within ~12% across a `{1,8,32}` density
+  sweep (a density-dependent dilation rind). A pixel/thickness coverage metric plus a
+  `SPLAT_RADIUS_PER_SPACING` tuning loop (use `app/tools/density_motion_sweep.mjs`)
+  could tighten this further. Visible volume is already held by the splat scaling, so
+  this is polish, not a correctness gap — promote only if the residual becomes visible.
 - **Richer water configuration.** Water-look work should remain highly configurable:
   density, tint, depth buildup, particle/surface balance, and inspectability should be
   tunable rather than hardcoded into one cinematic preset.

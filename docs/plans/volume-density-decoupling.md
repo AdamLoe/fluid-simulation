@@ -1,8 +1,8 @@
 ---
-status:        active
+status:        shipped
 owner:         unassigned
-last_updated:  2026-06-12
-okay_to_delete: false
+last_updated:  2026-06-13
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/simulation.md
@@ -381,9 +381,13 @@ no rotation): `liquid_cells` held within ~12% (d1/d8/d32 vs d8 ratios at t1/4/8s
 three densities. Rest coupling alone cleared the ~15% bar, so the secondary `flip_blend`
 density trim was deliberately **not** added. See `decisions/simulation.md`.
 
-**Phase 2 — remaining.** The pixel/thickness coverage metric + the
-`SPLAT_RADIUS_PER_SPACING` tuning loop (tighten `liquid_cells` invariance and the
-visual coverage tolerance), and the SDF/level-set surface rewrite (separate plan).
+**Phase 2 — remaining (optional polish, NOT tracked by this shipped plan).** The
+pixel/thickness coverage metric + the `SPLAT_RADIUS_PER_SPACING` tuning loop (tighten
+the ~12% residual `liquid_cells` invariance and the visual coverage tolerance), and the
+SDF/level-set surface rewrite. The core decoupling shipped; this residual polish is
+captured as future work in [`future-roadmap.md`](future-roadmap.md) (the
+volume-neutral-density-residual and surface-rendering items). This plan is
+`shipped + okay_to_delete: true`.
 
 **Phase 1 streams (as shipped).** Three largely disjoint
 streams:

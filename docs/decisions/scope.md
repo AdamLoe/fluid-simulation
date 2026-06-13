@@ -96,7 +96,7 @@ product need (see "Optional features are deferred").
 **Tradeoffs** — The splat approach is a coverage approximation: at very low density
 the body looks blobby (accepted), and the physics liquid-cell count is only
 ~density-invariant within ~15% (a density-dependent dilation rind) rather than exact.
-The fast `filled_volume` proxy (`liquid_cells × H³`) and `app/tools/vdd_sweep.mjs`
+The fast `filled_volume` proxy (`liquid_cells × H³`) and `app/tools/density_motion_sweep.mjs`
 back the invariant; the screenshots are the real acceptance. Tuning
 `SPLAT_RADIUS_PER_SPACING` and the dilation trigger is Phase-2 calibration-sweep work.
 

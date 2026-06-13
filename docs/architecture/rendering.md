@@ -117,8 +117,8 @@ on top via `ParticleRenderer::set_radius_scale`; `recompute_volume_scale` keeps 
 kernel normalization consistent when the radius changes.
 
 Calibration: tune `SPLAT_RADIUS_PER_SPACING` if a coverage sweep shows low density
-under- or over-covering. `app/tools/vdd_sweep.mjs` runs the real-GPU density sweep
-(8 vs 2 at a fixed waterline), screenshots each, and reports the `liquid_cells` /
+under- or over-covering. `app/tools/density_motion_sweep.mjs` runs the real-GPU density
+sweep (`{1, 8, 32}` at a fixed waterline), screenshots each, and reports the `liquid_cells` /
 `filled_volume` ratios used as the fast Phase-1 invariance proxy (the visible-volume
 acceptance is the screenshots; expect the physics-cell ratio to sit within ~15% as
 the dilation rind is density-dependent). The SDF/level-set surface rewrite — the

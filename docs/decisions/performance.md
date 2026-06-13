@@ -66,10 +66,22 @@ type, particle pos/vel, P2G sum/weight). A single combined pass would exceed the
 and fail at pipeline creation — a classic "first GPU loop won't even build" failure.
 This is a layout constraint, not an optimization.
 
-**Code anchors** — `app/crates/fluid-lab/src/gpu/mod.rs → GpuCaps` (limit probe at boot);
-`app/crates/fluid-lab/src/gpu/fluid.rs` (pass split).
+**Exception — fuse a pass only when the budget *and* a capture both allow it.** The
+three per-axis P2G scatter passes (`scatter_u/v/w`) were fused into one `scatter_all`
+pass that reads each particle once and atomicAdds all three MAC components. This is the
+opposite of the split rule, and it is allowed only because (a) the fused pass needs 7
+storage buffers + 1 uniform, which fits the common 8-buffer floor with one slot to
+spare, and the runtime asserts `max_storage_buffers_per_stage >= 8`; and (b) a real-GPU
+capture confirmed the scatter section dropped (~14%) with bit-identical results
+(integer atomics stay associative/commutative). The rule still holds for everything
+else — do not combine passes that would exceed the probed limit, and do not claim a
+fusion win without a capture.
 
-**Applies to** — `architecture/gpu-resources.md`.
+**Code anchors** — `app/crates/fluid-lab/src/gpu/mod.rs → GpuCaps` (limit probe at boot);
+`app/crates/fluid-lab/src/gpu/fluid.rs` (pass split / fused scatter dispatch);
+`app/crates/fluid-lab/src/gpu/shaders/scatter.wgsl` (the fused `scatter_all` entry).
+
+**Applies to** — `architecture/gpu-resources.md`, `architecture/simulation.md`.
 
 ## Hot data is structure-of-arrays with fixed per-scene buffers and ping-pong
 

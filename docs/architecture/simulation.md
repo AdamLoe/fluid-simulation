@@ -158,9 +158,9 @@ scales it strongly, and a density sweep at fixed fill keeps it roughly constant
 zero — the *visible* water is held constant by the splat-radius scaling). For the
 default scene the near-seeded `liquid_fraction` tracks the fill percentage linearly
 (10/20/50/100% ≈ 0.10/0.19/0.44/0.91). The Scenario panel surfaces
-`filled_volume`/tank-fill next to the resolved count. `app/tools/vdd_sweep.mjs`
-drives the real-GPU density-invariance sweep and `app/tools/fill_sweep.mjs` drives the
-default-scene fill-level sweep (10/20/50/100%); both report the ratios.
+`filled_volume`/tank-fill next to the resolved count. `app/tools/density_motion_sweep.mjs`
+drives the real-GPU density-invariance / fill-level calibration sweep and reports the
+ratios (it is the single retained volume/density calibration harness).
 
 **`apply_impulse` submits its own command encoder.** The slosh and wave-maker impulses (`app/crates/fluid-lab/src/gpu/fluid.rs → apply_impulse`) are one-shot dispatches that run outside the main substep command buffer, writing directly to the particle buffer before the next `record_prep` clear.
 
