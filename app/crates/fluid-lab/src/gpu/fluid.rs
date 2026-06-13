@@ -158,6 +158,9 @@ pub struct GpuFluid {
     mark_pl: wgpu::ComputePipeline,
     classify_pl: wgpu::ComputePipeline,
     scatter_pl: wgpu::ComputePipeline,
+    /// Workgroup-local pre-accumulation scatter; `Some` only when `sort_enabled`.
+    /// Selected over `scatter_pl` in `dispatch_scatter` whenever the sort is on.
+    scatter_local_pl: Option<wgpu::ComputePipeline>,
     normalize_pl: wgpu::ComputePipeline,
     save_vel_pl: wgpu::ComputePipeline,
     gravity_pl: [wgpu::ComputePipeline; 3],
@@ -463,6 +466,24 @@ impl GpuFluid {
         );
         let scatter_src = include_str!("shaders/scatter.wgsl");
         let scatter_pl = compute(device, "scatter_all", scatter_src, "main", &[]);
+        // Workgroup-local pre-accumulation variant of the fused scatter, used ONLY
+        // on the sorted path (gated on `sort_enabled`). Same 8 bindings / same
+        // bind-group layout as the plain scatter, so it reuses `scatter_bg`. It
+        // accumulates each workgroup's P2G taps into a shared-memory hash table
+        // first, then flushes with one global atomic per touched face slot —
+        // cutting global-atomic contention once particles are cell-sorted. Built
+        // only when the sort is active to avoid a needless pipeline compile.
+        let scatter_local_pl = if sort_enabled {
+            Some(compute(
+                device,
+                "scatter_local",
+                include_str!("shaders/scatter_local.wgsl"),
+                "main",
+                &[],
+            ))
+        } else {
+            None
+        };
         let normalize_pl = compute(
             device,
             "normalize",
@@ -1070,6 +1091,7 @@ impl GpuFluid {
             mark_pl,
             classify_pl,
             scatter_pl,
+            scatter_local_pl,
             normalize_pl,
             save_vel_pl,
             gravity_pl,
@@ -1504,7 +1526,15 @@ impl GpuFluid {
         self.sort_swapped.set(true);
     }
     pub fn dispatch_scatter(&self, pass: &mut wgpu::ComputePass<'_>) {
-        pass.set_pipeline(&self.scatter_pl);
+        // On the SORTED path use the workgroup-local pre-accumulation variant
+        // (shared-memory hash accumulate + one global atomic per touched face);
+        // the bind-group layout is identical so it reuses `scatter_bg`. Without
+        // the sort, particles are not cell-local and the local-accum table would
+        // thrash, so keep the plain per-tap global-atomic scatter.
+        match &self.scatter_local_pl {
+            Some(pl) => pass.set_pipeline(pl),
+            None => pass.set_pipeline(&self.scatter_pl),
+        }
         pass.set_bind_group(0, &self.scatter_bg[self.sort_cur.get() as usize], &[]);
         self.dispatch_particles(pass);
     }
