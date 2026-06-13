@@ -58,6 +58,44 @@ pub const FINE_SECTIONS: [&str; 25] = [
 ];
 const N_FINE: usize = FINE_SECTIONS.len(); // 25
 
+/// Coarse-rollup boundaries over FINE_SECTIONS (kept next to the array so a future
+/// renumber updates here, not in a magic-number sum buried in the readback callback):
+///   prep     = sections[0..PREP_END]          (clear .. bound_pre_w)
+///   pressure = sections[PREP_END..FINISH_START] (divergence + cg_init) + all cg cats
+///   finish   = sections[FINISH_START..N_FINE]   (gradient_* .. g2p)
+/// `divergence` is the first pressure-stage section and `gradient_u` the first
+/// finish-stage section; both are derived by name so they can't silently desync.
+const PREP_END: usize = index_of_section("divergence");
+const FINISH_START: usize = index_of_section("gradient_u");
+
+/// Const lookup of a section's index in FINE_SECTIONS (panics at compile time via
+/// the unwrap-style fallthrough if the name is missing, so a rename is caught here).
+const fn index_of_section(name: &str) -> usize {
+    let mut i = 0;
+    while i < N_FINE {
+        if const_str_eq(FINE_SECTIONS[i], name) {
+            return i;
+        }
+        i += 1;
+    }
+    panic!("unknown FINE_SECTIONS name in coarse-rollup boundary")
+}
+
+const fn const_str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// CG reported categories (frame totals), in `Readout.cg_cats` order:
 ///   0 = cg_spmv   : q = A·d
 ///   1 = cg_reduce : BOTH dot-product reductions (d·q and r·r)
@@ -440,14 +478,17 @@ impl GpuTimers {
                         }
                     }
                     // Roll fine sections up into the coarse prep/pressure/finish
-                    // totals so coarse consumers still see something sensible.
-                    // prep = sections[clear..=bound_pre_w] (indices 0..18)
-                    // pressure = divergence + cg_init + all cg cats (indices 18,19 + cats)
-                    // finish = gradient_* + bound_post_* + g2p (indices 20..27)
+                    // totals so coarse consumers still see something sensible. The
+                    // boundaries live next to FINE_SECTIONS (PREP_END / FINISH_START),
+                    // derived by section name, so a renumber can't desync this sum:
+                    //   prep     = sections[0..PREP_END]            (clear .. bound_pre_w)
+                    //   pressure = sections[PREP_END..FINISH_START] (divergence + cg_init) + cg cats
+                    //   finish   = sections[FINISH_START..N_FINE]   (gradient_* .. g2p)
                     let sec = &out.sections;
-                    out.prep_ms = sec[0..18].iter().sum();
-                    out.pressure_ms = sec[18] + sec[19] + out.cg_cats.iter().sum::<f32>();
-                    out.finish_ms = sec[20..27].iter().sum();
+                    out.prep_ms = sec[0..PREP_END].iter().sum();
+                    out.pressure_ms =
+                        sec[PREP_END..FINISH_START].iter().sum::<f32>() + out.cg_cats.iter().sum::<f32>();
+                    out.finish_ms = sec[FINISH_START..N_FINE].iter().sum();
                 }
 
                 readout.set(out);

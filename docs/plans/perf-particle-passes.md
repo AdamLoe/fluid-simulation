@@ -26,6 +26,14 @@ owning_docs:
   `architecture/simulation.md`, `architecture/profiler.md`. The perf measurement
   (scatter-section ms drop at the 128³ stress config) still needs a 3080 Ti
   capture — see the Exit gate.
+- **Follow-up fix (2026-06-12):** the 27→25 renumber left a stale hardcoded
+  index rollup in `gpu/timing.rs` (`sec[20..27]` on a `[f32; 25]`) that panicked
+  inside the `map_async` detailed-readback callback, so `gpu` stats came back
+  null and all timing/liquid_cells read 0 in detailed-profiling mode. Fixed:
+  the coarse rollup now derives its boundaries by section name
+  (`PREP_END`/`FINISH_START`) next to `FINE_SECTIONS` so a future renumber can't
+  silently desync. Verified with a real-GPU detailed capture (non-null `gpu`,
+  prep/pressure/finish all > 0, single `scatter` section, no panic).
 - **Phase D (particle density) — DONE, shipped as a derived-density control
   rather than a silent default change.** Added `particles.density` (Reset-class
   f32, default 8/seeded-cell, range 1..32); `particles.count` became an advanced
