@@ -26,7 +26,7 @@ is the single load-bearing design rule.
 
 `app/crates/fluid-lab/src/gpu/timing.rs` owns:
 - `GpuTimers` — constructed with `(max_substeps, detailed, pressure_iters)`; sizes its `QuerySet` so each substep owns its own slots, ensuring coarse frame totals are correct aggregates across all substeps that ran
-- `record_resolve_and_maybe_copy` — resolves timestamps every frame; copies to the mappable read buffer **throttled** every 20 frames to avoid per-frame stall
+- `record_resolve_and_maybe_copy` — resolves timestamps every frame; copies to the mappable read buffer **throttled** by `app/crates/fluid-lab/src/gpu/timing.rs → THROTTLE` to avoid per-frame stall
 - `map_readback` — async-maps the read buffer; on completion writes a `Readout` into an `Rc<Cell<Readout>>` and calls `unmap`; `pending` guard prevents overlapping maps
 - the liveness counter (`liquid_cells`) is read back in the same throttled buffer copy, not in a separate readback
 - surface-foam counters are read back in the same throttled buffer copy; visible
@@ -62,48 +62,44 @@ CPU wall-clock around a GPU submit measures nothing about GPU execution time bec
 
 `GpuTimers` operates in two modes, selected at construction (Reset-class; controlled by `dev.detailed_gpu_profiling`):
 
-**COARSE (default):** each substep gets three begin/end pairs — prep / pressure /
-finish — plus one render pair for the frame. The render pair writes its begin timestamp
-on the first render pass and its end timestamp on the final render pass, so
+**COARSE (default):** each substep gets prep / pressure / finish begin/end pairs, plus
+one render pair for the frame. The render pair writes its begin timestamp on the first
+render pass and its end timestamp on the final render pass, so
 `gpu.render_ms` is one coarse total for the whole render path. `Readout.prep_ms`,
 `pressure_ms`, `finish_ms` are **frame totals** summed across all substeps that ran.
 
-**DETAILED (dev toggle):** each substep gets one begin/end pair per fine section. Fine sections are the 25 passes in `app/crates/fluid-lab/src/gpu/timing.rs → FINE_SECTIONS` (the P2G scatter is a single fused pass covering all three MAC components). In addition, per CG iteration, six contiguous passes are timed and bucketed into four reported categories: `spmv` (SpMV pass), `reductions` (both dot-product passes — d·q and r·r), `updates` (the vector update p += α·d; r -= α·q), `scalars` (the alpha/beta/dir one-thread dispatches). All values are frame totals summed across substeps.
+**DETAILED (dev toggle):** each substep gets one begin/end pair per name in
+`app/crates/fluid-lab/src/gpu/timing.rs → FINE_SECTIONS`; the fused P2G scatter still
+owns one section covering all three MAC components. Per CG iteration,
+`app/crates/fluid-lab/src/gpu/timing.rs → CG_BUCKET` rolls the timed passes into the
+reported `CG_CATS` groups. All values are frame totals summed across the sampled
+substeps.
 
-**Query-set sizing.** The `QuerySet` is sized at construction from `max_substeps × pressure_iters`, capped at 8192 slots. If a large dev config would exceed the cap, the timed CG iters are reduced and the reduction is logged via `crate::log()` — never silently. If live `pressure_iters` later exceeds the reset-time allocation, timed iters are clamped and logged once via `clamp_cg_iters`.
+**Query-set sizing.** The `QuerySet` is sized at construction from
+`max_substeps × pressure_iters` and bounded by
+`app/crates/fluid-lab/src/gpu/timing.rs → MAX_SLOTS`. If a large dev config would
+exceed that cap, the timed CG iterations are reduced and the reduction is logged via
+`crate::log()` — never silently. If live `pressure_iters` later exceeds the reset-time
+allocation, `GpuTimers::clamp_cg_iters` clamps the timed range and logs once.
 
 ## stats_json shape
 
-Always-present keys additionally include measurement/scale facts:
-`frame_samples`, requested/estimated/actual particles, `scale_status`,
-`max_compute_workgroups_per_dimension`, `max_particle_dispatch_count`,
-`particle_dispatch_groups_x`, `particle_dispatch_groups_y`,
-`particle_dispatch_capacity`, `max_particle_storage_count`,
-`pressure_iterations`, and `render_mode`, alongside the existing frame percentile,
-grid, dropped-time, dispatch, and GPU fields. `gpu_buffer_mb` remains the legacy
-simulation-buffer figure; categorized tracked-memory fields add `sim_buffers_mb`,
-`render_targets_mb`, `diffuse_mb`, `timing_mb`, and `total_tracked_mb`. `timing_mb`
-is `null` when timestamp timers are unavailable.
+`app/crates/fluid-lab/src/profiler/mod.rs → Profiler::stats_json` is the canonical
+runtime contract for the rendered profiler panel and the browser capture harness.
+Current consumers live in `app/web/panels.js → buildProfilerPanel` and
+`app/tools/capture.mjs → collectAssertionFailures`.
 
-The timestep block is flattened into the top-level object for panel compatibility:
-existing `substeps`, `substeps_this_frame`, `accumulated_before_ms`,
-`accumulated_after_ms`, `dropped_sim_time_ms`, and
-`total_dropped_sim_time_ms` remain, and the audit-backed fields
-`fixed_dt_ms`, `max_substeps`, `natural_substeps`, `substep_cap_hit`,
-`sim_advanced_ms`, `wall_raf_ms`, `real_time_factor`, and `timestep_policy` are
-also always present. `real_time_factor` uses raw sanitized rAF wall time as the
-denominator and counts only the substeps actually submitted to the sim.
+The top-level object carries frame timing, scale/dispatch facts, tracked-memory
+totals, timestep-audit fields, and render/simulation context in one place. The
+timestep fields stay flattened for panel compatibility, and `real_time_factor` uses
+submitted sim time over sanitized rAF wall time.
 
-The `gpu` sub-object always carries: `sim_ms`, `prep_ms`, `pressure_ms`,
-`finish_ms`, `render_ms`, `liquid_cells`, `substeps`, `detailed`. When `detailed` is
-true it also carries `sections` (name→ms map) and `cg` (`total_ms`,
-`avg_ms_per_iter`, `spmv_ms`, `reductions_ms`, `updates_ms`, `scalars_ms`, `iters`).
-Fine fields are only present when real timestamps and the dev toggle are both active
-— never fabricated. When timestamp readback includes foam counters, `gpu.diffuse`
-carries `alive`, `foam`, `spray`, `bubble`, `emitted`, `clamped`, and
-`compute_timed`; `spray` and `bubble` stay as compatibility zeroes.
-`compute_timed:false` means diffuse compute work is intentionally outside the
-timestamp totals, so foam counter visibility must not be read as a timed cost.
+The GPU block stays source-honest: it is `null` until a real timestamp sample arrives,
+then exposes coarse totals plus sampled substep and liveness facts. Detailed-only data
+comes from `FINE_SECTIONS` and `CG_CATS`; when diffuse counters are present,
+`gpu.diffuse.compute_timed:false` means the counters were sampled but diffuse compute
+still sits outside the timestamp totals. Legacy `spray` / `bubble` compatibility slots
+remain zero-filled rather than fabricated from new behavior.
 
 ## Non-obvious invariants and gotchas
 
@@ -121,9 +117,17 @@ They do not include hidden driver allocations, pipeline caches, swapchain memory
 the `GpuTimers` `QuerySet` backing allocation because `wgpu` does not expose that
 driver memory as a byte count.
 
-**GPU readback is throttled, never per-frame.** `record_resolve_and_maybe_copy` → `app/crates/fluid-lab/src/gpu/timing.rs → GpuTimers::record_resolve_and_maybe_copy` copies to the mappable buffer only every 20 frames, and only when no map is already `pending`. Normal frames skip the copy. This is the only allowed readback class.
+**GPU readback is throttled, never per-frame.**
+`app/crates/fluid-lab/src/gpu/timing.rs → GpuTimers::record_resolve_and_maybe_copy`
+copies into the mappable buffer only on `THROTTLE` boundaries and only when no map is
+already `pending`. `app/crates/fluid-lab/src/gpu/mod.rs → GpuContext::render` uses
+that path as the only steady-state render-loop readback; the one-shot boot smoke test
+in `app/crates/fluid-lab/src/gpu/smoke.rs` is outside the frame loop.
 
-**Scope accumulators reset on log emit.** `end_frame_and_maybe_log` resets all `total_ms` and `calls` after printing, so reported values are per-frame averages over the logging window, not lifetime totals. The `frame_window` rolling buffer (cap 240) is not reset — it persists for percentile computation.
+**Scope accumulators reset on log emit.** `end_frame_and_maybe_log` resets all
+`total_ms` and `calls` after printing, so reported values are per-frame averages over
+the logging window, not lifetime totals. The rolling `frame_window` configured in
+`Profiler::new` is not reset — it persists for percentile computation.
 
 **A successful Reset starts a clean measurement window.** `Profiler::reset_measurement`
 clears the rolling frame window, cached GPU sample/timing source, timestep snapshot,
@@ -143,11 +147,9 @@ hardcode pressure or any other pass as dominant.
 
 **Config snapshot is caller-supplied.** The profiler receives the snapshot string at log time via `end_frame_and_maybe_log(config_snapshot)` rather than holding a reference to settings. This makes the profiler independent of the settings crate and prevents stale snapshots.
 
-**Thresholds are named, not implicit.** Policy in `../decisions/observability.md`:
-- hot GPU pass: ~2 ms (with real timestamps)
-- slow sim step: ~8–16 ms
-- long frame: ~33 ms
-- stall / deep-drilldown: ~100 ms — this is the stall threshold; 100 ms is not the only threshold
+**Thresholds are named, not implicit.** The concrete hot-pass, slow-step, long-frame,
+and stall policy lives in `../decisions/observability.md`; this doc consumes those
+threshold names but does not duplicate the decision-owned constants.
 
 **`liquid_cells` and foam liveness.** The occupied-cell count and diffuse counter
 slots are read back in the same throttled copy as the timestamps

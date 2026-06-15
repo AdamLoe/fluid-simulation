@@ -45,8 +45,9 @@ production simulator and may be frozen or dropped if it slows the GPU path.
 **Why** — The product path is GPU; maintaining two full simulators would double
 complexity. The CPU reference earns its keep purely as host-testable algorithm sanity.
 
-**Code anchors** — host reference + tests in `app/crates/fluid-lab/src/sim/mod.rs` and
-`app/crates/fluid-lab/src/sim/pressure.rs`.
+**Code anchors** — `app/crates/fluid-lab/src/sim/mod.rs → GridDims`,
+`classify_cells`, `mark_occupancy_from_particles`;
+`app/crates/fluid-lab/src/sim/pressure.rs → cg_solve`.
 
 **Applies to** — `architecture/simulation.md`, `architecture/pressure-solver.md`,
 `agent-context/testing.md`.

@@ -18,23 +18,20 @@ The app shell owns the WASM/JS boundary, the per-frame dispatch loop, the fixed-
 - **Orbit camera** — `app/crates/fluid-lab/src/camera.rs → OrbitCamera`. Quaternion-based yaw/pitch; no up-vector clamp.
 - **Tank transform** — `box_orient: glam::Quat` + `box_pos: glam::Vec3` fields on `FluidApp`; mutated by cube pointer methods.
 - **Interaction scheduler** — `app/crates/fluid-lab/src/lib.rs → InteractionState`; deterministic app-side auto-roll and wave-maker timing owned by `FluidApp`, not by JavaScript.
-- **JS↔WASM bridge** — `app/crates/fluid-lab/src/lib.rs → FluidApp::config_json`, `FluidApp::set_setting`, `FluidApp::stats_json`.
+- **JS↔WASM bridge** — `app/crates/fluid-lab/src/lib.rs → FluidApp::config_json`, `FluidApp::set_setting`, `FluidApp::set_setting_result_json`, `FluidApp::stats_json`, `FluidApp::gpu_device_status`.
 - **Scene config** — `app/crates/fluid-lab/src/scene/mod.rs → SceneConfig`, `InitialLiquidConfig`, `LiquidBlock`, `ScenePreset`.
 - **Run state** — `app/crates/fluid-lab/src/lib.rs → RunState` (Running / Paused); `pending_steps` counter for single-step-while-paused.
 
 ## Frame loop
 
-```
-rAF delta_ms (web shell)
-  └─ FluidApp::frame
-       ├─ update_interactions(clamped_s) [Running only]
-       ├─ timestep.steps_for_frame(clamped_s) → n
-       ├─ gpu.step(n)            [sim substeps]
-       ├─ gpu.render(view_proj, billboard_basis)
-       └─ profiler.end_frame_and_maybe_log
-```
-
-The web shell owns `requestAnimationFrame`; Rust owns all scheduling. JavaScript never drives sim frames independently.
+The web shell owns `requestAnimationFrame`; Rust owns the fixed sequence inside
+`app/crates/fluid-lab/src/lib.rs → FluidApp::frame`. Each frame sanitizes the browser
+delta, updates scheduled interactions while Running, asks
+`app/crates/fluid-lab/src/timestep.rs → TimestepController::steps_for_frame` for the
+substep count, runs
+`gpu.step(n)`, advances diffuse-only render foam when any substeps ran, renders, and
+then closes the profiler/timing frame. JavaScript never drives sim steps
+independently.
 
 ## Timestep accumulator
 
@@ -53,22 +50,15 @@ When the sim is paused, `FluidApp::frame` calls `timestep.reset()` each frame so
 `app/crates/fluid-lab/src/camera.rs → OrbitCamera` uses a quaternion orientation (yaw about world-Y, then pitch about local-X, then roll about local-Z) so pitch is unclamped — the camera can orbit fully over the top without a `look_at` pole degeneracy. `OrbitCamera::billboard_basis` returns the camera-facing right/up pair used by both particle billboards and all box-relative pointer operations. `OrbitCamera::set_distance` clamps to `[2, 40]`; `create()` and `reset()` restore pitch/yaw/roll/distance from the `camera.rot_x/rot_y/rot_z` and `camera.distance` registry settings (all Live-class), so the camera sliders define the default view.
 
 The web shell chooses Camera or Cube control, then dispatches by mouse button (see
-`web-shell.md`). WASM exports the small camera operations and the cube transform
-operations separately:
-
-| Method | Effect |
-|---|---|
-| `camera_orbit(dx,dy)` | Orbit camera around tank |
-| `camera_twist(dx,dy)` | Roll/twist the camera around its view direction, with vertical drag still pitching |
-| `camera_pan(dx,dy)` | Move the orbit target in the camera screen plane |
-| `rotate_box(dx,dy)` | Spin tank about camera up + tip about camera right |
-| `rotate_box_roll(dx,dy)` | Roll tank about camera view-fwd + tip about camera right |
-| `move_box(dx,dy)` | Translate tank in camera screen plane |
-| `slosh_box(dx,dy)` | Translate tank + apply opposite local-frame impulse to fluid; exported for scripts, not bound by the current bottom Control UI |
+`web-shell.md`). `app/crates/fluid-lab/src/lib.rs` exports separate camera and cube
+operations: Camera mode maps primary/middle/secondary drag to
+`camera_orbit` / `camera_pan` / `camera_twist`; Cube mode maps them to
+`rotate_box` / `move_box` / `rotate_box_roll`. `slosh_box` remains exported for
+scripts, but the current bottom Control UI does not bind it.
 
 ## Scene config
 
-`app/crates/fluid-lab/src/scene/mod.rs → SceneConfig::from_settings` builds the scene from the registry at construction and again on every `reset()` call. Liquid geometry is described as one or more `LiquidBlock` AABBs in normalized tank space [0,1]^3; the blocks stay normalized and are mapped to world space via the per-axis tank origin+extent (see "Rectangular tank" below) — no hardcoded 2.0/-1.0. The named presets are the variants of `app/crates/fluid-lab/src/scene/mod.rs → ScenePreset` (`FallingBlob`, `DamBreak`, `DoubleSplash`); the preset integer is the wire value of the `scene.preset` registry setting. `SceneConfig::default_tank` is the historical alias that always returns `FallingBlob`, used by callers that want the canonical look independent of the dropdown.
+`app/crates/fluid-lab/src/scene/mod.rs → SceneConfig::from_settings` builds the scene from the registry at construction and again on every `reset()` call. Liquid geometry is described as one or more `LiquidBlock` AABBs in normalized tank space [0,1]^3; the blocks stay normalized and are mapped to world space via the per-axis tank origin+extent (see "Grid handoff" below) — no hardcoded 2.0/-1.0. The named presets are the variants of `app/crates/fluid-lab/src/scene/mod.rs → ScenePreset` (`FallingBlob`, `DamBreak`, `DoubleSplash`); the preset integer is the wire value of the `scene.preset` registry setting. `SceneConfig::default_tank` is a helper that always returns `FallingBlob`, kept for any caller that wants the canonical look independent of the dropdown.
 
 `scene.drop_height` is a Reset-class scene parameter consumed by `SceneConfig::from_settings`.
 For suspended presets, the authored liquid blocks are shifted vertically by the height
@@ -88,11 +78,18 @@ floor-anchored, so the setting has limited effect there.
 
 The `interaction.auto_roll_*` and `interaction.wave_*` settings are Live-class. Defaults keep both enable toggles off; changing strength/cadence/frequency updates the next scheduled behavior without a rebuild. Reset restores the tank to upright/centered, rebuilds the fluid, and resets the deterministic schedules, but it does not change the Live setting values.
 
-## Rectangular tank
+## Grid handoff
 
-The tank is a rectangular box, not a fixed cube. The cell size is a single **uniform** scalar `h = sim::H = 2.0/64.0` (`app/crates/fluid-lab/src/sim/mod.rs → H`); the box becomes rectangular only by varying the per-axis cell counts `nx/ny/nz` (the `grid.res_x/y/z` settings) independently. The domain is centered: per-axis `extent = n_axis * h`, `origin = [-nx*h/2, -ny*h/2, -nz*h/2]`. An all-64 grid reproduces the exact original `[-1,1]^3` cube. The GPU side owns the world placement (`app/crates/fluid-lab/src/gpu/fluid.rs → GpuFluid::new`, `tank_bounds`); `simulation.md` owns the grid-indexing contract.
+`SceneConfig.grid_resolution` is a `UVec3` built from the `grid.res_x/res_y/res_z`
+registry settings (all Reset-class), and `FluidApp::create` / `FluidApp::reset` hand
+that scene config into GPU creation/rebuild. The tank-grid geometry contract itself
+is owned by `simulation.md`; the app shell owns only the handoff between
+`SceneConfig::from_settings` and
+`app/crates/fluid-lab/src/gpu/mod.rs → GpuContext::recreate_fluid`.
 
-Particle placement within each block uses a deterministic seeded jitter (`app/crates/fluid-lab/src/gpu/` — see the GPU init path), so `reset()` is bit-reproducible.
+Particle placement within each block uses deterministic seeded jitter
+(`app/crates/fluid-lab/src/gpu/fluid.rs → generate_particles`), so `reset()` is
+bit-reproducible.
 
 ## Non-obvious invariants and gotchas
 
@@ -111,7 +108,7 @@ failed reset applied.
 
 **Accumulator must be zeroed on pause.** The frame loop calls `timestep.reset()` every paused frame. Forgetting this would let the accumulator silently fill during a pause and burst multiple substeps on resume.
 
-**`set_setting` has two return semantics.** Returns `true` only for accepted `Live`-class settings (change applied to GPU immediately). Returns `false` for accepted `Reset`- and `Reload`-class settings, meaning the registry was updated but the caller must prompt the user to reset/reload. Non-finite input is rejected before the registry changes and also returns `false`. Finite out-of-range input is clamped by the registry before any live GPU update uses it. The web panel uses this return value to show the hint badge, so rejected values must also be logged.
+**`set_setting` is the legacy bool bridge.** `app/crates/fluid-lab/src/lib.rs → FluidApp::set_setting` returns `true` only for accepted `Live`-class settings whose change applied immediately. Accepted `Reset`- and `Reload`-class settings still return `false`, meaning the registry stored the value but the caller must reset/reload. Non-finite input is rejected before the registry changes and also returns `false`. The shell prefers `FluidApp::set_setting_result_json` for honest status/clamping/reset details and falls back to the bool wrapper only for compatibility.
 
 **`box_pos` is clamped.** `move_box` and `slosh_box` both clamp `box_pos` to `[-3, 3]^3` so the tank cannot escape the camera frustum entirely.
 
@@ -133,9 +130,10 @@ failed reset applied.
 
 ## See also
 
-- `simulation.md` — GPU solver and substep internals that `gpu.step(n)` drives
-- `gpu-resources.md` — WebGPU surface, pipeline, and `GpuContext` ownership
-- `../decisions/platform.md` — why the web shell owns rAF and Rust owns scheduling
-- `../decisions/scope.md` — the typed scene config / scenarios-are-later rationale
-- `../decisions/performance.md` — fixed-dt and substep-cap rationale
-- `../agent-context/maintaining-docs.md`
+- [`simulation.md`](simulation.md) — GPU solver and substep internals that `gpu.step(n)` drives
+- [`gpu-resources.md`](gpu-resources.md) — WebGPU surface, pipeline, and `GpuContext` ownership
+- [`../decisions/platform.md`](../decisions/platform.md) — why the web shell owns rAF and Rust owns scheduling
+- [`../decisions/scope.md`](../decisions/scope.md) — the typed scene config / scenarios-are-later rationale
+- [`../decisions/performance.md`](../decisions/performance.md) — fixed-dt and substep-cap rationale
+- [`../agent-context/maintaining-docs.md`](../agent-context/maintaining-docs.md)
+- [`~/agent-docs/v1/rules/authoring-rules.md`](~/agent-docs/v1/rules/authoring-rules.md)

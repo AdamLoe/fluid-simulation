@@ -49,11 +49,11 @@ features without pushing the frame budget out of range.
 ## Water rendering uses a measured multi-pass screen-space path
 
 **Decision** - In Water mode a scene prepass renders the environment and wireframe
-into offscreen `scene_color`/`scene_depth` targets; water accumulates thickness,
-speed-weighted whitewater, and nearest depth into R16 screen-space targets; smoothing
-filters the front depth; and the composite samples `scene_color` at a refracted UV
-before writing the final pixel. The optional grid slice remains an overlay. The
-optical/simple particle modes keep the direct opaque pass.
+into offscreen scene targets; water accumulates thickness, speed-weighted whitewater,
+and nearest depth into screen-space targets; smoothing filters the accumulated
+signals; and the composite samples scene color at a refracted UV before writing the
+final pixel. The optional grid slice remains an overlay. The optical/simple particle
+modes keep the direct opaque pass.
 
 **Why** - Same-pass transparent billboards cannot accumulate path length or produce a
 coherent lit front surface for deep water. The multi-pass path pays explicit render
@@ -92,11 +92,11 @@ per-particle hot path that is the known bottleneck
 common scenes (verified on real-GPU captures of the default scene, settled pool and
 mid-splash).
 
-**Tradeoffs** - Feature preservation reintroduces some real surface detail that reads as
-chop; at extreme settings it can surface faint per-splat structure. The default (0.6) is
+**Tradeoffs** - Feature preservation reintroduces some real surface detail that reads
+as chop; at extreme settings it can surface faint per-splat structure. The default is
 a conservative middle. Cost is a handful of extra texture taps per smoothed pixel.
 
-**Code anchors** - `crates/fluid-lab/src/gpu/shaders/water_smooth.wgsl`;
+**Code anchors** - `crates/fluid-lab/src/gpu/shaders/water_smooth.wgsl -> fs`;
 `crates/fluid-lab/src/gpu/shaders/composite.wgsl -> water_normal`;
 `crates/fluid-lab/src/gpu/smoothing.rs -> WaterSmoothRenderer`;
 `crates/fluid-lab/src/settings/mod.rs -> HeroParams` (`feature_preservation`).
@@ -110,9 +110,8 @@ anisotropic splats (Phase 2) earn their per-particle cost on measured captures.
 
 **Decision** - The Water mode keeps hero-water controls as Live-toggleable sub-features
 of the existing render path rather than as a separate top-level render mode.
-`RenderMode { Water, OpticalParticles, SimpleParticles }` remains the mode switch;
-hero features are Live settings under `Water` and mirror into one `HeroParams`
-uniform.
+`crates/fluid-lab/src/gpu/mod.rs -> RenderMode` remains the mode switch; hero
+features are Live settings under `Water` and mirror into one `HeroParams` uniform.
 
 **Why** - The composite already does most of the material (thickness, smoothed front
 depth, reconstructed normal, Fresnel, Beer-Lambert absorption). A second top-level mode
@@ -126,7 +125,8 @@ reflection, body color, and wall-contact correction so comparisons do not disabl
 unrelated effects.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/mod.rs -> RenderMode`;
-`crates/fluid-lab/src/gpu/composite.rs`; `crates/fluid-lab/src/gpu/environment.rs`;
+`crates/fluid-lab/src/gpu/composite.rs -> CompositeRenderer`;
+`crates/fluid-lab/src/gpu/environment.rs -> EnvironmentRenderer`;
 `crates/fluid-lab/src/settings/mod.rs -> HeroParams`.
 
 **Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
@@ -172,14 +172,14 @@ fades. Persistent diffuse state is what makes churn read as foam (see the
 `fluid-system-llm-brief.md` diagnosis). Keeping it render-only avoids touching the
 fixed-point P2G determinism invariant (`../architecture/simulation.md`).
 
-**Tradeoffs** - A fixed-capacity particle buffer (~12.6 MB) and two extra compute
-passes per enabled frame. Emission is bounded by an integer-atomic per-frame budget,
-and over-budget frames are reported (`stats_json.gpu.diffuse.clamped`). Slot choice is
-not deterministic because of the atomic ring cursor, which is acceptable because the
+**Tradeoffs** - A fixed-capacity particle buffer and extra compute work per enabled
+frame. Emission is bounded by an integer-atomic per-frame budget, and over-budget
+frames are reported (`stats_json.gpu.diffuse.clamped`). Slot choice is not
+deterministic because of the atomic ring cursor, which is acceptable because the
 system is render-only.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/diffuse.rs -> DiffuseSystem`;
-`crates/fluid-lab/src/gpu/shaders/diffuse_emit.wgsl`;
+`crates/fluid-lab/src/gpu/shaders/diffuse_emit.wgsl -> main`;
 `crates/fluid-lab/src/settings/mod.rs -> DiffuseParams`.
 
 **Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
@@ -188,10 +188,11 @@ system is render-only.
 ## The reflected environment is procedural-only and world-fixed
 
 **Decision** - The hero water reflects a *procedural* sky/room
-(`gpu/shaders/env.wgsl -> env_sample`), not an image-based cubemap/HDRI and not
-screen-space reflections of the actual tank/particles. The same function also draws
-the world background as a fullscreen skybox. Both are sampled in **world space via a
-camera-only rotation**, so they follow the camera but stay fixed when the box rotates.
+(`crates/fluid-lab/src/gpu/shaders/env.wgsl -> env_sample`), not an image-based
+cubemap/HDRI and not screen-space reflections of the actual tank/particles. The same
+function also draws the world background as a fullscreen skybox. Both are sampled in
+**world space via a camera-only rotation**, so they follow the camera but stay fixed
+when the box rotates.
 
 **Why** - A procedural environment costs no texture memory or asset pipeline and gives the
 water believable Fresnel edges and a plausible reflected room/sky for near-zero render
@@ -225,9 +226,10 @@ rebuild deleted systems by accident.
 
 ## The tank has an open viewing corner
 
-**Decision** - The environment prepass omits the right (+x) and front (+z) walls, leaving
-two adjacent clear faces that form an open vertical corner aimed at the default camera; the
-back and left walls stay matte. The wireframe still outlines all 12 edges.
+**Decision** - The environment prepass omits the right (+x) and front (+z) walls,
+leaving adjacent clear faces that form an open vertical corner aimed at the default
+camera; the back and left walls stay matte. The wireframe still outlines the whole
+tank.
 
 **Why** - Two opposing-pair open faces let the viewer look straight down the corner into
 the liquid without matte glass occluding the hero shot, while the remaining two walls still
@@ -269,13 +271,11 @@ screen-space thickness, while rough whitewater comes from speed-weighted thickne
 `render.water_optical_density` is the public absorption control; `render.particle_alpha`
 is legacy compatibility only and not part of the public settings surface.
 
-**Why** - Per-billboard optical depth made thin water readable but could not distinguish
-a lone particle from the front of a deep volume. Normalized screen-space thickness
-keeps one absorption setting meaningful across particle counts and stops particle size
-from acting as hidden opacity.
-
-**Refinement (thickness and whitewater are spatially smoothed)** - The thickness target,
-and the whitewater (foam) target, are each blurred by a plain separable Gaussian
+**Why** - Per-billboard optical depth made thin water readable but could not
+distinguish a lone particle from the front of a deep volume. Normalized screen-space
+thickness keeps one absorption setting meaningful across particle counts and stops
+particle size from acting as hidden opacity. The thickness target, and the whitewater
+target, are each blurred by a plain separable Gaussian
 (`ThicknessSmoothRenderer`) before they drive composite colour. Left raw, the per-particle
 splat noise read directly as speckle: thickness as a "sandy" body that let the dark wall
 show through inter-splat gaps near the glass, and whitewater as a field of white foam
@@ -296,7 +296,7 @@ normalized screen-space thickness, not particle alpha. The scene-color target an
 visible scene detail make the cost legible.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer`;
-`crates/fluid-lab/src/gpu/shaders/particles.wgsl`;
+`crates/fluid-lab/src/gpu/shaders/particles.wgsl -> fs_thickness`;
 `crates/fluid-lab/src/gpu/composite.rs -> CompositeRenderer`;
 `crates/fluid-lab/src/settings/mod.rs -> Registry`;
 `crates/fluid-lab/src/lib.rs -> FluidApp::set_setting`.

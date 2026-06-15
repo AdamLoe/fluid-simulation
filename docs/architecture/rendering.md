@@ -12,55 +12,45 @@ The render layer draws the wireframe tank, the default screen-space Water view,
 the procedural world skybox/environment, selectable optical/simple particle views,
 an optional grid-slice overlay, and conservative surface foam. Normal frames do
 not read simulation state back to the CPU; throttled diagnostics in
-`crates/fluid-lab/src/gpu/timing.rs` own the runtime readback path.
+`crates/fluid-lab/src/gpu/timing.rs -> GpuTimers` own the runtime readback path.
 
 ## What it owns
 
 `crates/fluid-lab/src/gpu/mod.rs -> GpuContext` owns the surface, shared depth
 texture, water offscreen targets, hero-water `scene_color`/`scene_depth` prepass
 targets, renderer instances, `RenderMode`, `HeroParams`, and render pass order.
-`RenderMode { Water, OpticalParticles, SimpleParticles }` is still selected by
-`render.particle_view` values 0/1/2.
+`crates/fluid-lab/src/gpu/mod.rs -> RenderMode` is still selected by
+`render.particle_view`; the wired modes are Water, OpticalParticles, and
+SimpleParticles.
 
 `FluidApp::frame` folds the tank model matrix into `view_proj` and passes a
 camera-only eye-to-world rotation into `GpuContext::render`. The skybox and water
 reflection use that camera-only basis so rotating the tank changes gravity, not the
 world background.
 
-```
-Water mode:
-  scene prepass -> scene_color + scene_depth:
-    skybox + environment floor/back-left walls + wireframe
-  particle thickness + whitewater + nearest-Z MRT
-  thickness blur + whitewater blur + bilateral depth smoothing
-  opaque water composite
-  optional surface-foam billboard pass
-
-OpticalParticles mode:
-  opaque pass -> optical-depth particle billboards
-
-SimpleParticles mode:
-  opaque pass -> simple alpha particle billboards
-
-optional grid slice overlay
-```
+`GpuContext::render` records all visible render paths. Water mode owns the
+scene-color/depth prepass, screen-space water targets, smoothing, composite, and
+optional foam pass; the two particle modes use the opaque tank/background pass plus
+their particle renderer. The optional grid slice is recorded after the selected mode
+as an overlay.
 
 The current runtime does not schedule, allocate, rebind, or draw caustics, temporal
 stabilization, wet walls, or dense wall fill. Their old setting ids are accepted only
 for legacy replay compatibility.
 
-## Views
+## View anchors
 
-| View | Runtime state | Renderer | Shader |
-|---|---|---|---|
-| Wireframe tank | always on | `gpu/renderer.rs -> WireframeRenderer` | inline WGSL in `renderer.rs` |
-| World skybox | Water mode, `render.hero.skybox_enabled` | `gpu/skybox.rs -> SkyboxRenderer` | `gpu/shaders/{env,skybox}.wgsl` |
-| Hero-water environment | Water mode only | `gpu/environment.rs -> EnvironmentRenderer` | `gpu/shaders/environment.wgsl` |
-| Screen-space water | `RenderMode::Water` | `gpu/particles.rs`, `gpu/smoothing.rs`, `gpu/composite.rs` | `particles.wgsl`, `{water_smooth,thickness_smooth}.wgsl`, `composite.wgsl` |
-| Surface foam | Water mode, `render.diffuse.enabled` | `gpu/diffuse.rs -> DiffuseSystem` | `gpu/shaders/diffuse_{emit,update,render}.wgsl` |
-| Optical particles | alternate `render.particle_view` | `gpu/particles.rs -> ParticleRenderer` | `particles.wgsl` |
-| Simple particles | alternate `render.particle_view` | `gpu/particles.rs -> ParticleRenderer` | `particles.wgsl` |
-| Grid slice | optional overlay | `gpu/slice.rs -> SliceRenderer` | `slice.wgsl` |
+The render-view map lives in code, not in a duplicated doc table:
+`crates/fluid-lab/src/gpu/mod.rs -> GpuContext::render` for dispatch and pass order,
+`crates/fluid-lab/src/gpu/renderer.rs -> WireframeRenderer` for the tank outline,
+`crates/fluid-lab/src/gpu/skybox.rs -> SkyboxRenderer` and
+`crates/fluid-lab/src/gpu/environment.rs -> EnvironmentRenderer` for the Water-mode
+background/prepass, `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer` for
+screen-space water accumulation and particle views,
+`crates/fluid-lab/src/gpu/smoothing.rs -> WaterSmoothRenderer` plus
+`crates/fluid-lab/src/gpu/composite.rs -> CompositeRenderer` for the water surface,
+`crates/fluid-lab/src/gpu/diffuse.rs -> DiffuseSystem` for surface foam, and
+`crates/fluid-lab/src/gpu/slice.rs -> SliceRenderer` for the optional grid overlay.
 
 ## Screen-space water
 
@@ -72,18 +62,20 @@ smoothed targets, reconstructs a screen-space normal, refracts `scene_color`, ap
 Beer-Lambert absorption and body tint, mixes a Fresnel-weighted procedural environment
 reflection, and writes the final swapchain pixel opaquely.
 
-The depth filter (`gpu/shaders/water_smooth.wgsl`) and the normal reconstruction
-(`gpu/shaders/composite.wgsl -> water_normal`) are **curvature-adaptive**: a plain
-isotropic bilateral rounds everything equally, so glassy sheets and sharp crests cannot
-coexist. Both passes estimate local surface curvature at a *coarse* stencil — wide
-enough that a genuine multi-pixel ridge registers but a single-splat bump does not, so
-the per-splat speckle the filter exists to remove is **not** preserved — and where
-curvature is high they narrow the spatial Gaussian / suppress the normal cross-average,
-keeping crests, ridges, and droplet tips pointy while flat faces stay smooth. The single
-Live knob is `render.hero.feature_preservation` (0 reproduces the legacy isotropic
-behaviour); it routes through `gpu/smoothing.rs -> WaterSmoothRenderer` (the
-`SmoothUniform.feature` slot) and the composite `Hero.norm.z` slot. This stays entirely
-in the screen-space composite — there is still no SDF / level-set surface
+The depth filter (`crates/fluid-lab/src/gpu/shaders/water_smooth.wgsl -> fs`) and
+the normal reconstruction
+(`crates/fluid-lab/src/gpu/shaders/composite.wgsl -> water_normal`) are
+**curvature-adaptive**: a plain isotropic bilateral rounds everything equally, so
+glassy sheets and sharp crests cannot coexist. Both passes estimate local surface
+curvature at a *coarse* stencil — wide enough that a genuine multi-pixel ridge
+registers but a single-splat bump does not, so the per-splat speckle the filter
+exists to remove is **not** preserved — and where curvature is high they narrow the
+spatial Gaussian / suppress the normal cross-average, keeping crests, ridges, and
+droplet tips pointy while flat faces stay smooth. The single Live knob is
+`render.hero.feature_preservation` (0 reproduces the legacy isotropic behaviour); it
+routes through `crates/fluid-lab/src/gpu/smoothing.rs -> WaterSmoothRenderer` (the
+`SmoothUniform.feature` slot) and the composite `Hero.norm.z` slot. This stays
+entirely in the screen-space composite — there is still no SDF / level-set surface
 ([`../decisions/rendering.md`](../decisions/rendering.md)).
 
 The environment prepass writes:
@@ -118,33 +110,25 @@ The visible water body is built from screen-space-smoothed particle splats, so i
 apparent volume depends on splat *coverage*, not on liquid cells. A fixed splat
 radius therefore makes the body look smaller when `particles.density` drops (the
 splats stop overlapping and pinhole). To make density a pure fidelity/cost knob, the
-**base splat radius tracks the seeded inter-particle spacing**:
-
-```
-particle_radius = scene.seeded_spacing(settings) * SPLAT_RADIUS_PER_SPACING
-seeded_spacing  = H * effective_density^(-1/3)
-```
-
-`SPLAT_RADIUS_PER_SPACING` is the single tunable renderer constant
-(`app/crates/fluid-lab/src/gpu/mod.rs`). At the reference density (8/cell) the
-spacing is `H * 8^(-1/3) = H * 0.5`, so the constant is **0.7** to reproduce the
-historical `H * 0.35` exactly. Lowering density coarsens the lattice (larger
-spacing) and the splats grow to keep coverage ~constant — the body stays the same
-size, just blobbier. `effective_density` is `resolved_count / seeded_cells`, so an
-advanced `particles.count` override changes the spacing too and the splat follows
-(no silent volume change). The radius is recomputed on every Reset (density / count /
-`scene.fill_level` are all Reset-class) at both `GpuRenderer::new` and
-`recreate_fluid`. `render.particle_size` remains the **Live** user multiplier applied
-on top via `ParticleRenderer::set_radius_scale`; `recompute_volume_scale` keeps the
-kernel normalization consistent when the radius changes.
+base splat radius tracks the seeded inter-particle spacing through
+`crates/fluid-lab/src/gpu/mod.rs -> SPLAT_RADIUS_PER_SPACING` and
+`crates/fluid-lab/src/scene/mod.rs -> SceneConfig::seeded_spacing`. Lowering density
+coarsens the lattice and the splats grow to keep coverage approximately constant: the
+body stays the same size, just blobbier. An advanced `particles.count` override
+changes the effective spacing too, so the splat follows with no silent volume change.
+The radius is recomputed on every Reset at both `GpuContext::new` and
+`GpuContext::recreate_fluid`. `render.particle_size` remains the **Live** user
+multiplier applied on top via `ParticleRenderer::set_radius_scale`;
+`ParticleRenderer::recompute_volume_scale` keeps the kernel normalization consistent
+when the radius changes.
 
 Calibration: tune `SPLAT_RADIUS_PER_SPACING` if a coverage sweep shows low density
-under- or over-covering. `app/tools/density_motion_sweep.mjs` runs the real-GPU density
-sweep (`{1, 8, 32}` at a fixed waterline), screenshots each, and reports the `liquid_cells` /
-`filled_volume` ratios used as the fast Phase-1 invariance proxy (the visible-volume
-acceptance is the screenshots; expect the physics-cell ratio to sit within ~15% as
-the dilation rind is density-dependent). The SDF/level-set surface rewrite — the
-"proper" coverage fix — is deliberately deferred (`../decisions/scope.md`).
+under- or over-covering. `tools/density_motion_sweep.mjs` runs the real-GPU density
+sweep at a fixed waterline, screenshots each run, and reports the
+`liquid_cells` / `filled_volume` ratios used as the fast invariance proxy. The
+visible-volume acceptance is the screenshots; the physics-cell ratio is only a proxy
+because the dilation rind is density-dependent. The SDF/level-set surface rewrite is
+deliberately deferred (`../decisions/scope.md`).
 
 ## Surface foam
 
@@ -167,12 +151,16 @@ compatibility, while visible profiler text reports foam only.
 This section is the canonical owner for removed render features. Resource and
 settings docs should link here instead of repeating the old subsystem inventory.
 
-The following files are intentionally absent from the current runtime:
+The following app-relative files are intentionally absent from the current runtime:
 
-- `gpu/caustics.rs`, `gpu/shaders/caustics_{generate,composite}.wgsl`
-- `gpu/temporal.rs`, `gpu/shaders/temporal_blend.wgsl`
-- `gpu/wetwall.rs`, `gpu/shaders/wetwall_update.wgsl`
-- `gpu/wallfill.rs`, `gpu/shaders/wallfill.wgsl`
+- `crates/fluid-lab/src/gpu/caustics.rs`,
+  `crates/fluid-lab/src/gpu/shaders/caustics_{generate,composite}.wgsl`
+- `crates/fluid-lab/src/gpu/temporal.rs`,
+  `crates/fluid-lab/src/gpu/shaders/temporal_blend.wgsl`
+- `crates/fluid-lab/src/gpu/wetwall.rs`,
+  `crates/fluid-lab/src/gpu/shaders/wetwall_update.wgsl`
+- `crates/fluid-lab/src/gpu/wallfill.rs`,
+  `crates/fluid-lab/src/gpu/shaders/wallfill.wgsl`
 
 Persisted ids under `render.hero.caustics.*`, `render.hero.temporal.*`,
 `render.hero.wet_wall.*`, dense `render.hero.flat_water.fill_*`, and obsolete
@@ -190,3 +178,4 @@ diffuse spray/bubble/wall-impact ids are accepted and ignored during restore.
 - `gpu-resources.md` - render target and buffer ownership.
 - `profiler.md` - timing/readback semantics.
 - `../decisions/rendering.md`
+- `../agent-context/maintaining-docs.md`

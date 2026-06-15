@@ -27,19 +27,19 @@ Optional fields include `tooltip`, `technical_tooltip`, `options`, and
 
 `set_setting_result_json(id, value)` is the honest mutation bridge. It rejects
 non-finite values, validates finite values through the registry, stores the clamped
-value when accepted, and returns:
+value when accepted, and returns a `SettingMutationResult` payload:
 
 ```json
 {"ok":true,"status":"applied","id":"physics.cfl","requested_id":"physics.cfl","requested_value":99,"stored_value":6,"clamped":true,"apply":"live","applied_live":true,"needs_reset":false,"needs_reload":false}
 ```
 
-`status` is one of `applied`, `stored`, `unknown_id`, `non_finite_rejected`,
-`legacy_mapped`, or `legacy_ignored`. `apply` is `live`, `reset`, `reload`, or
-`null` when the id is unknown/non-finite. Live settings push directly into app/GPU
-state and set `applied_live`; Reset/Reload settings only store the value and report
-`needs_reset` / `needs_reload`. The old `set_setting(id, value) -> bool` remains a
-compatibility wrapper: `true` means the id was accepted as Live-class, not that every
-possible outcome was distinguishable.
+The status/apply vocabulary is owned by
+`crates/fluid-lab/src/settings/mod.rs -> MutationStatus` and
+`crates/fluid-lab/src/settings/mod.rs -> ApplyClass`. Live settings push directly
+into app/GPU state and set `applied_live`; Reset/Reload settings only store the
+value and report `needs_reset` / `needs_reload`. The old
+`set_setting(id, value) -> bool` remains a compatibility wrapper: `true` means the
+id was accepted as Live-class, not that every possible outcome was distinguishable.
 
 `physics.max_substeps` is the Reset-class frame catch-up cap. Its registry default is
 2, which lets a 60 Hz frame execute two 1/120 s physics substeps when the frame budget
@@ -59,9 +59,9 @@ res_x*res_y*res_z`, where `seeded_volume_fraction` is the fraction of the normal
 `round(density * seeded_volume_fraction * total_cells)`, floored at 1024. This keeps
 the default 64³ falling-blob scene near the historical ~254k particles (~264k at
 density 8) and scales correctly when grid resolution or scenario changes. The
-derivation lives in `scene/mod.rs::resolved_particle_count`; `gpu` reads the resolved
-`SceneConfig::particle_count`, so seeding, validation, and the reported "requested"
-count all agree.
+derivation lives in `crates/fluid-lab/src/scene/mod.rs -> resolved_particle_count`;
+`gpu` reads the resolved `SceneConfig::particle_count`, so seeding, validation, and
+the reported "requested" count all agree.
 
 `particles.count` is now an **advanced manual override** (Reset-class `u32`, default
 `0` = Auto, range `0..134_217_728`). `0` means derive from `particles.density`; a
@@ -96,32 +96,19 @@ Enum settings currently serialize as their numeric registry values, not stable s
 
 ## Functional tabs
 
-The visible tabs are:
-
-- Scenario
-- Simulation
-- Modes
-- Camera & View
-- Water Surface
-- Water Color
-- Environment
-- Sun & Reflection
-- Foam
-
-The web shell appends Profiler as a non-config tab. Removed render-feature tabs are
-not visible; `rendering.md` owns the removed-feature set, while this doc owns
-registry and legacy-id behavior.
+The visible config-tab routing lives in
+`crates/fluid-lab/src/settings/mod.rs -> settings_tab`; the web shell appends
+Profiler as a non-config tab. Removed render-feature tabs are not visible;
+`rendering.md` owns the removed-feature set, while this doc owns registry and
+legacy-id behavior.
 
 ## Render controls
 
 Most `render.hero.*` controls share one Live snapshot path:
-`Registry::hero_params() -> HeroParams`, then `GpuContext::set_hero_params`.
-Visible core water toggles are:
-
-- `render.hero.refraction_enabled`
-- `render.hero.reflection_enabled`
-- `render.hero.body_color_enabled`
-- `render.hero.wall_contact_enabled`
+`crates/fluid-lab/src/settings/mod.rs -> Registry::hero_params`, then
+`crates/fluid-lab/src/gpu/mod.rs -> GpuContext::set_hero_params`. Core water toggles
+are declared with the rest of the hero controls in
+`crates/fluid-lab/src/settings/mod.rs -> Registry`.
 
 The cheap wall-contact snap remains visible through
 `render.hero.flat_water.strength`, `render.hero.flat_water.epsilon`,
@@ -135,31 +122,20 @@ drives the curvature-adaptive feature-preserving filter (smooth faces + sharp cr
 = legacy isotropic behaviour) — see [`rendering.md`](rendering.md).
 
 `render.diffuse.*` now means surface foam. It shares one Live snapshot path:
-`Registry::diffuse_params() -> DiffuseParams`, then
-`GpuContext::set_diffuse_params`. Visible foam controls cover enable, active particle
-cap, emission rate/budget, surface-speed onset/gain, lifetime, radius, opacity, and
-random seed. There are no visible spray, bubble, wall-impact, or diffuse debug
-settings.
+`crates/fluid-lab/src/settings/mod.rs -> Registry::diffuse_params`, then
+`crates/fluid-lab/src/gpu/mod.rs -> GpuContext::set_diffuse_params`. Visible foam
+controls are owned by the `render.diffuse.*` rows in `Registry`. There are no visible
+spray, bubble, wall-impact, or diffuse debug settings.
 
 ## Legacy replay
 
 Old persisted settings must not break startup. JavaScript no longer mirrors a legacy
 allow-list; restore/import submits ids to the bridge and Rust decides whether to
 apply, map, ignore, or reject them. `rendering.md` owns which removed render feature
-families are absent; `legacy_hidden_setting_id` accepts and ignores their persisted
-ids:
-
-- `render.hero.mode_enabled` maps only the core optical toggles.
-- `render.hero.caustics.*`
-- `render.hero.temporal.*`
-- `render.hero.wet_wall.*`
-- dense wall-fill ids under `render.hero.flat_water.fill_*` plus
-  `render.hero.flat_water.waterline_softness`
-- obsolete diffuse ids:
-  `render.diffuse.wall_impact_threshold`, `render.diffuse.wall_impact_gain`,
-  `render.diffuse.spray_lifetime`, `render.diffuse.bubble_lifetime`,
-  `render.diffuse.bubble_buoyancy`, `render.diffuse.spray_drag`,
-  `render.diffuse.debug_view`
+families are absent; `crates/fluid-lab/src/settings/mod.rs ->
+legacy_hidden_setting_id` owns the accepted legacy-id set. `render.hero.mode_enabled`
+maps only the core optical toggles; removed caustic, temporal, wet-wall, dense
+wall-fill, and obsolete diffuse ids replay as hidden compatibility no-ops.
 
 Future saves walk visible non-default rows only, so removed ids drop out naturally.
 
@@ -190,3 +166,4 @@ payloads that used to be skipped before Rust saw them.
 - `rendering.md`
 - `profiler.md`
 - `../decisions/observability.md`
+- `../agent-context/maintaining-docs.md`

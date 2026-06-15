@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-12
+last_updated:  2026-06-15
 okay_to_delete: false
 long_lived:    true
 ---
@@ -44,21 +44,11 @@ optional initial pressure field and an optional relative residual tolerance. Whe
 initial field is provided it is copied only for Liquid cells, the residual starts at
 `r = b - A·p_initial`, and tolerance exit uses `rs_new <= tol² · rs_initial`.
 
-**GPU kernel set.** A set of small `cg_*.wgsl` kernels in `app/crates/fluid-lab/src/gpu/shaders/`, each doing
-one algebraic step. Dispatch sequence in `app/crates/fluid-lab/src/gpu/fluid.rs → record_pressure`:
-
-```
-init (default p=0, or warm p=previous pressure; r=b-Ap; d=r)
- ↓ reduce+reduce_final+set_rsold  [rs_old = dot(r,r)]
- ↓─────────── repeat pressure_iters times ────────────
- │  spmv    q = A·d
- │  reduce+reduce_final           [dq = dot(d,q)]
- │  alpha   α = rs_old / dq
- │  update  p += α·d ; r -= α·q
- │  reduce+reduce_final           [rs_new = dot(r,r)]
- │  beta    β = rs_new/rs_old ; rs_old = rs_new
- └  dir     d = r + β·d
-```
+**GPU kernel set.** The `cg_*.wgsl` kernels in `app/crates/fluid-lab/src/gpu/shaders/`
+each own one algebraic step; `app/crates/fluid-lab/src/gpu/fluid.rs → record_pressure`
+owns their fixed dispatch order. The sequence mirrors `cg_solve`: initialize `p/r/d`,
+capture the initial residual, then run SpMV, dot products, scalar updates, pressure
+update, residual update, and direction update for the configured iteration cap.
 
 **Dot products.** Each `dot` is a two-level tree reduction: `cg_reduce` produces one
 partial sum per workgroup into a scratch buffer; `cg_reduce_final` sums those into a
@@ -77,7 +67,7 @@ math/memory work after convergence without reducing dispatch count or adding CPU
 readback.
 
 **Pressure warm-start.** Runtime exposes `solver.pressure_warm_start` (Live,
-default `0`). Default-off keeps the historical zero-start path and still clears
+default `0`). Default-off keeps the zero-start path and still clears
 `pressure_a` in prep before `cg_init`. When enabled, prep skips that clear so
 `cg_init` can reuse the previous `pressure_a` field for Liquid cells, compute
 `r = b - A*p_old` on GPU, and seed `d = r`. `cg_init` writes `0` into
@@ -98,12 +88,12 @@ Air cells are Dirichlet `p = 0` (they count as neighbours, pushing `n_c` up but
 contributing nothing to the sum). Solid cells are Neumann (excluded entirely). This
 is the stencil used by both `apply_poisson` and `cg_spmv`.
 
-**Default 30 iters; CG knee ~15.** Registry `solver.pressure_iterations` (Live).
-The settled-pool residual plateau at ~19.2 k liquid cells (64³) is FLIP volume loss,
-not solver under-convergence — brute-force Jacobi at 400 iters reaches the same
-ceiling. Raising iterations past ~30 has no visible effect on fluid volume.
-The runtime GPU loop is still fixed-count; residual active gating is not a reduced
-dispatch-count claim.
+**Iteration budget.** Registry `solver.pressure_iterations` is Live and defaults in
+`app/crates/fluid-lab/src/settings/mod.rs → Registry::default`. `record_pressure`
+uses the setting as a fixed cap; residual active gating is not a reduced
+dispatch-count claim. The CG-vs-Jacobi rationale lives in `../decisions/pressure.md`,
+and `app/crates/fluid-lab/src/sim/pressure.rs → cg_beats_jacobi_16cubed` keeps the
+host reference comparison covered by `cargo test --lib`.
 
 **Scale consistency.** Relative divergence reduction is independent of ρ. Host tests
 use `ρ = dt = h = 1` (`ProjectionParams::unit`). Runtime uses a hardcoded
@@ -111,10 +101,10 @@ use `ρ = dt = h = 1` (`ProjectionParams::unit`). Runtime uses a hardcoded
 `app/crates/fluid-lab/src/sim/pressure.rs → cg_beats_jacobi_16cubed` asserts CG cuts
 L2 divergence sharply and beats Jacobi on the same reference case.
 
-**CG float ≠ integer P2G determinism.** The pressure solve has always been f32; CG
-dot-product reductions are fixed-order but still floating-point. This is a separate,
-compatible guarantee from the integer-atomic P2G determinism invariant (which must
-never introduce a float reduction — see `simulation.md` and `../decisions/simulation.md`).
+**CG float ≠ integer P2G determinism.** The pressure solve is f32; CG dot-product
+reductions are fixed-order but still floating-point. This is a separate, compatible
+guarantee from the integer-atomic P2G determinism invariant (which must never
+introduce a float reduction — see `simulation.md` and `../decisions/simulation.md`).
 
 **Division guards are branches, not `select`.** `cg_alpha` and `cg_beta` explicitly
 branch around near-zero denominators before dividing. WGSL `select` is not a safe
@@ -132,7 +122,7 @@ needed inside the pressure or SpMV kernels.
 
 - The operator stencil changes (e.g. variable-density, ghost-fluid free surface).
 - Preconditioning is added (changes the kernel set and the CG loop structure).
-- `pressure_iters` default changes (verify `cg_beats_jacobi_16cubed` still holds).
+- `solver.pressure_iterations` default changes (verify `cg_beats_jacobi_16cubed` still holds).
 - The default value or reset semantics of `solver.pressure_warm_start` changes.
 - The two-level dot-product reduction workgroup size changes (determinism anchor).
 - Air/Solid boundary conventions change (must stay consistent between `apply_poisson`

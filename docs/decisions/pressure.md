@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-12
+last_updated:  2026-06-15
 ---
 
 # Decisions — Pressure
@@ -37,25 +37,25 @@ the first solver was replaced (below).
 ## Unpreconditioned Conjugate Gradient is the default solver
 
 **Decision** — The default pressure solver is unpreconditioned CG on the SPD
-MAC-Poisson operator, default `solver.pressure_iterations = 30` (Live). It replaced
-the original Jacobi solver.
+MAC-Poisson operator, with its Live iteration cap default owned by
+`app/crates/fluid-lab/src/settings/mod.rs → Registry::default`. It replaced the
+original Jacobi solver.
 
 **Why** — Jacobi's iteration count grows O(N²) and cannot converge the low-frequency
-hydrostatic mode across a deep (64-cell) column, so a settled pool over-compacted
-(~11.5k liquid cells at 64³, ~2.7× over-dense). CG converges that mode in ~15
-iterations; at 30 iters a settled pool holds ~19.2k cells (+67%, visibly deeper) at
-the *same* ~1.4 ms GPU/step cost as the old under-converged Jacobi-120.
+hydrostatic mode across the default tank quickly enough for an interactive step
+budget. CG converges that mode within the current Live iteration cap and produces a
+visibly deeper settled pool without changing the surrounding sim-loop contract.
 
-**Tradeoffs / known limit** — The residual gap from ~19.2k to the ideal ~31.8k seed
-density is **inherent FLIP volume loss at 64³, not solver under-convergence**: a
-fully-converged CG and a brute-force 400-iteration Jacobi/RBGS both plateau at
-~19.2k. Closing it is a transfer-quality problem (APIC/affine transfer, density
-correction) or higher resolution — *not* more pressure iterations.
+**Tradeoffs / known limit** — The remaining settled-volume gap is **inherent FLIP
+volume loss at the default grid, not solver under-convergence**: fully-converged CG
+and brute-force Jacobi/RBGS plateau at the same volume. Closing it is a
+transfer-quality problem (APIC/affine transfer, density correction) or higher
+resolution — *not* more pressure iterations.
 
 **Alternatives considered** — Jacobi (too slow to converge the hydrostatic mode);
-Red-Black Gauss-Seidel measured **cost-neutral vs Jacobi on GPU** (its 2× per-sweep
-convergence is cancelled by 2× dispatch cost from half-idle color threads), so RBGS
-alone is not a fix. Multigrid/PCG remain future options.
+Red-Black Gauss-Seidel was not kept as the default because the GPU implementation
+still spends separate color phases with half-idle threads, offsetting its per-sweep
+convergence gain. RBGS alone is not a fix. Multigrid/PCG remain future options.
 
 **Revisit when** — FLIP volume fidelity becomes the focus, or a larger grid needs a
 preconditioner.

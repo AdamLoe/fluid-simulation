@@ -34,8 +34,10 @@ against ad-hoc state.
 persistence, help copy, grouping, and runtime behavior from drifting apart, and lets
 profiler samples be tagged with a config snapshot.
 
-**Code anchors** — `crates/fluid-lab/src/settings/mod.rs → Registry`; bridge `crates/fluid-lab/src/lib.rs → config_json,
-set_setting, stats_json`.
+**Code anchors** — `crates/fluid-lab/src/settings/mod.rs → Registry`;
+`crates/fluid-lab/src/lib.rs → config_json`;
+`crates/fluid-lab/src/lib.rs → set_setting`;
+`crates/fluid-lab/src/lib.rs → stats_json`.
 
 **Applies to** — `architecture/settings.md`.
 
@@ -51,9 +53,10 @@ inside prose conventions. Explicit optional fields let obvious rows stay quiet,
 technical rows remain inspectable, and the Rust registry remain the source of truth for
 where controls belong.
 
-**Code anchors** — `crates/fluid-lab/src/settings/mod.rs → Setting`,
-`settings_tab`, `Registry::config_json`; `web/panels.js → buildConfigPanel`,
-`appendHelpIcons`.
+**Code anchors** — `crates/fluid-lab/src/settings/mod.rs → Setting`;
+`crates/fluid-lab/src/settings/mod.rs → settings_tab`;
+`crates/fluid-lab/src/settings/mod.rs → Registry::config_json`;
+`web/panels.js → buildConfigPanel`; `web/panels.js → appendHelpIcons`.
 
 **Applies to** — `architecture/settings.md`, `architecture/web-shell.md`.
 
@@ -124,13 +127,28 @@ minimum-honest fallback and **never fabricates per-pass numbers**.
 
 ## GPU profiling is coarse by default; detailed mode is Reset-class diagnostics
 
-**Decision** — `GpuTimers` defaults to coarse mode: three monolithic pass groups (prep / pressure / finish) per substep, with frame totals summed correctly across all substeps that ran. Detailed mode (one begin/end pair per fine section + per-CG-iteration timing) is off by default and toggled via `dev.detailed_gpu_profiling` (Reset-class, default 0), rendered as Diagnostics rather than user-facing dev chrome.
+**Decision** — `GpuTimers` defaults to coarse prep / pressure / finish timing per
+substep, with frame totals summed correctly across all substeps that ran. Detailed
+mode uses the fine-section and CG-category tables in
+`crates/fluid-lab/src/gpu/timing.rs`; it is off by default and toggled via
+`dev.detailed_gpu_profiling` (Reset-class), rendered as Diagnostics rather than
+user-facing dev chrome.
 
-**Why** — Detailed mode sizes the `QuerySet` from `max_substeps × pressure_iters` (capped at 8192 slots) and adds some GPU overhead from the extra timestamp writes. The coarse default gives honest aggregate timings — each substep owns its own query slots so frame totals are correct aggregates — without the query-set bloat or the overhead cost. Detailed mode is a power-user / profiling-session tool, not always-on instrumentation.
+**Why** — Detailed mode sizes the `QuerySet` from `max_substeps × pressure_iters`
+and adds GPU overhead from the extra timestamp writes. The coarse default gives
+honest aggregate timings — each substep owns its own query slots so frame totals are
+correct aggregates — without the query-set bloat or the overhead cost. Detailed mode
+is a power-user / profiling-session tool, not always-on instrumentation.
 
-**Tradeoffs** — Coarse mode gives honest frame-total aggregates but cannot attribute time to individual passes within a substep. Detailed mode can attribute to 27 named sections and the four CG categories (spmv, reductions=both dots, updates=vector update, scalars=alpha/beta/dir), but carries a Reset cost and may truncate timed CG iters if the query budget is exceeded (logged, never silent).
+**Tradeoffs** — Coarse mode gives honest frame-total aggregates but cannot attribute
+time to individual passes within a substep. Detailed mode can attribute to the named
+fine sections and CG categories in `FINE_SECTIONS`, `CG_CATS`, and `CG_BUCKET`, but
+carries a Reset cost and may truncate timed CG iterations if the query budget is
+exceeded (logged, never silent).
 
-**Code anchors** — `app/crates/fluid-lab/src/gpu/timing.rs → GpuTimers`, `FINE_SECTIONS`, `CG_CATS`, `CG_BUCKET`; `app/crates/fluid-lab/src/settings/mod.rs → dev.detailed_gpu_profiling`.
+**Code anchors** — `crates/fluid-lab/src/gpu/timing.rs → GpuTimers`, `FINE_SECTIONS`,
+`CG_CATS`, `CG_BUCKET`; `crates/fluid-lab/src/settings/mod.rs →
+dev.detailed_gpu_profiling`.
 
 **Applies to** — `architecture/profiler.md`, `architecture/gpu-resources.md`.
 
@@ -147,8 +165,8 @@ smuggling in fake precision on adapters that expose only the CPU fallback.
 can be verified without Chrome, but that mode proves only assertion logic. Browser
 capture remains the acceptance path for real GPU state.
 
-**Code anchors** — `app/tools/capture.mjs → collectAssertionFailures`;
-`app/crates/fluid-lab/src/profiler/mod.rs → Profiler::stats_json`.
+**Code anchors** — `tools/capture.mjs → collectAssertionFailures`;
+`crates/fluid-lab/src/profiler/mod.rs → Profiler::stats_json`.
 
 **Applies to** — `architecture/profiler.md`.
 

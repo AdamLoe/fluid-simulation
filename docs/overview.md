@@ -74,8 +74,8 @@ relative to it. (The Rust crate manifest is `app/Cargo.toml`; its source is `app
   high-FLIP (~0.9) for lively splash.
 - **No float atomics in WebGPU** → P2G is fixed-point `i32` atomics at `FIXED_SCALE =
   2^16`; the accumulate→normalize path must stay integer or determinism breaks.
-- **naga drops unused bindings** → every compute shader references `params` (binding 0)
-  or uses an explicit bind-group layout.
+- **naga drops unused bindings** → shaders that declare the shared `Params` binding
+  must reference it, or Rust must provide an explicit bind-group layout.
 - `maxStorageBuffersPerShaderStage` is commonly ~8–10 → the MAC loop is split into many
   small passes.
 

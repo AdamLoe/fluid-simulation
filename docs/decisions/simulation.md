@@ -1,22 +1,25 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-12
+last_updated:  2026-06-15
 ---
 
 # Decisions — Simulation
 
 ## Use a true 3D grid, never a 2D heightmap
 
-**Decision** — The simulation grid is fully 3D (`N³` cells). The project does not
-flatten water to a 2D heightfield and reconstruct fake 3D.
+**Decision** — The simulation grid is fully 3D (`nx × ny × nz` cells). The project
+does not flatten water to a 2D heightfield and reconstruct fake 3D.
 
 **Why** — A heightmap cannot represent overturning waves, falling water, splashes,
 droplets, stacked water, or flow around vertical obstacles. Volumetric credibility
 is the whole point of the project.
 
-**Tradeoffs** — A 3D grid is far more expensive, so simulation volumes stay small
-(32³–64³). The result is much more technically credible than a shader trick.
+**Tradeoffs** — A 3D grid is far more expensive than a heightfield, so practical
+browser volumes remain bounded by the GPU budget.
+
+**Code anchors** — `app/crates/fluid-lab/src/sim/mod.rs → GridDims`;
+`app/crates/fluid-lab/src/gpu/fluid.rs → Params`.
 
 **Applies to** — `architecture/simulation.md`.
 
@@ -48,6 +51,28 @@ exchange for a much better fit to pressure projection.
 
 **Applies to** — `architecture/simulation.md`.
 
+## Rectangular tanks use per-axis counts with one uniform cell size
+
+**Decision** — Tank shape is controlled by independent grid counts
+`grid.res_x/y/z`, while the simulation keeps one scalar cell size `h` and one
+isotropic pressure operator.
+
+**Why** — Per-axis counts let the tank become wider, taller, or deeper without
+introducing anisotropic finite differences into pressure projection. The all-64
+default remains the centered `[-1,1]^3` box.
+
+**Tradeoffs** — Changing an axis changes world extent as well as work size. A future
+non-uniform-cell tank would be a pressure-solver decision, not a settings-only
+change.
+
+**Code anchors** — `app/crates/fluid-lab/src/settings/mod.rs → grid_res_x`;
+`app/crates/fluid-lab/src/settings/mod.rs → grid_res_y`;
+`app/crates/fluid-lab/src/settings/mod.rs → grid_res_z`;
+`app/crates/fluid-lab/src/sim/mod.rs → H`;
+`app/crates/fluid-lab/src/gpu/shaders/cg_spmv.wgsl`.
+
+**Applies to** — `architecture/simulation.md`, `architecture/pressure-solver.md`.
+
 ## GPU P2G is fixed-point integer-atomic accumulation (forced, and deterministic)
 
 **Decision** — Particle-to-grid transfer accumulates weighted velocity and weight
@@ -72,8 +97,8 @@ see `decisions/rendering.md` no-readback rule). Documented fallbacks if the defa
 proves unworkable: per-cell buckets, particle binning/sorting, gather-based transfer.
 
 **Code anchors** — `app/crates/fluid-lab/src/gpu/shaders/scatter.wgsl`, `app/crates/fluid-lab/src/gpu/shaders/normalize.wgsl`,
-`app/crates/fluid-lab/src/gpu/fluid.rs → FIXED_SCALE`. Strategy detail historically lived in the P2G
-strategy note, now migrated here and into `architecture/simulation.md`.
+`app/crates/fluid-lab/src/gpu/shaders/scatter_local.wgsl`,
+`app/crates/fluid-lab/src/gpu/fluid.rs → FIXED_SCALE`.
 
 **Applies to** — `architecture/simulation.md`.
 
@@ -94,22 +119,22 @@ honest.
 
 ## CFL velocity cap is a tunable cells-per-step number, not a hard `h/dt`
 
-**Decision** — The advection velocity clamp is `cfl · h/dt` with `cfl` a Live setting
-(`physics.cfl`, default 2), rather than the bare `h/dt` (one cell per step).
+**Decision** — The advection velocity clamp is `cfl · h/dt` with `cfl` a Live setting,
+rather than the bare `h/dt` ceiling.
 
 **Why** — `h/dt` ties the max speed to grid resolution: refining the grid (smaller
-`h`) silently lowers the speed ceiling, so the same slosh that cleared the tank at 32³
-could only reach ~⅓ of the way up at 64³. Decoupling it with a CFL number restores and
-exposes the splash ceiling. A few cells/step is safe here because the wall-contact
+`h`) silently lowers the speed ceiling. Decoupling it with a CFL number restores and
+exposes the splash ceiling. A few cells per step is safe here because the wall-contact
 clamp in `g2p.wgsl` already prevents particles leaving the tank, and RK1 advection
 tolerates it visually.
 
 **Tradeoffs** — A high `cfl` × fine grid raises peak speeds, eating into the i32 P2G
 headroom (see the fixed-point decision above) and admitting more advection error;
-the default 2 stays well within both.
+the shipped default stays within both.
 
 **Code anchors** — `app/crates/fluid-lab/src/gpu/shaders/g2p.wgsl` (the clamp);
-`app/crates/fluid-lab/src/gpu/fluid.rs → set_cfl` (writes `Params.cls[2]`).
+`app/crates/fluid-lab/src/gpu/fluid.rs → set_cfl`;
+`app/crates/fluid-lab/src/settings/mod.rs → cfl`.
 
 **Applies to** — `architecture/simulation.md`.
 
@@ -121,20 +146,17 @@ samples. Boundary enforcement still zeroes those faces before pressure and after
 gradient, and particle recovery still clamps escaped particles inside and zeroes the
 crossed wall-normal velocity.
 
-**Why** — The old gather interpolated boundary-zeroed MAC faces into near-wall
-particles. With `physics.wall_friction = 0`, that still acted like hidden wall drag:
-wall-adjacent tangential motion retained only about 55% per substep in the host repro,
-and a particle just below the ceiling sampled only about 5% of the downward
-away-from-wall normal velocity. Applying the same wall-aware gather to saved and final
-velocities keeps FLIP deltas consistent while preserving free-slip contact.
+**Why** — Interpolating boundary-zeroed MAC faces into near-wall particles acts like
+hidden wall drag even when `physics.wall_friction = 0`. Applying the same wall-aware
+gather to saved and final velocities keeps FLIP deltas consistent while preserving
+free-slip contact.
 
 **Tradeoffs** — This assumes Solid cells are the static tank boundary, not arbitrary
 moving obstacles. A future obstacle system must either bind cell type into G2P or
 provide an equivalent obstacle-aware sampling mask. It is intentionally not bounce,
 negative-pressure clamping, or a floor/ceiling special case.
 
-**Code anchors** — `app/crates/fluid-lab/src/gpu/shaders/g2p.wgsl`
-(`sample_u/sample_v/sample_w`); host reference tests in
+**Code anchors** — `app/crates/fluid-lab/src/gpu/shaders/g2p.wgsl`;
 `app/crates/fluid-lab/src/sim/mod.rs`.
 
 **Applies to** — `architecture/simulation.md`, `architecture/settings.md`.
@@ -153,8 +175,8 @@ moving-solid boundary semantics.
 motion rather than a scripted "best physics" choreography. More realistic machinery can
 be planned later if it earns the solver risk.
 
-**Code anchors** — `crates/fluid-lab/src/lib.rs → InteractionState`;
-`crates/fluid-lab/src/gpu/fluid.rs → apply_impulse`.
+**Code anchors** — `app/crates/fluid-lab/src/lib.rs → InteractionState`;
+`app/crates/fluid-lab/src/gpu/fluid.rs → apply_impulse`.
 
 **Applies to** — `architecture/app-shell.md`, `architecture/simulation.md`,
 `architecture/settings.md`.
@@ -163,50 +185,48 @@ be planned later if it earns the solver risk.
 
 **Decision** — The anti-clump divergence source's rest target tracks the scene's
 **actual** particle density by default, instead of a frozen constant. `physics.rest_density`
-becomes an optional manual override (`0` = Auto, the new default; nonzero pins a fixed
-target). The effective `rest` fed to `divergence.wgsl`'s `spc[0]` is
+is an optional manual override (`0` = Auto; nonzero pins a fixed target). The effective
+`rest` fed to `divergence.wgsl`'s `spc[0]` is
 `manual > 0 ? manual : effective_particle_density(scene)`.
 
-**Why** — The divergence anti-clump source biases a cell by
-`min(stiff·(occ − rest)/rest, clamp)`, where `occ` is the **raw per-cell particle
-count** and so scales linearly with `particles.density`. With a frozen `rest = 8`,
-density 32 gave `occ ≫ rest` (strong outward push, puffy water) and density 1 gave
-`occ < rest` (no push, flat water) — so changing density made the water look like a
-different *volume in motion*. Coupling `rest` to the density keeps `occ/rest ≈ 1` at
-every density, so the dynamics are density-invariant. The 2026-06-12 verification
-sweep (`tools/density_motion_sweep.mjs`, `particles.density ∈ {1,8,32}`, fixed
-falling-blob scene, no rotation) held `liquid_cells` within ~12% across a 32×
-particle-count range (vs ~38–44% spread before), and the settled screenshots show the
-same pool level at all three densities. The rest coupling alone cleared the ~15% bar,
-so the secondary `flip_blend`-vs-density trim was **not** added (kept minimal).
+**Why** — The divergence anti-clump source compares raw per-cell particle count with
+a rest target, and raw occupancy scales with `particles.density`. With a frozen rest
+target, changing density also changed the pressure bias and made the water look like
+a different *volume in motion*. Coupling `rest` to the density keeps the ratio stable,
+so density changes affect fidelity and cost rather than the motion model. The
+retained GPU sweep is `app/tools/density_motion_sweep.mjs`.
 
-**Tradeoffs** — Power users lose the old fixed `rest = 8` default, but can still pin
-any target via the override. Still a pragmatic liveness/compactness correction, not
-physical mass conservation.
+**Tradeoffs** — Power users can still pin a target via the override. This remains a
+pragmatic liveness/compactness correction, not physical mass conservation.
 
-**Applies to** — `architecture/simulation.md`, `settings/mod.rs (physics.rest_density)`,
-`gpu/fluid.rs`, `scene/mod.rs`.
+**Code anchors** — `app/crates/fluid-lab/src/scene/mod.rs → effective_particle_density`;
+`app/crates/fluid-lab/src/scene/mod.rs → effective_rest_density`;
+`app/crates/fluid-lab/src/gpu/fluid.rs → effective_rest_density`;
+`app/crates/fluid-lab/src/gpu/shaders/divergence.wgsl`;
+`app/crates/fluid-lab/src/settings/mod.rs → rest_density`.
+
+**Applies to** — `architecture/simulation.md`, `architecture/settings.md`.
 
 ## Keep the current occupancy-bias defaults until a stronger volume metric exists
 
-**Decision** — Keep `physics.volume_stiffness = 0.45` and `physics.drift_clamp = 0.5`
-as the default volume-correction surface (the rest target is now auto-coupled to
-particle density — see the decision above; this superseded the prior fixed
-`physics.rest_density = 8` default). Do not add
-PBF, particle spawning/deletion, source/drain behavior, or a new divergence formula
-from the current occupied-cell proxy alone.
+**Decision** — Keep the current `physics.volume_stiffness` and
+`physics.drift_clamp` defaults as the volume-correction surface. Do not add PBF,
+particle spawning/deletion, source/drain behavior, or a new divergence formula from
+the current occupied-cell proxy alone.
 
-**Why** — The 2026-06-12 capture sweeps showed the existing one-sided,
-pressure-coupled occupancy bias is useful, but the proxy is not strong enough to
-justify a new formula. `volume_stiffness=0` lost occupied cells badly, stronger
-rest-density/stiffness candidates reduced drift only by inflating occupied-cell
-counts, and a narrow sweep around the defaults found the current default best:
-`34423 -> 34350` cells (`-0.0021`) versus softer/clamped candidates between
-`-0.0224` and `-0.0849`.
+**Why** — Capture sweeps show the existing one-sided, pressure-coupled occupancy
+bias is useful, but the occupied-cell proxy is not strong enough to justify a new
+formula by itself. Stronger candidates reduced drift mainly by inflating occupied
+cell counts.
 
 **Tradeoffs** — The default is a pragmatic liveness/compactness correction, not
 physical mass conservation. Future volume work needs either a better physical-volume
 metric, a visual pulsing gate, or a separately scoped formula change with captures.
+
+**Code anchors** — `app/crates/fluid-lab/src/settings/mod.rs → volume_stiffness`;
+`app/crates/fluid-lab/src/settings/mod.rs → drift_clamp`;
+`app/crates/fluid-lab/src/gpu/shaders/divergence.wgsl`;
+`app/tools/density_motion_sweep.mjs`.
 
 **Applies to** — `architecture/simulation.md`, `architecture/pressure-solver.md`,
 `decisions/performance.md`.

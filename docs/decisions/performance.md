@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-12
+last_updated:  2026-06-15
 ---
 
 # Decisions — Performance
@@ -77,9 +77,9 @@ capture confirmed the scatter section dropped (~14%) with bit-identical results
 else — do not combine passes that would exceed the probed limit, and do not claim a
 fusion win without a capture.
 
-**Code anchors** — `app/crates/fluid-lab/src/gpu/mod.rs → GpuCaps` (limit probe at boot);
-`app/crates/fluid-lab/src/gpu/fluid.rs` (pass split / fused scatter dispatch);
-`app/crates/fluid-lab/src/gpu/shaders/scatter.wgsl` (the fused `scatter_all` entry).
+**Code anchors** — `crates/fluid-lab/src/gpu/mod.rs → GpuCaps` (limit probe at boot);
+`crates/fluid-lab/src/gpu/fluid.rs → dispatch_scatter`;
+`crates/fluid-lab/src/gpu/shaders/scatter.wgsl → main`.
 
 **Applies to** — `architecture/gpu-resources.md`, `architecture/simulation.md`.
 
@@ -122,9 +122,14 @@ pipelines share ONE explicit bind-group layout so a single `scatter_bg` drives e
 from a single sequential sweep are unreliable; the verdict rests on interleaved paired
 A/B medians (`app/tools/perf_determinism.mjs duel`), which cancel slow thermal drift.
 
-**Code anchors** — `gpu/fluid.rs → record_sort`, `dispatch_scatter`, `scatter_local_pl`,
-the explicit `scatter_bgl`/`scatter_pll`; `gpu/shaders/scatter_local.wgsl`; the four
-`gpu/shaders/sort_*.wgsl`; `settings/mod.rs` (`dev.particle_sort` default 1,
+**Code anchors** — `crates/fluid-lab/src/gpu/fluid.rs → record_sort`,
+`dispatch_scatter`, `scatter_local_pl`, `scatter_bgl`, `scatter_pll`;
+`crates/fluid-lab/src/gpu/shaders/scatter_local.wgsl → CAP`, `local_add`, `main`;
+`crates/fluid-lab/src/gpu/shaders/sort_scan_block.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/sort_scan_spine.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/sort_scan_add.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/sort_scatter.wgsl → main`;
+`crates/fluid-lab/src/settings/mod.rs → Registry` (`dev.particle_sort` default 1,
 `dev.particle_sort_period` default 4).
 
 **Applies to** — `architecture/simulation.md`, `architecture/gpu-resources.md`.
@@ -153,8 +158,9 @@ are a follow-up perf/quality concern: CFL and `FIXED_SCALE` were not re-tuned fo
 only the dimensions differ, so the existing fixed-buffer / ping-pong rationale carries
 over directly. Per-axis tuning of the timestep is deferred until extreme ratios matter.
 
-**Code anchors** — `app/crates/fluid-lab/src/settings/mod.rs → grid.res_x/y/z`;
-`app/crates/fluid-lab/src/sim/mod.rs → H`; `app/crates/fluid-lab/src/gpu/fluid.rs → FIXED_SCALE`.
+**Code anchors** — `crates/fluid-lab/src/settings/mod.rs → Registry`
+(`grid.res_x/y/z`); `crates/fluid-lab/src/sim/mod.rs → H`;
+`crates/fluid-lab/src/gpu/fluid.rs → FIXED_SCALE`.
 
 **Revisit when** — extreme tank aspect ratios produce instability or visible quality loss.
 
@@ -170,7 +176,8 @@ over directly. Per-axis tuning of the timestep is deferred until extreme ratios 
 
 **Current policy note** — The measured policy change is only the default cap. `fixed_dt` remains 1/120 s, and `TimestepController` still zeroes the remaining accumulator when capped.
 
-**Code anchors** — `app/crates/fluid-lab/src/timestep.rs → TimestepController::steps_for_frame`; `app/crates/fluid-lab/src/settings/mod.rs → physics.max_substeps`.
+**Code anchors** — `crates/fluid-lab/src/timestep.rs → TimestepController::steps_for_frame`;
+`crates/fluid-lab/src/settings/mod.rs → Registry` (`physics.max_substeps`).
 
 **Applies to** — `architecture/app-shell.md`, `architecture/settings.md`.
 
@@ -197,9 +204,17 @@ profiler/capture evidence.
 after convergence. Warm-start preserves `pressure_a` and computes the initial
 residual on GPU, but it also keeps the same fixed CG dispatch count.
 
-**Code anchors** — `app/crates/fluid-lab/src/sim/pressure.rs → cg_solve_with_options`;
-`app/crates/fluid-lab/src/gpu/fluid.rs → record_pressure`;
-`app/crates/fluid-lab/src/gpu/shaders/cg_*.wgsl`.
+**Code anchors** — `crates/fluid-lab/src/sim/pressure.rs → cg_solve_with_options`;
+`crates/fluid-lab/src/gpu/fluid.rs → record_pressure`;
+`crates/fluid-lab/src/gpu/shaders/cg_init.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/cg_spmv.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/cg_reduce.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/cg_reduce_final.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/cg_alpha.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/cg_update.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/cg_beta.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/cg_dir.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/cg_set_rsold.wgsl → main`.
 
 **Revisit when** — Indirect dispatch lands behind conservative settings, or captures
 name pressure iteration costs before/after the default-off pressure controls.
@@ -257,9 +272,9 @@ shape, fixed-point scatter semantics, wall-aware G2P invariants, or advection lo
 remaining high-scale render cost. Render remains a separate decision surface rather
 than something to bundle into a transfer-kernel patch.
 
-**Code anchors** — `app/crates/fluid-lab/src/gpu/shaders/scatter.wgsl`;
-`app/crates/fluid-lab/src/gpu/shaders/g2p.wgsl`;
-`app/crates/fluid-lab/src/gpu/fluid.rs -> Params`.
+**Code anchors** — `crates/fluid-lab/src/gpu/shaders/scatter.wgsl → main`;
+`crates/fluid-lab/src/gpu/shaders/g2p.wgsl → main`;
+`crates/fluid-lab/src/gpu/fluid.rs → Params`.
 
 **Applies to** — `architecture/simulation.md`, `architecture/profiler.md`.
 

@@ -18,10 +18,10 @@ You're editing Rust, WGSL, or TypeScript under `app/`.
   trusting a mirrored struct. Hot data is structure-of-arrays.
 
 **WGSL**
-- **naga drops unused bindings.** A compute shader that never references `params`
-  (binding 0) gets a different auto-generated bind-group layout than the Rust side
-  expects, and pipeline creation desyncs/fails. Reference `params` in every compute
-  shader, or use an explicit bind-group layout (the renderers do).
+- **naga drops unused bindings.** A compute shader that declares the shared `Params`
+  binding but never references it gets a different auto-generated bind-group layout
+  than the Rust side expects. Reference `params` in those shaders, or use an explicit
+  bind-group layout for shared-layout cases.
 - **No float atomics exist in WebGPU.** The P2G accumulate→normalize path must stay
   integer/fixed-point — a float reduction silently breaks determinism and is a
   contract change. See [`../decisions/simulation.md`](../decisions/simulation.md).

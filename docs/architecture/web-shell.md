@@ -28,11 +28,11 @@ index.html -> main.js -> panels.js
   segmented controls, keyboard shortcuts, pointer dispatch, and wheel zoom.
 - URL params `?set=id:value` (repeatable, registry-backed), plus legacy shell params
   `?pressure=off`, `?paused=1`, `?flip=N`, `?slice=1`, and `?slicemode=N`.
-- Exposing `window.__fluidShell` helpers for captures:
+- Exposing `window.__fluidShell` helpers for captures, including
   `openSettings`, `selectSettingsTab`, `selectProductMode`, `selectControlTarget`,
   `reset`, `applySettings`, `importConfigPayload`, `exportConfig`, `shareUrl`,
-  `setting`, and `state`, plus backward-compatible workspace aliases. `reset` returns
-  the underlying `FluidApp::reset` boolean.
+  `setting`, and `state`; close/workspace/manual-pointer aliases remain available for
+  compatibility. `reset` returns the underlying `FluidApp::reset` boolean.
 
 ## Canonical shell
 
@@ -165,6 +165,8 @@ provided stats and exits before launching Chrome.
 
 ## See also
 
-- `settings.md`
-- `profiler.md`
-- `../agent-context/build-run.md`
+- [`settings.md`](settings.md)
+- [`profiler.md`](profiler.md)
+- [`../decisions/platform.md`](../decisions/platform.md)
+- [`../agent-context/build-run.md`](../agent-context/build-run.md)
+- [`~/agent-docs/v1/rules/authoring-rules.md`](~/agent-docs/v1/rules/authoring-rules.md)

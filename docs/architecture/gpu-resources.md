@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-12
+last_updated:  2026-06-15
 okay_to_delete: false
 long_lived:    true
 ---
@@ -35,24 +35,19 @@ targets and passes for the current renderer set.
 
 ## Render targets
 
-Water mode owns these swapchain-sized targets:
-
-- depth: `Depth32Float`
-- `thickness`: `R16Float`
-- `whitewater`: `R16Float`
-- `nearest_z`: `R16Float`
-- `smooth_z_ping`: `R16Float` smoothing scratch
-- `smooth_z`: `R16Float`
-- `scene_color`: `Rgba16Float`
-- `scene_depth`: `R16Float`
+Water mode owns swapchain-sized depth, thickness/whitewater, nearest/smoothed depth,
+and hero-water scene prepass targets. The authoritative target set and formats live
+in `app/crates/fluid-lab/src/gpu/mod.rs → GpuContext::new`, `GpuContext::resize`,
+`create_r16_target`, `create_scene_color_target`, and `render_target_memory_bytes`.
 
 Removed render-feature targets are intentionally absent; see `rendering.md` for the
 canonical removed-feature list and legacy setting ids.
 
 `DiffuseSystem` owns a fixed-capacity particle storage buffer
-(`DIFFUSE_CAPACITY`, 48 bytes/particle, about 12.6 MB), a small counter buffer, and
-uniform buffers. `render.diffuse.max_particles` is an active cap inside that fixed
-capacity and is Live.
+(`app/crates/fluid-lab/src/gpu/diffuse.rs → DIFFUSE_CAPACITY`), a counter buffer, and
+uniform buffers. `DiffuseSystem::memory_bytes` owns the byte accounting.
+`render.diffuse.max_particles` is an active cap inside that fixed capacity and is
+Live.
 
 ## Buffer layout and storage-buffer budget
 
@@ -60,42 +55,29 @@ capacity and is Live.
 buffer. The per-stage storage-buffer limit is still a hard WebGPU constraint, so the
 MAC loop remains split into small passes rather than a mega-pass.
 
-```
-Particles      particles + particles_b (pos+vel, 32 B/particle; B = spatial-sort
-               ping-pong second side, a 32 B placeholder when the sort is off or
-               its buffer can't allocate)
-MAC vels       u_vel / v_vel / w_vel
-P2G accum      u_num / u_den / v_num / v_den / w_num / w_den
-FLIP snapshot  u_saved / v_saved / w_saved
-Pressure       pressure_a / pressure_b
-CG workspace   cg_d / cg_q / cg_partials / cg_scalars
-Grid scalar    divergence / occupancy / cell_type / stats
-Sort scan      cell_offset (per-cell bucket starts / cursor) / scan_spine (per-block)
-```
+The authoritative buffer inventory and byte accounting live in
+`app/crates/fluid-lab/src/gpu/fluid.rs → GpuFluid`, `GpuFluid::new`, and
+`GpuFluid::buffer_memory_bytes`. The layout groups hot MAC velocities, fixed-point
+P2G accumulators, FLIP snapshots, pressure/CG workspace, grid scalars, and optional
+sort scratch into separate storage buffers so each pass binds only the buffers it
+needs.
 
 ### Workgroup shared memory (scatter_local.wgsl)
 
 The sorted-path P2G scatter (`scatter_local.wgsl`, used when `dev.particle_sort` is
-on — the default) is the only kernel using `var<workgroup>` shared memory. Each
-workgroup holds an open-addressed hash table that pre-accumulates its 64 sorted
-particles' P2G taps before flushing one global atomic per touched face slot:
+on by default) is the only P2G kernel using `var<workgroup>` shared memory. Each
+workgroup pre-accumulates sorted particles' P2G taps in an open-addressed integer
+hash table before flushing global atomics. The table constants and fit proof live in
+`app/crates/fluid-lab/src/gpu/shaders/scatter_local.wgsl → CAP`, `SLOT_STRIDE`, and
+`local_add`; the shared explicit layout lives in
+`app/crates/fluid-lab/src/gpu/fluid.rs → scatter_bgl` / `scatter_pll`.
+Determinism is preserved because the accumulate and flush stay pure integer atomics.
+See `decisions/performance.md` and `architecture/simulation.md`.
 
-- `sh_key: array<atomic<i32>, 1024>` — packed global face slot (`buffer_id·2^22 +
-  face_idx`, stored +1 so 0 = empty). 4 KB.
-- `sh_val: array<atomic<i32>, 1024>` — accumulated i32 fixed-point value. 4 KB.
-
-Total **8 KB** of workgroup storage, well under the WebGPU floor
-(`maxComputeWorkgroupStorageSize` ≥ 16 KB). The 2^22 (4,194,304) slot stride covers
-the largest face buffer at the 128-capped grid (`(nx+1)·ny·nz = 129·128·128 ≈
-2.11M`); 6 buffers · 2^22 ≈ 25.2M < 2^31 so `key+1` fits i32. Determinism is
-preserved because the accumulate AND the flush stay pure integer atomics (add is
-associative/commutative). See `decisions/performance.md` and
-`architecture/simulation.md`.
-
-`cg_scalars` is a tiny seven-`f32` storage buffer shared by the CG scalar kernels:
-`rs_old`, dot scratch, alpha, beta, initial residual, active flag, and tolerance
-squared. The tolerance slot is updated through a Live queue write; the active flag is
-GPU-owned during each pressure solve.
+`cg_scalars` is the small scalar workspace shared by the CG scalar kernels; its size
+and tolerance slot live in `app/crates/fluid-lab/src/gpu/fluid.rs → CG_SCALAR_COUNT`
+and `CG_TOL_SQ_SLOT`. The tolerance slot is updated through a Live queue write; the
+active flag is GPU-owned during each pressure solve.
 
 `pressure_a` is the pressure field read by gradient. With the default
 `solver.pressure_warm_start = 0`, prep clears it before each solve. With warm-start
@@ -167,4 +149,6 @@ slots for spray/bubble. The profiler reports foam only while preserving the JSON
 
 - `rendering.md`
 - `profiler.md`
+- `simulation.md`
 - `../decisions/performance.md`
+- `../agent-context/maintaining-docs.md`

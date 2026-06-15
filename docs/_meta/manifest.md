@@ -71,8 +71,9 @@ high-risk invariants against code:
   `normalize.wgsl`, `FIXED_SCALE`) — a float reduction is a determinism-breaking
   contract change.
 - No CPU/GPU readback on the normal render frame (only throttled diagnostics/captures).
-- Every compute shader references `params` (binding 0) or uses an explicit BGL (naga
-  unused-binding gotcha).
+- Any compute shader that declares the shared `Params` binding either references it or
+  uses an explicit BGL; shaders with a different binding-0 buffer may use auto-layout
+  safely (naga unused-binding gotcha).
 - The `ApplyClass` set (Live/Reset/Reload) in `crates/fluid-lab/src/settings/mod.rs`.
 - The default pressure solver is CG (`crates/fluid-lab/src/gpu/fluid.rs → record_pressure`,
   `crates/fluid-lab/src/sim/pressure.rs → cg_solve`).

@@ -1,223 +1,176 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-12
+last_updated:  2026-06-15
 okay_to_delete: false
 long_lived:    true
 ---
 
 # Simulation — Hybrid FLIP/PIC MAC-Grid Fluid
 
-The fluid sim is a hybrid particle-grid (FLIP/PIC) solver on a staggered MAC grid enclosed in a rectangular world box. Particles carry velocity; the grid enforces incompressibility each substep via pressure projection. Everything below (except the pressure solve itself) runs as a sequence of GPU compute passes recorded in `app/crates/fluid-lab/src/gpu/fluid.rs → GpuFluid`.
+The fluid sim is a hybrid particle-grid solver inside a rectangular closed tank.
+Particles carry moving liquid mass and velocity detail; a staggered MAC grid owns
+cell typing, face velocities, divergence, and pressure projection. The frame loop
+and tank pose are owned by `app-shell.md`; the pressure solve is owned by
+`pressure-solver.md`; renderer choices are owned by `rendering.md`.
 
-The tank is rectangular: a single **uniform** scalar cell size `h = sim::H = 2.0/64.0` with independent per-axis cell counts `nx/ny/nz` (the `grid.res_x/y/z` Reset-class settings). The domain is centered (`origin = -n_axis*h/2`, `extent = n_axis*h` per axis); an all-64 grid reproduces the historical `[-1,1]³` cube. Because `h` stays uniform, the pressure operator is isotropic — there is no per-axis `hx/hy/hz` (see "invariants" below). World placement is owned by `app-shell.md`.
+The normal simulation path is GPU-native. `app/crates/fluid-lab/src/gpu/mod.rs →
+GpuContext::step` records each substep around `app/crates/fluid-lab/src/gpu/fluid.rs →
+GpuFluid`: clear/mark, optional spatial sort, classify, particle-to-grid transfer,
+body forces, boundary enforcement, pressure projection, gradient subtraction, a
+second boundary enforce, then grid-to-particle transfer and advection.
 
-The host reference for grid math and indexing lives in `app/crates/fluid-lab/src/sim/mod.rs`; the WGSL port mirrors it. The pressure solve is owned by `pressure-solver.md`.
-
----
-
-## What it owns
-
-- **Grid/indexing contract** — `app/crates/fluid-lab/src/sim/mod.rs → GridDims`, `cell_idx`, `u_idx`, `v_idx`, `w_idx`, `world_to_cell`, `classify_cells`, `mark_occupancy_from_particles`
-- **GPU state (buffers + pipelines + bind groups)** — `app/crates/fluid-lab/src/gpu/fluid.rs → GpuFluid`; particle buffer (`{pos:vec4, vel:vec4}`, 32 B/particle), per-face integer P2G buffers (`u/v/w_num`, `u/v/w_den`), float velocity buffers (`u/v/w_vel`), pre-force snapshot (`u/v/w_saved`), occupancy, cell-type, divergence, pressure double-buffer — all in `app/crates/fluid-lab/src/gpu/fluid.rs → GpuFluid`
-- **Uniform params** — `app/crates/fluid-lab/src/gpu/fluid.rs → Params` (dims, geom, phys, origin, grav, spc, cls, gdim — 8 `vec4` = 128 B); written to `params_buf`; updated live via `set_flip_blend`, `set_gravity_vec`, `set_wall_friction`, etc. The per-axis cell counts `[nx,ny,nz,0]` live in the **appended** `gdim` field (see "per-axis indexing" below).
-- **Per-substep GPU passes** — `record_prep`, `record_pressure`, `record_finish`
-- **WGSL shaders** (in `app/crates/fluid-lab/src/gpu/shaders/`): `clear.wgsl`, `mark.wgsl`, `classify.wgsl`, `scatter.wgsl`, `normalize.wgsl`, `save_vel.wgsl`, `forces.wgsl`, `boundaries.wgsl`, `divergence.wgsl`, `gradient.wgsl`, `g2p.wgsl`, `impulse.wgsl`; pressure and CG kernels owned by `pressure-solver.md`
-- **Deterministic particle init** — `app/crates/fluid-lab/src/gpu/fluid.rs → generate_particles` (lattice + seeded LCG jitter; volume-proportional split across scene blocks)
-- **Escaped-particle recovery and wall contact** — wall-aware MAC sampling, clamp + zero-normal recovery, and optional tangential damping in `app/crates/fluid-lab/src/gpu/shaders/g2p.wgsl`
-- **Volume / compactness knobs** — `scene.fill_level` (the **tank-fill percentage**, stored 0–100, default 20) sets *how much* water there is — literally how full the tank is (0 = empty, 100 = full); `particles.density` (per-seeded-cell, default 8) is now a pure fidelity/cost knob (*how finely* it is resolved). The spawn count is derived from `density × seeded_volume_fraction × total_cells`, and `seeded_volume_fraction` follows `fill_level` — so raising the level deepens the body and the particle count tracks it automatically, while lowering density keeps the same body (just coarser). `particles.count` is an advanced absolute override (`0` = Auto). `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp` add occupancy-driven divergence bias for anti-clump volume correction (the rest target now tracks particle density by default so density is motion-neutral — `physics.rest_density` is an optional manual override, `0` = Auto — see below); `classify.liquid_threshold` and `classify.surface_dilation` choose the liquid-cell active set (the one-ring dilation now auto-enables below the reference density — see below); `render.particle_size` is visual only
-- **Interaction impulses** — manual slosh and scheduled wave-maker impulses (`app/crates/fluid-lab/src/gpu/shaders/impulse.wgsl`, triggered by `app/crates/fluid-lab/src/gpu/fluid.rs → apply_impulse`)
-
----
-
-## The physics step
-
-One substep = `record_prep` → `record_pressure` → `record_finish`, in that order, all on a single `wgpu::ComputePass`:
-
-```
-CLEAR (u/v/w_num, u/v/w_den, occupancy, pressure, stats)
-  └─ clear.wgsl
-
-MARK / CLASSIFY
-  ├─ mark.wgsl          → atomicAdd occupancy counts for classification and volume correction
-  └─ classify.wgsl      → boundary→Solid, occupied-interior→Liquid, else→Air
-
-P2G SCATTER  [fused: 1 pass, all 3 components]
-  └─ scatter.wgsl       → reads each particle once, computes the cell-space position
-                          and trilinear weights once, then i32 atomicAdds all three
-                          velocity components into u/v/w_num + u/v/w_den
-                          (FIXED_SCALE 2^16). Each component keeps its own MAC
-                          half-cell offset and +1 face dim. (Was 3 per-axis passes;
-                          fused into one — 7 storage buffers + 1 uniform.)
-  └─ scatter_local.wgsl → SORTED-PATH variant (used when dev.particle_sort is on,
-                          which is the default). Same math/result, but each
-                          workgroup first pre-accumulates its 64 sorted particles'
-                          taps into a SHARED-MEMORY open-addressed hash table
-                          (CAP=1024 i32 keys + 1024 i32 vals = 8 KB), keyed by the
-                          packed global face slot, then flushes ONE global atomic per
-                          touched slot (table-full → direct global atomic). This cuts
-                          the same-address global-atomic contention that cell-sorted
-                          particles otherwise create on the plain scatter. Still pure
-                          i32 fixed-point through accumulate AND flush, so it is
-                          bit-identical to scatter.wgsl. Shares scatter.wgsl's
-                          explicit bind-group layout so one scatter_bg drives either.
-
-P2G NORMALIZE  [×3 axes]
-  └─ normalize.wgsl     → float u/v/w_vel = num/den (den==0 → vel=0, face invalid)
-
-SAVE PRE-FORCE VELOCITY  [×3 axes]
-  └─ save_vel.wgsl      → snapshot u/v/w_vel → u/v/w_saved  (FLIP delta baseline)
-
-BODY FORCES  [×3 axes]
-  └─ forces.wgsl        → u/v/w_vel += gravity_component·dt on liquid-adjacent faces
-
-ENFORCE BOUNDARIES  [×3 axes]  ← first enforce
-  └─ boundaries.wgsl   → zero solid-adjacent / domain-edge faces
-
-─────── record_pressure (see pressure-solver.md) ────────────────────────────
-  divergence.wgsl  →  [fixed-count CG solve]  →  final pressure in pressure_a
-──────────────────────────────────────────────────────────────────────────────
-
-SUBTRACT GRADIENT  [×3 axes]
-  └─ gradient.wgsl      → u/v/w_vel -= (dt/rho)·(p_hi - p_lo)/h  (non-solid faces)
-
-ENFORCE BOUNDARIES  [×3 axes]  ← second enforce (post-projection)
-  └─ boundaries.wgsl
-
-G2P + ADVECT + RECOVER
-  └─ g2p.wgsl           → wall-aware trilinear interpolation, PIC/FLIP blend, RK1 advect,
-                           escaped-particle clamp + zero-normal-velocity recovery,
-                           wall-friction tangential damping
-```
+The tank is rectangular, not a fixed cube. `app/crates/fluid-lab/src/sim/mod.rs →
+GridDims` carries independent `nx/ny/nz` cell counts from the Reset-class
+`grid.res_x/y/z` settings, while `sim::H` remains the single uniform cell size
+(`2.0/64.0`). The all-64 default reproduces the original centered `[-1,1]^3` box.
+`app/crates/fluid-lab/src/gpu/fluid.rs → Params` appends `gdim = [nx, ny, nz, 0]`
+so shaders that decompose indices can use per-axis dimensions without changing the
+shorter prefix mirrors used by scalar kernels. Because `h` is scalar, the pressure
+operator remains isotropic; any per-axis `hx/hy/hz` change belongs in
+`pressure-solver.md` and `../decisions/pressure.md` too.
 
 ---
 
-## Non-obvious invariants and gotchas
+## What It Owns
 
-**Per-axis indexing drives every kernel.** The host contract (`app/crates/fluid-lab/src/sim/mod.rs → GridDims`, `cell_idx`/`u_idx`/`v_idx`/`w_idx`, `world_to_cell`, `cell_center_world`) is fully per-axis: cell index `i + nx*(j + ny*k)`, staggered face counts `(nx+1)·ny·nz` / `nx·(ny+1)·nz` / `nx·ny·(nz+1)`, scalar `h`. The WGSL port mirrors it: any shader that decomposes a linear cell index uses `i = c%nx; j = (c/nx)%ny; k = c/(nx*ny)` and the per-axis staggered face dims, reading `nx/ny/nz` from `params.gdim` (total cells `nx*ny*nz`). The sim/CG kernels that decompose indices all carry the `gdim` mirror; the scalar kernels (e.g. `clear`, `normalize`, `save_vel`) keep a shorter prefix `Params`. To find the set, `grep params.gdim` over `app/crates/fluid-lab/src/gpu/shaders/`.
-
-**Particle spatial sort + workgroup-local scatter (on by default).** Before P2G the
-particles are reordered into linear-cell-index order by a GPU counting sort
-(`mark` histogram → two-level exclusive prefix sum → cursor scatter into the other
-ping-pong side), gated by `dev.particle_sort` (default ON) and cadenced by
-`dev.particle_sort_period` (default 4, the CFL clamp keeps motion ≲1 cell/step so
-periodic re-sorting stays coherent). The sort is a deterministic permutation, and
-because P2G is order-independent integer atomics and G2P is per-particle, the sorted
-run is **bit-identical** to the unsorted one (verified 0-pixel-diff on the
-order-independent `render.hero.debug_view=10` depth stage). The sort makes the G2P
-gather ~4× faster (coherent memory) but would make the plain scatter SLOWER (sorted
-particles hammer the same grid-face atomics); the sorted path therefore runs
-`scatter_local.wgsl` (shared-memory pre-accumulation, above) instead, which turns
-the scatter into a net win too. Drift-robust interleaved A/B captures: ~17% faster
-sim at 13.4M and 21.6M. The unsorted path keeps the plain `scatter.wgsl`. Anchors:
-`gpu/fluid.rs → record_sort`, `dispatch_scatter`, `scatter_local_pl`; the four
-`sort_*.wgsl` shaders; `scatter_local.wgsl`. See `../decisions/performance.md`.
-
-**Particle-linear passes use one tiled particle index contract.** Mark, the fused
-scatter, G2P, and the standalone impulse pass all compute particle index from 2D workgroup
-coordinates plus `local_invocation_index`, not from `global_invocation_id.x` alone.
-The contract is shared with `gpu/fluid.rs → particle_dispatch_shape`: same
-`@workgroup_size(64, 1, 1)`, same row-major workgroup flattening, same
-`if (p >= params.dims.y) { return; }` guard before touching the particle buffer. This
-raises the legal particle ceiling without changing P2G/G2P physics.
-
-The transfer kernels also use the precomputed inverse cell size already stored in
-`params.geom.y`. `scatter.wgsl` converts particle world coordinates to grid space with
-`* inv_h`, and `g2p.wgsl` uses the same `inv_h` term in all three MAC-face samplers,
-rather than dividing by `h` per particle. This is an arithmetic shortcut only; it does
-not change fixed-point scatter atomics, wall-aware G2P sampling, CFL clamp, RK1
-advection, or dispatch shape.
-
-**`gdim` is appended last in `Params`.** It sits at the END of the struct so shaders that don't decompose cell indices can keep their existing (shorter prefix) `Params` mirror without re-layout. `Params` is now 8 `vec4` = 128 B. A shader that needs per-axis dims must include all eight `vec4` fields up to and including `gdim`.
-
-**The pressure operator stays ISOTROPIC.** Because `h` is a single uniform scalar, there is NO per-axis `hx/hy/hz`. The CG SpMV (`app/crates/fluid-lab/src/gpu/shaders/cg_spmv.wgsl`) is the symmetric graph-Laplacian `(A d)_c = n_c·d_c − Σ_{liquid nb} d_nb` (the `1/h²` factor folds out uniformly); divergence/gradient use the single `params.geom` `inv_h`. Introducing a non-uniform cell size would make the operator anisotropic and is a contract change.
-
-**P2G determinism is the load-bearing invariant.** The entire accumulate→normalize path (`scatter.wgsl` → `normalize.wgsl`) must stay in integer/fixed-point. WebGPU has no float atomics; `atomicAdd` on `i32`/`u32` is forced. Integer addition is associative and commutative: P2G results are bit-identical regardless of GPU thread scheduling, making reset and recovery deterministic. Any switch to float accumulation (e.g. "for convenience") breaks run-to-run determinism and invalidates every determinism claim. This is a contract change — record it in `../decisions/simulation.md`.
-
-**CFL clamp is `cfl·h/dt`, not `h/dt`.** `g2p.wgsl` caps particle speed at `params.cls.z · h / dt`, where `cls.z` is the `physics.cfl` setting (the max grid cells a particle may cross per substep, default 2). The `h/dt` ceiling alone scales **down** as the grid is refined (finer `h` → lower max speed → shallower splash), so a fixed CFL > 1 decouples the achievable splash height from grid resolution; `cfl=2` at the 64³ default reproduces the old 32³ `h/dt` ceiling (~7.5 u/s). The wall-contact clamp in `g2p.wgsl` still prevents particles escaping the tank, so a few cells/step is safe. Live via `app/crates/fluid-lab/src/gpu/fluid.rs → set_cfl` (writes `params.cls[2]`). Rationale in `../decisions/simulation.md`.
-
-**FIXED_SCALE = 2^16.** Declared as `app/crates/fluid-lab/src/gpu/fluid.rs → FIXED_SCALE` (`65536.0`), passed into shaders via `params.geom.w`. At the default CFL the velocity cap gives comfortable i32 headroom (~3× safety on `num` sums at 8 particles/cell). If a future preset saturates i32 (e.g. a high CFL × fine grid), lower FIXED_SCALE to 2^12 (the overflow headroom rationale lives in `../decisions/simulation.md`).
-
-**One-cell solid walls → no bounds checks in divergence/pressure.** Every boundary cell is unconditionally Solid — boundary means any axis index at `0` or `n_axis-1` (`app/crates/fluid-lab/src/sim/mod.rs → is_boundary_cell`, `classify_cells`). This holds unchanged on the rectangular grid. Every Liquid cell is therefore interior, so its 6 stencil neighbors are always in-range. `divergence.wgsl` and the CG SpMV (`app/crates/fluid-lab/src/gpu/shaders/cg_spmv.wgsl`) exploit this: they iterate over all 6 neighbors without range guards.
-
-**Cell typing is reset every substep.** Solid walls are re-stamped, interior cells are re-classified from the fresh occupancy bitmap. There is no persistent cell-type state between substeps — stale type from the previous frame must never be assumed.
-
-**FLIP blend default is high-FLIP (~0.9) for lively motion.** The `physics.flip_blend` registry value drives `params.phys[2]`. Pure PIC (blend=0) is maximally dissipative; high FLIP (≈0.9) preserves velocity variance and produces visible splash/wave. Updated live via `app/crates/fluid-lab/src/gpu/fluid.rs → set_flip_blend`.
-
-**FLIP delta is taken from post-P2G / pre-force velocity.** `save_vel.wgsl` snapshots `u/v/w_vel` immediately after normalize, before `forces.wgsl` applies gravity. The FLIP delta in `g2p.wgsl` is `v_grid_now − v_saved`, so it includes the effect of pressure projection and boundary enforcement but not the gravity step directly (gravity was applied to the grid, projected out, and shows up implicitly in the post-projection velocity).
-
-**G2P samples skip static wall-zeroed face stencils.** Boundary enforcement zeros every domain-edge face and every face touching a Solid boundary cell, preserving the closed-tank no-normal-flow model. A naive G2P gather would interpolate those zeros into near-wall particles, creating implicit wall drag even when `physics.wall_friction = 0` (about 55% retained tangential velocity one epsilon from a wall, and about 5% retained away-from-ceiling normal velocity in the dam-break repro). `g2p.wgsl` therefore excludes static boundary/domain-edge face stencils from both final and saved MAC gathers and renormalizes the remaining weights. This is free-slip sampling, not open-boundary behavior: inward wall-normal motion is still clamped and zeroed by recovery, and boundary faces are still zeroed before divergence/projection and after gradient subtraction.
-
-**Gravity is a 3-axis vector, not a scalar.** `params.grav = [gx, gy, gz, _]`.
-Gravity updates via `app/crates/fluid-lab/src/gpu/fluid.rs → set_gravity_vec` preserve
-the unused `.w` slot. Rotating the tank changes the gravity direction in the sim's
-local frame.
-
-**naga auto-layout drops unused bindings.** Each WGSL compute shader must either reference `params` (binding 0) in executed code, or the pipeline must be compiled with an explicit `BindGroupLayout`. The RBGS red/black pair (`app/crates/fluid-lab/src/gpu/shaders/pressure.wgsl`, compiled with `app/crates/fluid-lab/src/gpu/fluid.rs → compute_with_layout`) shares an explicit BGL so a single `rbgs_bg` bind group is accepted by both pipelines — using auto-layout produces distinct layout objects and the bind group is rejected at dispatch.
-
-**Escaped-particle recovery is deterministic and non-bouncing.** `g2p.wgsl` clamps position to one epsilon inside the walls and zeroes the velocity component normal to the crossed wall. No random perturbation, no restitution.
-
-**Volume and density are orthogonal knobs.** `scene.fill_level` (the tank-fill percentage) controls *how much* water there is — literally how full the tank is; `particles.density` controls *how finely* it is resolved (fidelity/cost), and is now **volume-neutral** — lowering it keeps the same visible body, just blobbier. Both are Reset-class. The spawn count is derived as `round(density * seeded_volume_fraction * total_cells)`, with `particles.count` as an advanced absolute override (`0` = Auto). `render.particle_size` only changes how large particles look (a Live multiplier on top of the density-derived splat radius — see `rendering.md`).
-
-**Tank fill (`scene.fill_level`) per preset.** Stored as a 0–100 percentage (`Registry::fill_level()` maps it to a `[0,1]` fraction); default **20**. It is a literal waterline — `fill = 1.0` fills the whole tank, `0.5` fills it halfway up by height, `0.0` is empty. Geometry is defined in `app/crates/fluid-lab/src/scene/mod.rs → preset_blocks`:
-- **Falling blob** (the default / resting scene): a single full-footprint floor slab `(0,0,0)`–`(1, fill, 1)`, so its `seeded_volume_fraction` equals `fill` and the tank-fill readout tracks the slider linearly. It is a resting body of water, so `drop_height` does not apply.
-- **Dam break** (floor-resting wall slab pinned to -X over its historical x/z footprint): the slab top is `max.y = fill * 0.98`, so a higher level builds a taller, heavier wall. `drop_height` is ignored (floor-anchored).
-- **Double splash** (two suspended drops near opposite walls): `fill` scales each drop's vertical extent about its (drop-height-shifted) center by `fill / 0.2`, so a higher level drops bigger bodies. `drop_height` positions them. Because the blocks shrink/grow in normalized space, `seeded_volume_fraction → resolved_particle_count` track `fill` with no extra wiring.
-
-**Auto surface dilation at low density.** The render splat-radius scaling keeps the *picture* full at low density, but the *physics* liquid region (`classify.wgsl`) still pinholes when sparse cells fall below the occupancy threshold. The effective dilation is `max(user_surface_dilation, auto)` where `auto = 1` when the scene's effective particle density is **below** the reference (8/cell) and `0` at/above it — see `app/crates/fluid-lab/src/scene/mod.rs → effective_surface_dilation` (host-testable) and `gpu/fluid.rs → effective_surface_dilation` (wires it into the `cls` uniform). This reuses the already-implemented one-ring dilation in `classify.wgsl` (no shader change). At the reference density the auto ring is off to preserve the historical tight surface; the user setting still forces it on at any density.
-
-**Volume-correction trio.** `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp`: sufficiently occupied liquid cells above the rest particles/cell target receive a clamped negative divergence bias so projection pushes crowded regions outward. `classify.liquid_threshold` decides the minimum occupancy to participate as liquid. `solver.pressure_iterations` controls incompressibility quality/perf, not visual particle overlap.
-
-**Anti-clump rest target tracks particle density (density is motion-neutral).** The divergence anti-clump source in `divergence.wgsl` biases a cell by `min(stiff·(occ − rest)/rest, clamp)`, where `occ` is the **raw per-cell particle count** (`mark.wgsl` atomicAdd) — which scales linearly with `particles.density`. If `rest` were a frozen constant, raising density made `occ ≫ rest` (strong outward push, puffy water) and lowering it made `occ < rest` (no push, flat water), so density looked like a different *volume in motion*. The effective `rest` (the divergence `spc[0]` slot) is therefore derived from the scene's **effective particles-per-seeded-cell** so `occ/rest ≈ 1` at every density. `physics.rest_density` is now an optional **manual override**: `0` (the new default) = Auto (track density); a nonzero value pins a fixed target. See `scene/mod.rs → effective_rest_density` (host-testable: `manual > 0 ? manual : density`) and `gpu/fluid.rs → effective_rest_density` (resolves the scene density and wires it into `spc[0]` at build and on the Live path). A density sweep `{1, 8, 32}` at fixed fill now keeps `liquid_cells` within ~12% (was ~38–44% before the coupling).
-
-**Pressure solve ceiling (~19.2k liquid cells at 64³) is FLIP volume loss, not solver deficit.** Both CG-30 and brute-force Jacobi-400 plateau at the same occupied-cell count. The default GPU pressure path remains a zero-initial, fixed-iteration loop; `solver.pressure_residual_tolerance` and `solver.pressure_warm_start` are opt-in Live controls that preserve the fixed dispatch loop and avoid normal-frame readback. See `pressure-solver.md` and `../decisions/pressure.md`.
-
-**Occupied-cell drift is only a liveness proxy.** The capture harness can baseline
-the throttled `gpu.liquid_cells` counter after reset and report an
-occupied-cell-count drift ratio. That catches gross loss/clumping cheaply, but it is
-not physical liquid volume and must not be presented as mass conservation.
-
-**`filled_volume` is the volume/density calibration proxy.** `stats_json` exposes
-`filled_volume = liquid_cells × H³` (world units) and `liquid_fraction =
-liquid_cells / total_cells` (`app/crates/fluid-lab/src/profiler/mod.rs`). With the
-auto surface dilation on, this is ~density-invariant at a fixed fill level, so it is
-the fast Phase-1 proxy the volume/density decoupling asserts on: the fill-level knob
-scales it strongly, and a density sweep at fixed fill keeps it roughly constant
-(the seeded body grows a density-dependent dilation rind, so expect ~15% spread, not
-zero — the *visible* water is held constant by the splat-radius scaling). For the
-default scene the near-seeded `liquid_fraction` tracks the fill percentage linearly
-(10/20/50/100% ≈ 0.10/0.19/0.44/0.91). The Scenario panel surfaces
-`filled_volume`/tank-fill next to the resolved count. `app/tools/density_motion_sweep.mjs`
-drives the real-GPU density-invariance / fill-level calibration sweep and reports the
-ratios (it is the single retained volume/density calibration harness).
-
-**`apply_impulse` submits its own command encoder.** The slosh and wave-maker impulses (`app/crates/fluid-lab/src/gpu/fluid.rs → apply_impulse`) are one-shot dispatches that run outside the main substep command buffer, writing directly to the particle buffer before the next `record_prep` clear.
-
-**Wave maker is a velocity impulse, not a source/drain.** Scheduled waves add local horizontal particle velocity only. They do not allocate particles, delete particles, mutate fluid volume, open boundaries, or add a physical paddle. Source/drain needs a separate particle/mass-accounting plan.
+- **Grid/indexing contract** — `app/crates/fluid-lab/src/sim/mod.rs → GridDims`,
+  `cell_idx`, `u_idx`, `v_idx`, `w_idx`, `world_to_cell`, `cell_center_world`,
+  `classify_cells`, `mark_occupancy_from_particles`, `is_boundary_cell`
+- **GPU simulation state and pass helpers** —
+  `app/crates/fluid-lab/src/gpu/fluid.rs → GpuFluid`,
+  `record_prep_pre_sort`, `record_sort`, `record_prep_post_sort`,
+  `record_pressure`, `record_finish`, and the `dispatch_*` helpers
+- **Simulation params** — `app/crates/fluid-lab/src/gpu/fluid.rs → Params`,
+  `FIXED_SCALE`, and the live setters that rewrite the uniform buffer
+- **Particle seeding and scene-derived density** —
+  `app/crates/fluid-lab/src/gpu/fluid.rs → generate_particles`;
+  `app/crates/fluid-lab/src/scene/mod.rs → preset_blocks`,
+  `effective_particle_density`, `effective_surface_dilation`,
+  `effective_rest_density`
+- **Simulation WGSL kernels** — `app/crates/fluid-lab/src/gpu/shaders/{clear,mark,classify,scatter,scatter_local,normalize,save_vel,forces,boundaries,divergence,gradient,g2p,impulse}.wgsl`;
+  CG/pressure kernels are owned by `pressure-solver.md`
+- **Interaction impulses** — `app/crates/fluid-lab/src/gpu/fluid.rs →
+  apply_impulse`, used by manual slosh and scheduled wave-maker controls
 
 ---
 
-## Update when
+## Invariants And Gotchas
 
-- Grid indexing formula or face-count formula changes (`app/crates/fluid-lab/src/sim/mod.rs → GridDims`)
-- The `Params` layout changes (a field is appended/reordered, or its `vec4` count / 128 B size changes) — every decomposing shader's mirror must match
-- The cell size stops being a single uniform scalar `h` (per-axis `hx/hy/hz`), which would make the pressure operator anisotropic
-- A new buffer is added to `GpuFluid` or a buffer is repurposed
-- The P2G kernel changes representation (float accumulation, different scale, gather instead of scatter)
-- The FLIP blend formula or the pre-force snapshot point moves
-- Wall-friction, wall-aware G2P sampling, or volume-correction semantics change
-- Advection order upgrades from RK1 to RK2
-- Particle init layout changes (block config, jitter seed, spacing rule)
-- The step sequence order changes (e.g. forces before mark, or second enforce removed)
-- The impulse path changes from a particle velocity kick into a mass/source/drain or wall-paddle model
-- Particle-linear indexing stops matching the shared tiled dispatch contract
+**P2G determinism is load-bearing.** `scatter.wgsl` and the sorted-path
+`scatter_local.wgsl` accumulate velocity numerators and weights into integer
+buffers with fixed-point `i32 atomicAdd`; `normalize.wgsl` is the first float
+conversion. `FIXED_SCALE` is declared in `GpuFluid` code and passed through
+`Params.geom.w`. Switching the accumulate path to a float reduction would make
+particle-to-grid transfer order-dependent and is a simulation contract change.
+
+**The sorted path preserves the same transfer contract.** `dev.particle_sort`
+enables a deterministic GPU spatial sort before P2G; `record_sort` owns the
+pass-boundary barriers needed by the prefix-sum stages. `dispatch_scatter` selects
+`scatter_local.wgsl` when sorting is enabled and the plain `scatter.wgsl` otherwise.
+Both paths stay integer/fixed-point through accumulation and flush.
+
+**Particle-linear kernels share a tiled dispatch contract.** Mark, scatter,
+scatter-local, G2P, and impulse use the shape from
+`app/crates/fluid-lab/src/gpu/fluid.rs → particle_dispatch_shape` rather than a
+single `global_invocation_id.x` ceiling. Shaders keep the same workgroup size,
+row-major workgroup flattening, and particle-count guard.
+
+**Index decomposition is per-axis.** Host indexing is `GridDims`; WGSL kernels that
+need cell coordinates read `params.gdim` and decompose linear cell indices with
+`nx/ny/nz`. Scalar kernels such as normalize and save-velocity do not need `gdim` and
+keep the shorter `Params` prefix. `rg "params.gdim" app/crates/fluid-lab/src/gpu/shaders`
+is the fastest way to find the shader-side mirrors.
+
+**Boundary cells are always Solid.** `GridDims::is_boundary_cell` and
+`classify_cells` stamp every outer cell Solid each substep. Liquid cells are
+therefore interior, and divergence / CG SpMV can use the six-neighbor stencil without
+range guards.
+
+**The pressure operator stays isotropic.** `app/crates/fluid-lab/src/gpu/shaders/cg_spmv.wgsl`
+uses the graph Laplacian over liquid neighbors, while divergence and gradient use the
+single inverse cell size from `Params.geom`. Rectangular tanks are created by changing
+cell counts, not by introducing non-uniform cell sizes.
+
+**FLIP deltas start from the post-P2G, pre-force grid.** `save_vel.wgsl` snapshots
+face velocities immediately after normalize. The delta sampled in `g2p.wgsl` includes
+projection and boundary effects but not a direct copy of the body-force step.
+
+**G2P is wall-aware but the tank stays closed.** `g2p.wgsl` excludes static
+domain-edge / Solid-boundary face stencils from final and saved MAC gathers and
+renormalizes the remaining weights. Boundary passes still zero closed-wall faces, and
+escaped-particle recovery clamps particles inside and zeroes the crossed normal
+velocity component.
+
+**Gravity is a vector.** `Params.grav` carries local-frame `gx/gy/gz`; tank rotation
+changes the gravity direction through `app/crates/fluid-lab/src/gpu/fluid.rs →
+set_gravity_vec`.
+
+**naga unused-binding behavior matters.** Compute shaders that declare the shared
+`Params` binding must reference it, or Rust must provide an explicit bind group
+layout. The RBGS red/black pressure pair uses
+`app/crates/fluid-lab/src/gpu/fluid.rs → compute_with_layout` so one bind group is
+valid for both pipelines.
 
 ---
 
-## See also
+## Volume And Density
 
-- `pressure-solver.md` — owns the pressure solve (divergence RHS → CG → pressure_a)
+`scene.fill_level` is the Reset-class tank-fill percentage and controls how much
+water is seeded. `particles.density` controls particles per seeded cell and is meant
+to be a fidelity/cost knob, not a volume knob. `particles.count` is an advanced
+absolute override where `0` means Auto. The current scene block geometry is in
+`app/crates/fluid-lab/src/scene/mod.rs → preset_blocks`; host tests in the same file
+cover fill-level monotonicity and density scaling.
+
+Low-density cells can leave holes in the pressure active set. The effective surface
+dilation is resolved by `app/crates/fluid-lab/src/scene/mod.rs →
+effective_surface_dilation` and wired into `Params.cls` by
+`app/crates/fluid-lab/src/gpu/fluid.rs → effective_surface_dilation`; the user
+setting can force dilation, and the auto path turns it on below the reference
+density.
+
+The occupancy-driven volume correction is the trio
+`physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp`.
+`app/crates/fluid-lab/src/scene/mod.rs → effective_rest_density` makes the Auto rest
+target track effective particle density; `app/crates/fluid-lab/src/gpu/fluid.rs →
+effective_rest_density` writes that target into `Params.spc`. `divergence.wgsl`
+applies the clamped occupancy bias before projection. This is a
+liveness/compactness correction, not physical mass conservation.
+
+`stats_json` exposes `filled_volume` and `liquid_fraction` from the throttled liquid
+cell counter (`app/crates/fluid-lab/src/profiler/mod.rs → stats_json`).
+Those values are useful capture proxies for gross drift and density/fill calibration,
+but they are not exact fluid mass.
+
+`apply_impulse` submits its own command encoder and writes particle velocity before
+the next substep. Wave-maker impulses do not allocate particles, delete particles,
+open boundaries, or act as a physical paddle.
+
+---
+
+## Update When
+
+- Grid indexing or face sizing changes (`app/crates/fluid-lab/src/sim/mod.rs →
+  GridDims`)
+- `Params` layout changes, especially the appended `gdim` field
+- Cell size stops being one uniform scalar `h`
+- `GpuFluid` buffers, pass order, or record/dispatch helper boundaries change
+- P2G changes representation, scale, or scatter/gather strategy
+- FLIP blend, saved-velocity timing, wall-aware G2P, wall friction, or recovery
+  semantics change
+- Fill-level, particle-density, surface-dilation, or volume-correction semantics
+  change
+- Impulses become mass/source/drain behavior or moving-wall paddle behavior
+- Particle-linear dispatch stops using the shared tiled contract
+
+---
+
+## See Also
+
+- `pressure-solver.md` — pressure projection and CG details
 - `gpu-resources.md` — buffer layout and sizing details
 - `app-shell.md` — frame loop, accumulator, fixed-dt substep dispatch, timestep policy
-- `../decisions/simulation.md` — durable rationale for FLIP/PIC, fixed-point P2G, CG solver
-- `../agent-context/maintaining-docs.md`
+- `rendering.md` — water, particle, tank, and slice rendering
+- `../decisions/simulation.md` — simulation rationale
+- `../agent-context/maintaining-docs.md` — doc maintenance rules
