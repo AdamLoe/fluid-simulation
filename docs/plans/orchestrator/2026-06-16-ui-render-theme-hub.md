@@ -1,8 +1,8 @@
 ---
-status: active
+status: shipped
 owner: codex
 last_updated: 2026-06-16
-okay_to_delete: false
+okay_to_delete: true
 long_lived: false
 owning_docs:
   - architecture/web-shell.md
@@ -57,6 +57,8 @@ plans shipped when green.
 - Durable facts migrated into `architecture/rendering.md`, `architecture/settings.md`,
   `architecture/gpu-resources.md`, `architecture/profiler.md`,
   `architecture/web-shell.md`, and `decisions/rendering.md`.
+- Implementation commit: `bef859e Ship render cleanup UI simplification and themes`.
+- Review-fix commit: `7c929ee Fix review misses in UI render theme shipment`.
 - Capture artifacts:
   - `captures/capture-default-water.png`
   - `captures/capture-dev-theme-default.png`
