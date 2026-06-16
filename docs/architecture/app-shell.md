@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-07
+last_updated:  2026-06-16
 okay_to_delete: false
 long_lived:    true
 ---
@@ -29,9 +29,8 @@ The web shell owns `requestAnimationFrame`; Rust owns the fixed sequence inside
 delta, updates scheduled interactions while Running, asks
 `app/crates/fluid-lab/src/timestep.rs → TimestepController::steps_for_frame` for the
 substep count, runs
-`gpu.step(n)`, advances diffuse-only render foam when any substeps ran, renders, and
-then closes the profiler/timing frame. JavaScript never drives sim steps
-independently.
+`gpu.step(n)`, renders, and then closes the profiler/timing frame. JavaScript never
+drives sim steps independently.
 
 ## Timestep accumulator
 

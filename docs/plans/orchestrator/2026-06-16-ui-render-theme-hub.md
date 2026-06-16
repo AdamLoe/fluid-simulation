@@ -30,8 +30,8 @@ plans shipped when green.
 | Stream | Area | Status | Last observed fact | Next action | Blockers |
 |---|---|---|---|---|---|
 | Plan review | Existing plan quality and sequencing | Completed | Reviewer says plans should not run in parallel; recommended order is render removals, UI simplification, then dev theme. Readiness edits were applied to the three source plans. | None | None |
-| Implementation | Web shell/settings/render/theme | Completed | Implemented sequentially: render removals, UI simplification, then dev theme. Water composite whitewater tint remains; persistent `DiffuseSystem`, Foam tab/settings, micronormals, and flat-water/wall-contact correction are gone. | None | None |
-| Work review | Shipped state verification | Completed | `cargo build --target wasm32-unknown-unknown`, `cargo test --lib`, JS syntax checks, wasm-pack dev rebuild, and Chrome captures passed. Captures verified default Water, dev Theme tab, mobile Signal theme, and Environment dev gating. | None | None |
+| Implementation | Web shell/settings/render/theme | Completed | Implementer reported commit `bef859e Ship render cleanup UI simplification and themes`; local git status was clean and `git log -1` showed that commit. | Work review. | None |
+| Work review | Shipped state verification | Completed | Independent review found the shipped plans substantially satisfied. Reviewer fixed stale app-shell diffuse prose and mobile dev-tab truncation, then re-ran targeted static/Rust checks; fresh Chrome capture launch was unavailable in this environment. | None | None |
 
 ## Decisions And Assumptions
 
