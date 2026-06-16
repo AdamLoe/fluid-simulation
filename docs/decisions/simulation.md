@@ -58,8 +58,9 @@ exchange for a much better fit to pressure projection.
 isotropic pressure operator.
 
 **Why** — Per-axis counts let the tank become wider, taller, or deeper without
-introducing anisotropic finite differences into pressure projection. The all-64
-default remains the centered `[-1,1]^3` box.
+introducing anisotropic finite differences into pressure projection. The default
+`80×40×80` profile uses that rectangular shape while keeping the pressure operator
+isotropic.
 
 **Tradeoffs** — Changing an axis changes world extent as well as work size. A future
 non-uniform-cell tank would be a pressure-solver decision, not a settings-only

@@ -67,21 +67,19 @@ math/memory work after convergence without reducing dispatch count or adding CPU
 readback.
 
 **Pressure warm-start.** Runtime exposes `solver.pressure_warm_start` (Live,
-default `0`). Default-off keeps the zero-start path and still clears
-`pressure_a` in prep before `cg_init`. When enabled, prep skips that clear so
-`cg_init` can reuse the previous `pressure_a` field for Liquid cells, compute
-`r = b - A*p_old` on GPU, and seed `d = r`. `cg_init` writes `0` into
-non-Liquid pressure entries before the gradient pass can read them. Reset clears
-`pressure_a`, and rebuilds allocate a fresh pressure buffer, so scene/rebuild
-changes do not carry stale pressure.
+default `1`). Default-on skips the prep clear so `cg_init` can reuse the previous
+`pressure_a` field for Liquid cells, compute `r = b - A*p_old` on GPU, and seed
+`d = r`. Setting it to `0` restores the zero-start path and clears `pressure_a` in
+prep before `cg_init`. `cg_init` writes `0` into non-Liquid pressure entries before
+the gradient pass can read them. Reset clears `pressure_a`, and rebuilds allocate a
+fresh pressure buffer, so scene/rebuild changes do not carry stale pressure.
 
 ## Non-obvious invariants and gotchas
 
-**GPU warm-start is opt-in.** Default captures use the zero-initial pressure solve:
-prep clears `pressure_a`, `cg_init` starts from `p = 0`, and the previous frame's
-pressure field is discarded. The warm-start setting changes only initialization; it
-does not add CPU readback, indirect dispatch, preconditioning, or a different
-iteration loop.
+**GPU warm-start changes only initialization.** The default path reuses the previous
+pressure field as the initial CG guess; the zero-start path is still available by
+setting `solver.pressure_warm_start = 0`. This does not add CPU readback, indirect
+dispatch, preconditioning, or a different iteration loop.
 
 **Participation is cell-type gated.** Only Liquid cells hold a meaningful pressure.
 Air cells are Dirichlet `p = 0` (they count as neighbours, pushing `n_c` up but

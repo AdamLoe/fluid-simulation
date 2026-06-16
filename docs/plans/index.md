@@ -20,19 +20,17 @@ directory:
 ls docs/plans/
 ```
 
-[`roadmap.md`](roadmap.md) is the current long-lived coordination map. Deferred ideas
-that should not be smuggled into current implementation plans live in
-[`future-roadmap.md`](future-roadmap.md). Historical shipped plans belong in
-`archive/`. Everything else should reach `shipped + okay_to_delete: true` and then be
-deleted.
+[`future-roadmap.md`](future-roadmap.md) is the only long-lived coordination doc in
+this directory. It holds deferred ideas that should not be smuggled into current
+implementation work. Versioned implementation plans may be created here when work is
+active; once they ship, durable facts move to `architecture/` / `decisions/` and the
+plan is deleted.
 
 ## Routing
 
 | Need | Read |
 |---|---|
-| Current coordination map / what's next | [`roadmap.md`](roadmap.md) |
 | Deferred future ideas | [`future-roadmap.md`](future-roadmap.md) |
-| Historical shipped plans | [`archive/`](archive/) |
 | Create a new plan | [`~/agent-docs/v1/plan-template.md`](~/agent-docs/v1/plan-template.md) |
 | Plan lifecycle / status-metadata rules | [`~/agent-docs/v1/plan-lifecycle.md`](~/agent-docs/v1/plan-lifecycle.md) |
 | The doc-update workflow a shipped plan triggers | [`../agent-context/maintaining-docs.md`](../agent-context/maintaining-docs.md) |
@@ -41,6 +39,5 @@ deleted.
 
 - [`~/agent-docs/v1/plan-lifecycle.md`](~/agent-docs/v1/plan-lifecycle.md)
 - [`../agent-context/maintaining-docs.md`](../agent-context/maintaining-docs.md)
-- [`roadmap.md`](roadmap.md)
 - [`future-roadmap.md`](future-roadmap.md)
 - [`../index.md`](../index.md) — global router.

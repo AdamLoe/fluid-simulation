@@ -68,9 +68,9 @@ relative to it. (The Rust crate manifest is `app/Cargo.toml`; its source is `app
 - Toolchain: **wgpu 29 · wasm-pack 0.15 · rustc/cargo ~1.95 · node 20 (WSL) / 24
   (Windows)**.
 - Tank is a **rectangular box** of independent per-axis cell counts (`grid.res_x/y/z`,
-  default **64** each → the `[-1,1]³` cube) at a **uniform** cell size `h = 2/64`;
-  all-equal counts give a cube, unequal counts give a rectangular box (~254k particles
-  at the default). Default pressure solve: **CG, 30 iters**. Default G2P blend is
+  default **80×40×80**) at a **uniform** cell size `h = 2/64`; all-equal counts give
+  a cube, unequal counts give a rectangular box (~410k particles at the default).
+  Default pressure solve: **CG, 30 iters, warm-start on**. Default G2P blend is
   high-FLIP (~0.9) for lively splash.
 - **No float atomics in WebGPU** → P2G is fixed-point `i32` atomics at `FIXED_SCALE =
   2^16`; the accumulate→normalize path must stay integer or determinism breaks.

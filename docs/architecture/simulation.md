@@ -23,7 +23,8 @@ second boundary enforce, then grid-to-particle transfer and advection.
 The tank is rectangular, not a fixed cube. `app/crates/fluid-lab/src/sim/mod.rs →
 GridDims` carries independent `nx/ny/nz` cell counts from the Reset-class
 `grid.res_x/y/z` settings, while `sim::H` remains the single uniform cell size
-(`2.0/64.0`). The all-64 default reproduces the original centered `[-1,1]^3` box.
+(`2.0/64.0`). The default counts are `80×40×80`, which make the tank wider/deeper
+and shorter than the original all-64 cube without changing the pressure operator.
 `app/crates/fluid-lab/src/gpu/fluid.rs → Params` appends `gdim = [nx, ny, nz, 0]`
 so shaders that decompose indices can use per-axis dimensions without changing the
 shorter prefix mirrors used by scalar kernels. Because `h` is scalar, the pressure

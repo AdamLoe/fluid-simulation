@@ -35,7 +35,7 @@ introducing anisotropic spacing, which would complicate the pressure operator an
 **Tradeoffs** — Extreme aspect ratios are an untuned follow-up (see
 `decisions/performance.md`); CFL / `FIXED_SCALE` were not re-tuned for them.
 
-**Code anchors** — `app/crates/fluid-lab/src/settings/mod.rs → grid.res_x/y/z`;
+**Code anchors** — `app/crates/fluid-lab/src/settings/mod.rs → grid_res_x / grid_res_y / grid_res_z`;
 `app/crates/fluid-lab/src/sim/mod.rs → H` (uniform cell size).
 
 **Applies to** — `architecture/simulation.md`, `architecture/settings.md`.
@@ -50,9 +50,9 @@ The old raw `particles.count` becomes an advanced manual override where `0` = Au
 (derive from density) and a nonzero value pins an absolute count.
 
 **Why** — A raw absolute count silently became wrong density whenever grid resolution
-changed (e.g. ~11/cell at 128×64×128). Per-seeded-cell keeps both the default 64³ scene
-(~264k ≈ historical default) and larger grids sane, and tracks how much of the tank a
-scenario fills, so denser scenes get proportionally more particles. Density `8` matches
+changed (e.g. ~11/cell at 128×64×128). Per-seeded-cell keeps both the default
+`80×40×80` scene (~410k at the default fill) and larger grids sane, and tracks how much
+of the tank a scenario fills, so denser scenes get proportionally more particles. Density `8` matches
 the standard FLIP/PIC ~8/cell target and the prior default's effective ~7.7/seeded-cell.
 
 **Tradeoffs** — The exact count now depends on the active scenario's fill fraction, so
@@ -60,7 +60,7 @@ it varies between presets at the same density; the advanced override exists for 
 that need an exact number.
 
 **Code anchors** — `app/crates/fluid-lab/src/scene/mod.rs → resolved_particle_count`;
-`app/crates/fluid-lab/src/settings/mod.rs → particles.density / particles.count`.
+`app/crates/fluid-lab/src/settings/mod.rs → particle_density / particle_count_override`.
 
 **Applies to** — `architecture/settings.md`.
 
@@ -103,8 +103,7 @@ back the invariant; the screenshots are the real acceptance. Tuning
 **Code anchors** — `app/crates/fluid-lab/src/scene/mod.rs → preset_blocks /
 effective_particle_density / effective_surface_dilation / seeded_spacing`;
 `app/crates/fluid-lab/src/gpu/mod.rs → SPLAT_RADIUS_PER_SPACING`;
-`app/crates/fluid-lab/src/gpu/fluid.rs → effective_surface_dilation (cls uniform)`;
-`docs/plans/volume-density-decoupling.md`.
+`app/crates/fluid-lab/src/gpu/fluid.rs → effective_surface_dilation`.
 
 **Applies to** — `architecture/simulation.md`, `architecture/rendering.md`,
 `architecture/settings.md`.
@@ -118,7 +117,7 @@ The first version proves the core loop first; the full lab is staged afterward.
 **Why** — The lab concept is what makes the project distinctive, but shipping all of
 it in the first version would over-scope a build with a hard technical core.
 
-**Applies to** — `plans/roadmap.md`, `architecture/rendering.md`.
+**Applies to** — `architecture/rendering.md`.
 
 ## Make the simulation pipeline a first-class, visible product concept
 
@@ -129,7 +128,7 @@ honest explanations.
 **Why** — Viewers seeing the internal machinery is what differentiates this from an
 ordinary shader demo.
 
-**Applies to** — `architecture/rendering.md`, `plans/roadmap.md`.
+**Applies to** — `architecture/rendering.md`.
 
 ## Typed scene config; static scenes before moving solids
 
@@ -143,7 +142,7 @@ and reset determinism, so they are a deliberate follow-up, not accidental scope 
 
 **Code anchors** — `app/crates/fluid-lab/src/scene/mod.rs → SceneConfig`.
 
-**Applies to** — `architecture/app-shell.md`, `plans/roadmap.md`.
+**Applies to** — `architecture/app-shell.md`, `architecture/settings.md`.
 
 ## Floating / bouncing rigid objects stay deferred (two-tier audit)
 
@@ -159,7 +158,7 @@ scoped out. A cycle audit assessed two tiers; if pursued, start with Tier A:
 **Why** — Tier A buys the visible feature without touching the solver contract; Tier B
 pays a large, risky solver rewrite for two-way coupling that the demo does not need.
 
-**Applies to** — `plans/roadmap.md`, `architecture/simulation.md`.
+**Applies to** — `architecture/simulation.md`.
 
 ## Source/drain is future mass-mutation work
 
@@ -176,7 +175,7 @@ source/drain setting ids); `crates/fluid-lab/src/lib.rs → InteractionState`
 (interaction tools are scheduling/impulse only).
 
 **Applies to** — `architecture/settings.md`, `architecture/simulation.md`,
-`plans/roadmap.md`.
+`architecture/app-shell.md`.
 
 ## Optional features are deferred instead of exposed prematurely
 
@@ -190,7 +189,8 @@ Treating them as required turns the project into a large graphics surface before
 fluid loop is trustworthy. A complete, measured, honest demo beats an unfinished
 maximal one.
 
-**Applies to** — `plans/roadmap.md`.
+**Applies to** — `architecture/rendering.md`, `architecture/web-shell.md`,
+`architecture/settings.md`.
 
 ## Deterministic replay/scrub is future work
 
@@ -202,7 +202,7 @@ modes are stable.
 cells would make the lab unusually inspectable, but it adds memory,
 state-capture, and UI complexity that should not be paid before the core is stable.
 
-**Applies to** — `plans/roadmap.md`.
+**Applies to** — `architecture/rendering.md`.
 
 ## Config shareability stays portable before preset management
 
@@ -221,17 +221,17 @@ evidence that users need saved preset libraries.
 ## Portfolio honesty
 
 **Decision** — This is a portfolio-grade real-time fluid lab, not a validated
-scientific CFD solver. Copy and framing state the method (FLIP/PIC, 64³, CG pressure)
-and known limits; simulation problems are not hidden behind fake polish. An
+scientific CFD solver. Copy and framing state the method (FLIP/PIC, rectangular
+grid, CG pressure) and known limits; simulation problems are not hidden behind fake polish. An
 unsupported-WebGPU fallback is required before public presentation.
 
 **Why** — Overstated accuracy or hidden problems undermine a portfolio piece more than
 a modest, honest one.
 
-**Applies to** — `architecture/web-shell.md`, `plans/roadmap.md`.
+**Applies to** — `architecture/web-shell.md`.
 
 ## See also
 
 - [`platform.md`](platform.md) · [`rendering.md`](rendering.md) · [`performance.md`](performance.md)
-- [`../plans/roadmap.md`](../plans/roadmap.md)
+- [`../plans/future-roadmap.md`](../plans/future-roadmap.md)
 - [`../agent-context/maintaining-docs.md`](../agent-context/maintaining-docs.md)

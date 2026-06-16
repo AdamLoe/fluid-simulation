@@ -57,8 +57,8 @@ is the liquid-block volume measured in cells, i.e. `seeded_volume_fraction *
 res_x*res_y*res_z`, where `seeded_volume_fraction` is the fraction of the normalized
 [0,1]^3 tank the scenario's liquid blocks occupy. The resolved count is
 `round(density * seeded_volume_fraction * total_cells)`, floored at 1024. This keeps
-the default 64³ falling-blob scene near the historical ~254k particles (~264k at
-density 8) and scales correctly when grid resolution or scenario changes. The
+the default `80×40×80` falling-blob scene near the historical particle budget (~410k
+at density 8) and scales correctly when grid resolution or scenario changes. The
 derivation lives in `crates/fluid-lab/src/scene/mod.rs -> resolved_particle_count`;
 `gpu` reads the resolved `SceneConfig::particle_count`, so seeding, validation, and
 the reported "requested" count all agree.
@@ -78,10 +78,10 @@ what a density yields before reset.
 means disabled; finite inputs clamp to the registry's conservative relative-residual
 range before the GPU scalar tolerance slot is updated.
 
-`solver.pressure_warm_start` is a Live `u32` boolean pressure setting. Default `0`
-keeps the zero-start pressure solve and comparable default captures. `1` lets the
-GPU pressure init reuse the previous pressure field as the initial CG guess; reset
-and rebuild paths clear the pressure field before reuse.
+`solver.pressure_warm_start` is a Live `u32` boolean pressure setting. Default `1`
+lets the GPU pressure init reuse the previous pressure field as the initial CG guess;
+`0` restores the zero-start pressure solve. Reset and rebuild paths clear the pressure
+field before reuse.
 
 Portable config payloads use the same persistence version as localStorage:
 

@@ -66,10 +66,10 @@ preconditioner.
 
 **Decision** — Pressure is solved only at Liquid cells. Air neighbours are Dirichlet
 `p = 0` (they count in the stencil contributing zero); Solid neighbours are Neumann
-(excluded from both the neighbour sum and the neighbour count). The default runtime
-GPU solve is zero-started each step; optional warm-start must still zero non-Liquid
-pressure before gradient reads it. Determinism of the solve comes from fixed-order
-tree reductions in the CG dot products.
+(excluded from both the neighbour sum and the neighbour count). Runtime warm-start
+still zeroes non-Liquid pressure before gradient reads it, and the zero-start path
+remains available through `solver.pressure_warm_start = 0`. Determinism of the solve
+comes from fixed-order tree reductions in the CG dot products.
 
 **Why** — This is the standard free-surface/closed-tank treatment and keeps the
 operator SPD so CG applies. One-cell-thick solid walls make every Liquid cell
@@ -80,18 +80,18 @@ integer-P2G determinism invariant (see `decisions/simulation.md`).
 
 **Applies to** — `architecture/pressure-solver.md`, `architecture/simulation.md`.
 
-## Pressure residual gating and warm-start are default-off and GPU-native
+## Pressure residual gating and warm-start are GPU-native
 
 **Decision** — The host CG reference may expose internal optional initial-pressure
 and relative-residual-tolerance helpers, while runtime GPU residual gating and
-warm-start are Live but default-off (`solver.pressure_residual_tolerance = 0`,
-`solver.pressure_warm_start = 0`) and keep the fixed dispatch loop.
+warm-start are Live controls (`solver.pressure_residual_tolerance = 0`,
+`solver.pressure_warm_start = 1` by default) and keep the fixed dispatch loop.
 
 **Why** — Relative residual gating can reduce shader math/memory after convergence
 without normal-frame readback. Warm-start can improve the initial CG guess without
 readback by preserving `pressure_a` and computing `r = b - A*p_old` on GPU. Both
-controls are default-off so baseline captures remain comparable, and neither reduces
-dispatch count.
+controls keep the fixed dispatch count; residual gating remains default-off while
+warm-start is default-on.
 
 **Code anchors** — `app/crates/fluid-lab/src/sim/pressure.rs → cg_solve`;
 `app/crates/fluid-lab/src/sim/pressure.rs → cg_solve_with_options`;

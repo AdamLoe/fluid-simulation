@@ -80,9 +80,9 @@ and `CG_TOL_SQ_SLOT`. The tolerance slot is updated through a Live queue write; 
 active flag is GPU-owned during each pressure solve.
 
 `pressure_a` is the pressure field read by gradient. With the default
-`solver.pressure_warm_start = 0`, prep clears it before each solve. With warm-start
-enabled, prep preserves it so `cg_init` can form the initial residual from the
-previous pressure; reset clears it explicitly before the next solve.
+`solver.pressure_warm_start = 1`, prep preserves it so `cg_init` can form the initial
+residual from the previous pressure. Setting warm-start to `0` clears `pressure_a`
+before each solve; reset clears it explicitly before the next solve.
 
 The tank is rectangular with uniform cell size and per-axis counts. Reset-class grid
 or particle changes rebuild `GpuFluid` and renderers that bind sim buffers.

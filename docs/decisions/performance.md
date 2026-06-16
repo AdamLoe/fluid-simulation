@@ -195,9 +195,9 @@ and can distort the architecture toward a number nobody needs yet.
 
 ## Pressure optimizations need GPU evidence before performance claims
 
-**Decision** — GPU residual active gating and pressure warm-start are default-off
-Live controls and do not justify pressure performance claims until measured with
-profiler/capture evidence.
+**Decision** — GPU residual active gating and pressure warm-start are Live controls
+and do not justify pressure performance claims until measured with profiler/capture
+evidence.
 
 **Why** — Active gating avoids normal-frame readback and preserves the fixed
 `solver.pressure_iterations` dispatch loop, so it can only reduce shader math/memory
@@ -217,10 +217,10 @@ residual on GPU, but it also keeps the same fixed CG dispatch count.
 `crates/fluid-lab/src/gpu/shaders/cg_set_rsold.wgsl → main`.
 
 **Revisit when** — Indirect dispatch lands behind conservative settings, or captures
-name pressure iteration costs before/after the default-off pressure controls.
+name pressure iteration costs before/after residual gating or warm-start changes.
 
 **Current evidence** — Real Chrome/WebGPU smoke captures on 2026-06-12 validated the
-runtime paths: default zero-start (`captures/llm-overhaul-final-default-detailed.png`),
+runtime paths: zero-start (`captures/llm-overhaul-final-default-detailed.png`),
 warm-start via `?set=solver.pressure_warm_start:1`
 (`captures/llm-overhaul-final-warm-start.png`), and warm-start plus residual gating
 (`captures/llm-overhaul-final-warm-residual.png`). All reported

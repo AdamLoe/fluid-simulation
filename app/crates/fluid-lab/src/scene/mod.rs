@@ -168,8 +168,8 @@ fn seeded_volume_fraction(blocks: &[LiquidBlock]) -> f32 {
 /// "Per cell" means **per seeded fluid cell**, not per total grid cell: the seeded
 /// region is the liquid-block volume measured in grid cells
 /// (`seeded_volume_fraction * total_grid_cells`), and the density is particles per
-/// one of those cells. This keeps the default 64^3 scene near the historical ~250k
-/// particles (~8/seeded-cell) and scales correctly with grid resolution and with how
+/// one of those cells. This keeps the default scene near the historical particle
+/// budget (~8/seeded-cell) and scales correctly with grid resolution and with how
 /// much of the tank a scenario fills.
 ///
 /// The advanced `particles.count` override wins when it is nonzero; `0` means Auto.
@@ -348,8 +348,12 @@ mod tests {
     #[test]
     fn falling_blob_ignores_drop_height() {
         // The resting tank slab is floor-anchored, so drop_height does not move it.
-        let low = scene_for(ScenePreset::FallingBlob, 0.0).initial_liquid.blocks[0];
-        let high = scene_for(ScenePreset::FallingBlob, 1.0).initial_liquid.blocks[0];
+        let low = scene_for(ScenePreset::FallingBlob, 0.0)
+            .initial_liquid
+            .blocks[0];
+        let high = scene_for(ScenePreset::FallingBlob, 1.0)
+            .initial_liquid
+            .blocks[0];
         assert!((low.min.y - high.min.y).abs() < 1.0e-6);
         assert!((low.max.y - high.max.y).abs() < 1.0e-6);
         assert!((low.min.y - 0.0).abs() < 1.0e-6);
@@ -373,13 +377,13 @@ mod tests {
 
     #[test]
     fn default_density_derives_count_from_seeded_cells() {
-        // Default registry: density 8/seeded-cell, 64^3 grid, falling-blob preset.
+        // Default registry: density 8/seeded-cell, 80x40x80 grid, falling-blob preset.
         // The default scene is a full-footprint floor slab at 20% fill, so the
-        // seeded fraction is ~0.2 and count ≈ 8 * 0.2 * 64^3 ≈ 419k.
+        // seeded fraction is ~0.2 and count = 8 * 0.2 * 80 * 40 * 80 = 409.6k.
         let scene = SceneConfig::from_settings(&Registry::default());
         assert!(
-            (418_000..=420_000).contains(&scene.particle_count),
-            "default count {} should be ~419k (8/seeded-cell, 20% fill)",
+            (409_000..=410_000).contains(&scene.particle_count),
+            "default count {} should be ~410k (8/seeded-cell, 20% fill)",
             scene.particle_count
         );
     }
@@ -389,11 +393,11 @@ mod tests {
         let mut settings = Registry::default();
         settings.set_value_f64("grid.res_x", 128.0);
         settings.set_value_f64("grid.res_z", 128.0);
-        // 128x64x128, density 8, falling blob at 20% fill -> 8 * 0.2 * 1_048_576 ≈ 1.677M.
+        // 128x40x128, density 8, falling blob at 20% fill -> 8 * 0.2 * 655_360 ≈ 1.049M.
         let blob = SceneConfig::from_settings(&settings).particle_count;
         assert!(
-            (1_670_000..=1_685_000).contains(&blob),
-            "falling-blob count {blob} should be ~1.68M"
+            (1_040_000..=1_055_000).contains(&blob),
+            "falling-blob count {blob} should be ~1.05M"
         );
     }
 
@@ -401,7 +405,10 @@ mod tests {
     fn nonzero_particle_count_override_wins_over_density() {
         let mut settings = Registry::default();
         settings.set_value_f64("particles.count", 500_000.0);
-        assert_eq!(SceneConfig::from_settings(&settings).particle_count, 500_000);
+        assert_eq!(
+            SceneConfig::from_settings(&settings).particle_count,
+            500_000
+        );
     }
 
     #[test]
@@ -423,7 +430,10 @@ mod tests {
         settings.set_value_f64("scene.fill_level", 100.0);
         let scene = SceneConfig::from_settings(&settings);
         let frac = seeded_volume_fraction(&scene.initial_liquid.blocks);
-        assert!(frac > 0.99, "full fill seeded fraction {frac} should be ~1.0");
+        assert!(
+            frac > 0.99,
+            "full fill seeded fraction {frac} should be ~1.0"
+        );
     }
 }
 
@@ -562,7 +572,10 @@ mod fill_level_tests {
         let reg2 = registry(ScenePreset::DamBreak, 0.5, 2.0);
         let s8 = dense.seeded_spacing(&reg8);
         let s2 = sparse.seeded_spacing(&reg2);
-        assert!(s2 > s8, "spacing should grow at lower density: {s2} <= {s8}");
+        assert!(
+            s2 > s8,
+            "spacing should grow at lower density: {s2} <= {s8}"
+        );
 
         // density 8 -> spacing ~ H * 0.5 (within rounding of the resolved count).
         let expected_8 = crate::sim::H * 0.5;
@@ -580,7 +593,8 @@ mod fill_level_tests {
         let res = UVec3::new(64, 64, 64);
         for &d in &[1.0f32, 2.0, 4.0, 8.0, 16.0] {
             let blocks = preset_blocks(ScenePreset::DamBreak, DEFAULT_DROP_HEIGHT, 0.5);
-            let eff = effective_particle_density(&registry(ScenePreset::DamBreak, 0.5, d), res, &blocks);
+            let eff =
+                effective_particle_density(&registry(ScenePreset::DamBreak, 0.5, d), res, &blocks);
             assert!(
                 (eff - d).abs() / d < 0.02,
                 "effective density {eff} should track slider {d}"
@@ -629,7 +643,11 @@ mod fill_level_tests {
         for preset in PRESETS {
             for &fill in &[0.0f32, 0.1, 1.0] {
                 for b in preset_blocks(preset, DEFAULT_DROP_HEIGHT, fill) {
-                    assert!(b.max.y > b.min.y, "{:?}: empty block at fill {fill}", preset.name());
+                    assert!(
+                        b.max.y > b.min.y,
+                        "{:?}: empty block at fill {fill}",
+                        preset.name()
+                    );
                     assert!(b.min.y >= -1.0e-6 && b.max.y <= 1.0 + 1.0e-6);
                 }
             }

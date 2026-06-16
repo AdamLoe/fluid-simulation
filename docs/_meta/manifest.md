@@ -78,8 +78,8 @@ high-risk invariants against code:
 - The default pressure solver is CG (`crates/fluid-lab/src/gpu/fluid.rs → record_pressure`,
   `crates/fluid-lab/src/sim/pressure.rs → cg_solve`).
 - The tank is a **rectangular box**: three independent per-axis cell counts
-  `nx,ny,nz` (Reset-class settings `grid.res_x/y/z`, default 64 each → the exact
-  original `[-1,1]³` cube) at a single **uniform** scalar cell size `h = 2/64`. The cell
+  `nx,ny,nz` (Reset-class settings `grid.res_x/y/z`, default `80×40×80`) at a
+  single **uniform** scalar cell size `h = 2/64`. The cell
   counts ride in `Params.gdim: vec4<u32> = [nx,ny,nz,0]`; the pressure operator stays
   isotropic. Not a fixed cube and not a single resolution scalar.
 - Which render modes are actually wired: `Water`, `OpticalParticles`, and
