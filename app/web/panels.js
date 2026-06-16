@@ -9,36 +9,87 @@
 // Live-class settings apply to the running sim immediately and need no badge.
 
 const LS_KEY = "fluidlab.config.v1";
+const THEME_STORAGE_KEY = "fluidlab.theme.v1";
 const HIDDEN_SETTING_IDS = new Set([
   "interaction.auto_roll_enabled",
   "interaction.wave_enabled",
 ]);
+const DEV_ONLY_TABS = new Set(["environment", "theme"]);
 const DEFAULT_TAB = "scenario";
 const PROFILER_TAB = { id: "profiler", label: "Profiler", order: 1000, profiler: true };
-const TAB_ALIASES = {
-  general: "scenario",
-  render: "camera-view",
-  water: "water-surface",
-  physics: "simulation",
-};
-const MODE_SECTION_ORDER = [
+const THEME_TAB = { id: "theme", label: "Theme", order: 1100, shell: true };
+const THEMES = [
   {
-    label: "Auto Rotate",
-    note: "Controls the scheduled tank rocking used by Auto Rotate.",
-    ids: ["interaction.auto_roll_strength", "interaction.auto_roll_cadence"],
+    id: "default",
+    label: "Default",
+    swatches: ["#0a0c10", "#7dd3fc", "#4ade80"],
   },
   {
-    label: "Waves",
-    note: "Controls the scheduled wave-maker impulses used by Waves.",
-    ids: ["interaction.wave_strength", "interaction.wave_frequency"],
+    id: "harbor",
+    label: "Harbor",
+    swatches: ["#081013", "#22d3ee", "#5eead4"],
+  },
+  {
+    id: "signal",
+    label: "Signal",
+    swatches: ["#101014", "#f59e0b", "#f43f5e"],
   },
 ];
+const TAB_ALIASES = {
+  general: "scenario",
+  modes: "scenario",
+  render: "camera",
+  "camera-view": "camera",
+  water: "surface",
+  "water-surface": "surface",
+  "water-color": "color",
+  "sun-reflection": "reflection",
+  physics: "simulation",
+};
+function isDevMode() {
+  return new URLSearchParams(window.location.search).get("dev") === "true";
+}
+
+function normalizeThemeId(id) {
+  return THEMES.some((theme) => theme.id === id) ? id : "default";
+}
+
+function applyTheme(id, persist = false) {
+  const themeId = normalizeThemeId(id);
+  if (themeId === "default") {
+    document.documentElement.removeAttribute("data-theme");
+  } else {
+    document.documentElement.dataset.theme = themeId;
+  }
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, themeId);
+    } catch (e) {
+      console.warn("[panels] theme localStorage write failed:", e);
+    }
+  }
+  return themeId;
+}
+
+function loadStoredTheme() {
+  try {
+    return normalizeThemeId(localStorage.getItem(THEME_STORAGE_KEY) || "default");
+  } catch {
+    return "default";
+  }
+}
+
+function activeThemeId() {
+  return normalizeThemeId(document.documentElement.dataset.theme || "default");
+}
 
 function deriveTabs(settings) {
   const byId = new Map();
+  const devMode = isDevMode();
   for (const s of settings) {
     if (HIDDEN_SETTING_IDS.has(s.id)) continue;
     if (!s.tab || !s.tab_label) continue;
+    if (DEV_ONLY_TABS.has(s.tab) && !devMode) continue;
     if (!byId.has(s.tab)) {
       byId.set(s.tab, {
         id: s.tab,
@@ -49,7 +100,9 @@ function deriveTabs(settings) {
       });
     }
   }
-  return [...byId.values()].sort((a, b) => a.order - b.order).concat(PROFILER_TAB);
+  const tabs = [...byId.values()].sort((a, b) => a.order - b.order).concat(PROFILER_TAB);
+  if (devMode) tabs.push(THEME_TAB);
+  return tabs;
 }
 
 function safeConfigJson(app) {
@@ -287,18 +340,6 @@ function buildShareUrl(app) {
   return url.toString();
 }
 
-function formatImportSummary(result) {
-  const parts = [`${result.applied} applied`];
-  if (result.clamped) parts.push(`${result.clamped} clamped`);
-  const unknown = result.results.filter((r) => r.status === "unknown_id").length;
-  if (unknown) parts.push(`${unknown} unknown`);
-  if (result.rejected && result.rejected !== unknown) parts.push(`${result.rejected} rejected`);
-  if (result.resetApplied) parts.push("reset applied");
-  if (result.resetRejected) parts.push("reset failed");
-  if (result.needsReload) parts.push("reload needed");
-  return parts.join(", ");
-}
-
 const APPLY_DOT = {
   live:   { color: "#4ade80", title: "Live - takes effect immediately" },
   reset:  { color: "#fbbf24", title: "Reset - takes effect after Reset" },
@@ -335,104 +376,49 @@ function buildConfigPanel(container, app, tabId, allSettings = safeConfigJson(ap
     return;
   }
 
-  if (tabId === "modes") {
-    buildModesPanel(container, app, settings, pendingApplyIds);
-    return;
-  }
-
-  if (tabId === "scenario") {
-    appendScenarioSummary(container, app);
-  }
-
   const rowEls = {};
   appendCategorySections(container, settings, rowEls, app, pendingApplyIds);
   appendResetDefaultsAction(container, app, tabId, settings);
 }
 
-// A small read-only readout at the top of the Scenario tab. It shows the grid
-// resolution and the EFFECTIVE particle count the current density + grid + scenario
-// resolve to, so the user can see what the "Particle density (/cell)" control yields
-// without opening the Profiler. Values come from stats_json (the live resolved
-// count); count is Reset-class, so it reflects the last applied reset.
-function appendScenarioSummary(container, app) {
-  const stats = safeStatsJson(app);
-  if (!stats) return;
+function buildThemePanel(container) {
+  hideTip();
+  container.innerHTML = "";
+  const grid = document.createElement("div");
+  grid.className = "theme-grid";
+  const current = activeThemeId();
 
-  const gridRes = stats.grid_res ?? stats.grid_n;
-  const totalCells = stats.total_cells;
-  const requested = stats.requested_particles;
-  const actual = stats.particles;
-  // Effective filled-water volume proxy: liquid_cells * H^3, with the fraction of
-  // the tank it fills. "tank fill" tracks the Water level (%) knob directly — on the
-  // default resting scene it is ~the set percentage. Null until the GPU reports cells.
-  const filledVolume = stats.filled_volume;
-  const liquidFraction = stats.liquid_fraction;
+  for (const theme of THEMES) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "theme-option";
+    button.classList.toggle("theme-active", theme.id === current);
+    button.setAttribute("aria-pressed", theme.id === current ? "true" : "false");
+    button.dataset.theme = theme.id;
 
-  const box = document.createElement("div");
-  box.className = "cfg-scenario-summary";
-  box.style.cssText =
-    "margin:0 0 10px;padding:8px 10px;background:#11151f;border:1px solid #2a3142;" +
-    "border-radius:6px;font-size:11px;line-height:1.5;color:#aeb8cc;";
+    const name = document.createElement("span");
+    name.className = "theme-name";
+    name.textContent = theme.label;
 
-  const fmtN = (n) => (typeof n === "number" ? n.toLocaleString() : "—");
-  const fmtPct = (n) =>
-    typeof n === "number" ? `${(n * 100).toFixed(1)}%` : "—";
-  const fmtVol = (n) => (typeof n === "number" ? n.toPrecision(3) : "—");
-  box.innerHTML =
-    `<div style="font-weight:600;color:#cdd6e4;margin-bottom:3px;">Effective scenario</div>` +
-    `<div>Grid: <span style="color:#cdd6e4;">${gridRes ?? "—"}</span>` +
-    ` &nbsp;·&nbsp; Total cells: <span style="color:#cdd6e4;">${fmtN(totalCells)}</span></div>` +
-    `<div>Particles (resolved): <span style="color:#7dd3fc;">${fmtN(requested)}</span>` +
-    (typeof actual === "number" && actual !== requested
-      ? ` &nbsp;·&nbsp; seeded: <span style="color:#cdd6e4;">${fmtN(actual)}</span>`
-      : "") +
-    `</div>` +
-    `<div>Water volume: <span style="color:#7dd3fc;">${fmtVol(filledVolume)}</span>` +
-    ` &nbsp;·&nbsp; tank fill: <span style="color:#cdd6e4;">${fmtPct(liquidFraction)}</span></div>` +
-    `<div style="color:#6b7689;margin-top:2px;">Tank fill tracks Water level (%) (0 = empty, 100 = full). Filled volume = liquid cells &times; cell volume; density stays volume-neutral. Changes apply on Reset.</div>`;
-
-  container.appendChild(box);
-}
-
-function buildModesPanel(container, app, settings, pendingApplyIds = new Set()) {
-  const rowEls = {};
-  const settingsById = new Map(settings.map((s) => [s.id, s]));
-  const orderedDefault = [];
-
-  for (const sectionMeta of MODE_SECTION_ORDER) {
-    const note = document.createElement("div");
-    note.className = "mode-section-note";
-    note.textContent = sectionMeta.note;
-    container.appendChild(note);
-
-    const section = document.createElement("div");
-    section.className = "cfg-section";
-    const heading = document.createElement("div");
-    heading.className = "cfg-section-heading";
-    heading.textContent = sectionMeta.label;
-    section.appendChild(heading);
-
-    for (const id of sectionMeta.ids) {
-      const setting = settingsById.get(id);
-      if (setting) {
-        orderedDefault.push(setting);
-        const row = buildSettingRow(setting, app, pendingApplyIds.has(setting.id));
-        rowEls[setting.id] = row.el;
-        section.appendChild(row.el);
-      }
+    const swatches = document.createElement("span");
+    swatches.className = "theme-swatches";
+    for (const color of theme.swatches) {
+      const swatch = document.createElement("span");
+      swatch.className = "theme-swatch";
+      swatch.style.background = color;
+      swatches.appendChild(swatch);
     }
 
-    if (section.children.length > 1) {
-      container.appendChild(section);
-    }
+    button.appendChild(name);
+    button.appendChild(swatches);
+    button.addEventListener("click", () => {
+      applyTheme(theme.id, true);
+      buildThemePanel(container);
+    });
+    grid.appendChild(button);
   }
 
-  const leftover = settings.filter((s) => !orderedDefault.includes(s));
-  if (leftover.length) {
-    appendCategorySections(container, leftover, rowEls, app, pendingApplyIds);
-  }
-
-  appendResetDefaultsAction(container, app, "modes", settings);
+  container.appendChild(grid);
 }
 
 function appendResetDefaultsAction(container, app, tabId, tabSettings) {
@@ -455,94 +441,6 @@ function appendResetDefaultsAction(container, app, tabId, tabSettings) {
 
   actions.appendChild(resetBtn);
   container.appendChild(actions);
-  appendShareImportActions(container, app);
-}
-
-function appendShareImportActions(container, app) {
-  const actions = document.createElement("div");
-  actions.className = "cfg-actions cfg-share-actions";
-
-  const status = document.createElement("div");
-  status.className = "cfg-share-status";
-  status.setAttribute("aria-live", "polite");
-
-  const copyBtn = document.createElement("button");
-  copyBtn.className = "panel-btn";
-  copyBtn.type = "button";
-  copyBtn.textContent = "Copy Share URL";
-  copyBtn.title = "Copy a URL with visible non-default settings";
-
-  const exportBtn = document.createElement("button");
-  exportBtn.className = "panel-btn";
-  exportBtn.type = "button";
-  exportBtn.textContent = "Export JSON";
-  exportBtn.title = "Download visible non-default settings as JSON";
-
-  const importBtn = document.createElement("button");
-  importBtn.className = "panel-btn";
-  importBtn.type = "button";
-  importBtn.textContent = "Import JSON";
-  importBtn.title = "Import a settings JSON file";
-
-  const importInput = document.createElement("input");
-  importInput.type = "file";
-  importInput.accept = "application/json,.json";
-  importInput.hidden = true;
-
-  function setStatus(text, isError = false) {
-    status.textContent = text;
-    status.classList.toggle("cfg-share-error", isError);
-  }
-
-  copyBtn.addEventListener("click", async () => {
-    const url = buildShareUrl(app);
-    try {
-      await navigator.clipboard.writeText(url);
-      setStatus("Share URL copied.");
-    } catch (e) {
-      console.warn("[panels] clipboard write failed:", e);
-      setStatus("Copy failed; share URL is in the console.", true);
-    }
-    console.info("[panels] share URL", url);
-  });
-
-  exportBtn.addEventListener("click", () => {
-    const payload = exportConfigPayload(app);
-    const blob = new Blob([JSON.stringify(payload, null, 2) + "\n"], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "fluidlab-config.json";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    setStatus(`Exported ${Object.keys(payload.settings).length} settings.`);
-    console.info("[panels] export config", payload);
-  });
-
-  importBtn.addEventListener("click", () => importInput.click());
-  importInput.addEventListener("change", async () => {
-    const file = importInput.files && importInput.files[0];
-    importInput.value = "";
-    if (!file) return;
-    try {
-      const payload = JSON.parse(await file.text());
-      const result = applySettingEntries(app, entriesFromImportPayload(payload), "file import");
-      persistCurrentSettings(app);
-      setStatus(formatImportSummary(result), result.rejected > 0);
-    } catch (e) {
-      console.warn("[panels] import failed:", e);
-      setStatus("Import failed; see console.", true);
-    }
-  });
-
-  actions.appendChild(copyBtn);
-  actions.appendChild(exportBtn);
-  actions.appendChild(importBtn);
-  actions.appendChild(importInput);
-  container.appendChild(actions);
-  container.appendChild(status);
 }
 
 function appendCategorySections(parent, settings, rowEls, app, pendingApplyIds = new Set()) {
@@ -579,8 +477,7 @@ function appendCategorySections(parent, settings, rowEls, app, pendingApplyIds =
 
 function appendHelpIcons(labelWrap, s) {
   const hasFunctional = typeof s.tooltip === "string" && s.tooltip.length > 0;
-  const hasTechnical = typeof s.technical_tooltip === "string" && s.technical_tooltip.length > 0;
-  if (!hasFunctional && !hasTechnical) return;
+  if (!hasFunctional) return;
 
   const help = document.createElement("span");
   help.className = "cfg-help";
@@ -594,17 +491,6 @@ function appendHelpIcons(labelWrap, s) {
     info.setAttribute("aria-label", "Setting help");
     attachTip(info, s.tooltip, "functional");
     help.appendChild(info);
-  }
-
-  if (hasTechnical) {
-    const tech = document.createElement("span");
-    tech.className = "cfg-info cfg-info-technical";
-    tech.textContent = "T";
-    tech.tabIndex = 0;
-    tech.setAttribute("role", "button");
-    tech.setAttribute("aria-label", "Technical setting help");
-    attachTip(tech, s.technical_tooltip, "technical");
-    help.appendChild(tech);
   }
 
   labelWrap.appendChild(help);
@@ -957,20 +843,6 @@ function buildProfilerPanel(container, app) {
       </div>
     `;
 
-    if (g.diffuse) {
-      const d = g.diffuse;
-      html += `
-        <div class="prof-row">
-          <span class="prof-key">Foam particles${d.clamped > 0 ? ' <span class="prof-dominant">(capped)</span>' : ""}</span>
-          <span class="prof-val">${(d.alive ?? 0).toLocaleString()}</span>
-        </div>
-        <div class="prof-row">
-          <span class="prof-key">&nbsp;&nbsp;emitted / clamped</span>
-          <span class="prof-val">${(d.emitted ?? 0).toLocaleString()} / ${(d.clamped ?? 0).toLocaleString()}</span>
-        </div>
-      `;
-    }
-
     if (g.sections) {
       html += `
         <div class="prof-divider"></div>
@@ -1036,6 +908,7 @@ export function initPanels(app) {
   }
 
   const stored = loadStoredConfig();
+  applyTheme(loadStoredTheme(), false);
   if (Object.keys(stored).length > 0) {
     applySettingEntries(app, Object.entries(stored), "localStorage");
   }
@@ -1054,6 +927,8 @@ export function initPanels(app) {
     const currentSettings = safeConfigJson(app);
     if (activeTab === "profiler") {
       buildProfilerPanel(settingsBody, app);
+    } else if (activeTab === "theme") {
+      buildThemePanel(settingsBody);
     } else {
       buildConfigPanel(settingsBody, app, activeTab, currentSettings);
     }
@@ -1095,15 +970,7 @@ export function initPanels(app) {
     if (isOpen) renderActiveTab();
   }
 
-  let lastGroup = "";
   for (const tab of tabs) {
-    if (tab.group !== lastGroup) {
-      lastGroup = tab.group;
-      const group = document.createElement("div");
-      group.className = "tab-group-label";
-      group.textContent = tab.group;
-      tabsRoot.appendChild(group);
-    }
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "tab-btn";
@@ -1146,7 +1013,7 @@ export function initPanels(app) {
       if (isOpen) renderActiveTab();
     },
     rerenderModes() {
-      if (isOpen && activeTab === "modes") renderActiveTab();
+      if (isOpen && activeTab === "scenario") renderActiveTab();
     },
     applySettings(entries, source = "import") {
       const result = applySettingEntries(app, entries, source);
@@ -1167,6 +1034,14 @@ export function initPanels(app) {
     },
     setting(id) {
       return safeConfigJson(app).find((s) => s.id === id) || null;
+    },
+    setTheme(id) {
+      const themeId = applyTheme(id, true);
+      if (isOpen && activeTab === "theme") renderActiveTab();
+      return themeId;
+    },
+    activeTheme() {
+      return activeThemeId();
     },
     isOpen() {
       return isOpen;

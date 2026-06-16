@@ -1,8 +1,8 @@
 ---
-status:        draft
-owner:         unassigned
+status:        shipped
+owner:         codex
 last_updated:  2026-06-16
-okay_to_delete: false
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/web-shell.md
@@ -54,6 +54,20 @@ Out of scope:
 - Redesigning the profiler or changing simulation behavior beyond the camera-pitch
   default and settings/tab ownership requested here.
 
+## Sequencing and ownership
+
+This plan runs after `render-feature-removals.md` and before
+`dev-theme-system.md`. Start from the smaller settings surface produced by the render
+removal work so the compact shell does not preserve tabs or controls that no longer
+exist.
+
+Owned surfaces: `web/*`, shell layout/CSS for existing controls, tab rendering,
+settings tab metadata needed for grouping/renaming/splitting, camera-pitch default, and
+`architecture/web-shell.md` / `architecture/settings.md`.
+
+Do not own: render internals, Foam/micronormal/flat-water GPU cleanup, or the dev-only
+theme preset system beyond creating/reusing the shared `dev=true` helper.
+
 ## Approach
 
 One implementer can own this as a web-shell/settings-registry stream. Start from the
@@ -78,6 +92,8 @@ and by `dev-theme-system.md` for the Theme tab.
 
 - Browser smoke on the static app path shows the compact main controls and bottom
   launcher at desktop and narrow/mobile viewports.
+- Desktop and narrow/mobile captures show no overlapping controls, clipped tab labels,
+  or illegible icon buttons after compaction.
 - Settings panel opens, tab navigation works, Environment is hidden by default, and
   Environment appears with `?dev=true`.
 - Scenario contains the former Mode settings, the old separate Mode settings tab is
@@ -101,9 +117,12 @@ and by `dev-theme-system.md` for the Theme tab.
 
 ## Migration notes (filled in at ship time)
 
-- Current-state UI and shell facts go to `architecture/web-shell.md`.
-- Registry tab metadata, visible setting ownership, tooltip fields, and default changes
-  go to `architecture/settings.md`.
+- Current-state UI and shell facts went to `architecture/web-shell.md`: compact
+  toolbar/launcher, direct tab rendering without group labels, no visible
+  share/export/import actions, no Scenario summary, Environment dev gating, and
+  retained capture helper APIs.
+- Registry tab metadata, visible setting ownership, tooltip behavior, and the
+  `camera.rot_x = -0.3` default went to `architecture/settings.md`.
 
 ## See also
 

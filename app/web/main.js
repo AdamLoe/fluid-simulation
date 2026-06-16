@@ -362,6 +362,9 @@ async function main() {
     setting(id) {
       return panelApi?.setting(id) || null;
     },
+    setTheme(id) {
+      return panelApi?.setTheme(id) || "default";
+    },
     state() {
       return {
         settingsOpen: panelApi?.isOpen() ?? false,
@@ -371,6 +374,7 @@ async function main() {
         productMode,
         controlTarget,
         manualPointerMode: controlTarget,
+        theme: panelApi?.activeTheme() ?? "default",
         paused: app.is_paused(),
         gpuDeviceStatus: gpuDeviceStatus(app),
         gpuStopped: stoppedForGpuStatus,

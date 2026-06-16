@@ -12,6 +12,7 @@
         --chrome-bg: rgba(12, 16, 24, 0.62);
         --chrome-border: rgba(78, 92, 120, 0.55);
         --chrome-hover: rgba(31, 38, 54, 0.92);
+        --chrome-text: #dbe6f6;
         --panel-bg: rgba(15, 18, 25, 0.92);
         --panel-border: #2a3142;
         --control-bg: #0f1219;
@@ -26,6 +27,15 @@
         --warning: #fbbf24;
         --danger: #f87171;
         --success: #4ade80;
+        --button-bg: #1b2130;
+        --button-hover: #232b3d;
+        --button-border: #2a3142;
+        --mode-active-bg: rgba(24, 48, 32, 0.88);
+        --mode-active-border: rgba(74, 222, 128, 0.85);
+        --tab-active-bg: rgba(26, 44, 62, 0.42);
+        --tip-bg: #0f1219;
+        --tip-border: #2a3142;
+        --tip-text: #cdd6e4;
         --focus-ring: rgba(125, 211, 252, 0.9);
         --radius-sm: 4px;
         --radius-md: 6px;
@@ -33,10 +43,74 @@
         --space-1: 4px;
         --space-2: 8px;
         --space-3: 12px;
-        --control-height: 32px;
-        --panel-width: clamp(380px, 34vw, 520px);
-        --settings-nav-width: 148px;
+        --control-height: 28px;
+        --panel-width: clamp(340px, 31vw, 480px);
+        --settings-nav-width: 116px;
         --shadow-panel: 0 12px 32px rgba(0, 0, 0, 0.44);
+      }
+
+      :root[data-theme="harbor"] {
+        --app-bg: #081013;
+        --chrome-bg: rgba(9, 25, 30, 0.72);
+        --chrome-border: rgba(45, 145, 155, 0.58);
+        --chrome-hover: rgba(15, 56, 64, 0.94);
+        --chrome-text: #d9fbff;
+        --panel-bg: rgba(10, 21, 25, 0.94);
+        --panel-border: #24545c;
+        --control-bg: #0b1a1f;
+        --control-hover: #12343b;
+        --divider: #18343a;
+        --text-body: #c8dde2;
+        --text-muted: #7fa1a8;
+        --text-strong: #efffff;
+        --accent: #5eead4;
+        --accent-strong: #22d3ee;
+        --active: #2dd4bf;
+        --warning: #facc15;
+        --danger: #fb7185;
+        --success: #5eead4;
+        --button-bg: #0f3740;
+        --button-hover: #15515e;
+        --button-border: #2b6670;
+        --mode-active-bg: rgba(15, 78, 76, 0.9);
+        --mode-active-border: rgba(94, 234, 212, 0.88);
+        --tab-active-bg: rgba(20, 76, 82, 0.48);
+        --tip-bg: #0b1a1f;
+        --tip-border: #2b6670;
+        --tip-text: #d9fbff;
+        --focus-ring: rgba(34, 211, 238, 0.9);
+      }
+
+      :root[data-theme="signal"] {
+        --app-bg: #101014;
+        --chrome-bg: rgba(20, 20, 26, 0.76);
+        --chrome-border: rgba(251, 191, 36, 0.52);
+        --chrome-hover: rgba(44, 38, 33, 0.94);
+        --chrome-text: #fff7ed;
+        --panel-bg: rgba(18, 18, 23, 0.94);
+        --panel-border: #4a3c30;
+        --control-bg: #17171d;
+        --control-hover: #2d2630;
+        --divider: #302b31;
+        --text-body: #e5dde1;
+        --text-muted: #a79aa1;
+        --text-strong: #fff8f0;
+        --accent: #22d3ee;
+        --accent-strong: #f59e0b;
+        --active: #84cc16;
+        --warning: #f59e0b;
+        --danger: #f43f5e;
+        --success: #84cc16;
+        --button-bg: #b45309;
+        --button-hover: #d97706;
+        --button-border: #f59e0b;
+        --mode-active-bg: rgba(132, 204, 22, 0.22);
+        --mode-active-border: rgba(132, 204, 22, 0.88);
+        --tab-active-bg: rgba(244, 63, 94, 0.18);
+        --tip-bg: #17171d;
+        --tip-border: #b45309;
+        --tip-text: #fff7ed;
+        --focus-ring: rgba(245, 158, 11, 0.95);
       }
 
       html, body {
@@ -95,21 +169,21 @@
 
       #toolbar {
         position: absolute;
-        top: 12px;
-        left: 12px;
-        right: 12px;
+        top: 6px;
+        left: 6px;
+        right: 6px;
         z-index: 30;
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
-        gap: 12px;
+        gap: 8px;
         pointer-events: none;
       }
 
       .toolbar-cluster {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 6px;
         min-width: 0;
       }
 
@@ -118,7 +192,7 @@
         align-items: baseline;
         gap: 8px;
         min-width: 0;
-        padding: 9px 12px;
+        padding: 6px 9px;
         border: 1px solid var(--chrome-border);
         border-radius: var(--radius-lg);
         background: var(--chrome-bg);
@@ -129,7 +203,7 @@
 
       .toolbar-brand strong {
         color: var(--text-strong);
-        font-size: 14px;
+        font-size: 13px;
         font-weight: 700;
       }
 
@@ -142,19 +216,19 @@
       .toolbar-actions {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
         pointer-events: auto;
       }
 
       .icon-btn {
-        width: 40px;
-        height: 40px;
+        width: 32px;
+        height: 32px;
         display: grid;
         place-items: center;
         border: 1px solid var(--chrome-border);
-        border-radius: 8px;
+        border-radius: var(--radius-md);
         background: var(--chrome-bg);
-        color: #dbe6f6;
+        color: var(--chrome-text);
         cursor: pointer;
         backdrop-filter: blur(10px);
         -webkit-backdrop-filter: blur(10px);
@@ -179,8 +253,8 @@
       }
 
       .icon-btn svg {
-        width: 18px;
-        height: 18px;
+        width: 20px;
+        height: 20px;
       }
 
       .settings-panel {
@@ -214,34 +288,26 @@
       .settings-tabs {
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 1px;
         min-width: 0;
         overflow-y: auto;
         overflow-x: hidden;
-        padding: 8px;
+        padding: 6px;
         border-right: 1px solid var(--panel-border);
         background: rgba(10, 13, 19, 0.45);
       }
 
-      .tab-group-label {
-        padding: 8px 6px 2px;
-        color: #6b7689;
-        font-size: 10px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-      }
-
       .tab-btn {
         flex: 0 0 auto;
-        min-height: 30px;
+        min-height: 26px;
         width: 100%;
         min-width: 0;
-        border: 1px solid var(--panel-border);
-        border-radius: var(--radius-md);
-        background: rgba(15, 18, 25, 0.78);
+        border: 0;
+        border-left: 2px solid transparent;
+        border-radius: 0;
+        background: transparent;
         color: var(--text-muted);
-        padding: 6px 8px;
+        padding: 5px 6px;
         cursor: pointer;
         text-align: left;
         overflow: hidden;
@@ -250,13 +316,13 @@
 
       .tab-btn:hover {
         background: var(--control-hover);
-        color: #dbe6f6;
+        color: var(--chrome-text);
       }
 
       .tab-btn.tab-active {
         color: var(--accent);
-        border-color: rgba(56, 189, 248, 0.68);
-        background: rgba(26, 44, 62, 0.82);
+        border-left-color: rgba(56, 189, 248, 0.9);
+        background: var(--tab-active-bg);
       }
 
       .tab-btn.tab-experimental {
@@ -513,27 +579,21 @@
       }
       .panel-btn {
         flex: 1;
-        background: #1b2130;
+        background: var(--button-bg);
         color: var(--text-body);
-        border: 1px solid var(--panel-border);
+        border: 1px solid var(--button-border);
         padding: 5px 8px;
         border-radius: 5px;
         cursor: pointer;
         font-size: 11px;
         white-space: nowrap;
       }
-      .panel-btn:hover { background: var(--control-hover); }
+      .panel-btn:hover { background: var(--button-hover); }
       .panel-empty {
         padding: 16px 12px;
         color: #6b7689;
         font-size: 12px;
       }
-      .mode-section-note {
-        padding: 4px 12px 0;
-        color: var(--text-muted);
-        font-size: 11px;
-      }
-
       .prof-row {
         display: flex;
         justify-content: space-between;
@@ -579,9 +639,9 @@
 
       #launcher {
         position: absolute;
-        left: 12px;
-        right: 12px;
-        bottom: 12px;
+        left: 0;
+        right: 0;
+        bottom: 0;
         z-index: 30;
         display: flex;
         justify-content: center;
@@ -590,15 +650,16 @@
 
       .launcher-shell {
         width: fit-content;
-        max-width: calc(100% - 24px);
+        max-width: 100%;
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         justify-content: center;
-        gap: 10px 12px;
-        padding: 10px 12px;
+        gap: 6px 8px;
+        padding: 6px 8px;
         border: 1px solid var(--chrome-border);
-        border-radius: var(--radius-lg);
+        border-bottom: 0;
+        border-radius: var(--radius-lg) var(--radius-lg) 0 0;
         background: var(--chrome-bg);
         backdrop-filter: blur(10px);
         -webkit-backdrop-filter: blur(10px);
@@ -610,7 +671,7 @@
         flex-wrap: wrap;
         align-items: center;
         justify-content: center;
-        gap: 8px;
+        gap: 5px;
         min-width: 0;
       }
 
@@ -622,8 +683,8 @@
       }
 
       .mode-chip {
-        min-height: 36px;
-        padding: 7px 12px;
+        min-height: 28px;
+        padding: 4px 8px;
         border: 1px solid var(--panel-border);
         border-radius: var(--radius-md);
         background: rgba(15, 18, 25, 0.82);
@@ -638,8 +699,56 @@
 
       .mode-chip.mode-active {
         color: var(--success);
-        border-color: rgba(74, 222, 128, 0.85);
-        background: rgba(24, 48, 32, 0.88);
+        border-color: var(--mode-active-border);
+        background: var(--mode-active-bg);
+      }
+
+      .theme-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 6px;
+        padding: 8px;
+      }
+
+      .theme-option {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+        min-height: 42px;
+        padding: 7px 9px;
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-md);
+        background: var(--control-bg);
+        color: var(--text-body);
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .theme-option:hover {
+        background: var(--control-hover);
+      }
+
+      .theme-option.theme-active {
+        border-color: var(--accent-strong);
+        background: var(--tab-active-bg);
+      }
+
+      .theme-name {
+        color: var(--text-strong);
+        font-weight: 700;
+      }
+
+      .theme-swatches {
+        display: flex;
+        gap: 4px;
+      }
+
+      .theme-swatch {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.24);
       }
 
       #unsupported {
@@ -669,9 +778,9 @@
 
       @media (max-width: 820px) {
         #toolbar {
-          top: 10px;
-          left: 10px;
-          right: 10px;
+          top: 6px;
+          left: 6px;
+          right: 6px;
           flex-direction: column;
           align-items: stretch;
         }
@@ -695,10 +804,10 @@
 
         .settings-panel {
           position: absolute;
-          top: 116px;
-          right: 10px;
-          bottom: 132px;
-          width: min(520px, calc(100vw - 20px));
+          top: 90px;
+          right: 6px;
+          bottom: 96px;
+          width: min(500px, calc(100vw - 12px));
           margin: 0;
         }
       }
@@ -718,11 +827,11 @@
         }
 
         .settings-panel {
-          top: 126px;
-          right: 10px;
-          left: 10px;
+          top: 94px;
+          right: 6px;
+          left: 6px;
           width: auto;
-          bottom: 146px;
+          bottom: 116px;
         }
 
         .settings-content {
@@ -738,13 +847,8 @@
           border-bottom: 1px solid var(--panel-border);
         }
 
-        .tab-group-label {
-          width: 100%;
-          padding-left: 4px;
-        }
-
         .tab-btn {
-          flex: 1 1 108px;
+          flex: 1 1 86px;
           width: auto;
           text-align: center;
         }

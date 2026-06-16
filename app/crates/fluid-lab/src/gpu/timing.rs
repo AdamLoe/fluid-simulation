@@ -138,12 +138,6 @@ pub struct Readout {
     pub cg_cats: [f32; CG_CATS_LEN],
     /// CG iterations that were actually timed (== allocated iters, possibly clamped).
     pub cg_iters: u32,
-    /// Surface-foam alive count in slot 0. Slots 1/2 are legacy zeroes for JSON shape.
-    pub diffuse_alive: [u32; 3],
-    /// Diffuse particles emitted on the sampled frame.
-    pub diffuse_emitted: u32,
-    /// Diffuse spawns rejected by the per-frame budget on the sampled frame.
-    pub diffuse_clamped: u32,
 }
 
 pub struct GpuTimers {
@@ -166,8 +160,6 @@ pub struct GpuTimers {
     slots: u32,
     /// byte offset where the liquid count is copied (after all timestamps).
     liquid_offset: u64,
-    /// byte offset where the diffuse counters (6 u32) are copied.
-    diffuse_offset: u64,
     /// substeps actually submitted this frame (set by step()).
     frame_substeps: Cell<u32>,
     /// one-shot guard so the "iters exceed allocation" truncation logs once.
@@ -223,9 +215,7 @@ impl GpuTimers {
 
         let ts_bytes = (slots as u64) * 8;
         let liquid_offset = ts_bytes;
-        // liquid count (4 B + 12 pad), then 6 diffuse counters (24 B + 8 pad).
-        let diffuse_offset = liquid_offset + 16;
-        let read_bytes = diffuse_offset + 32;
+        let read_bytes = liquid_offset + 16;
 
         let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
             label: Some("sim+render timestamps"),
@@ -264,7 +254,6 @@ impl GpuTimers {
             pairs_per_substep,
             slots,
             liquid_offset,
-            diffuse_offset,
             frame_substeps: Cell::new(0),
             iter_warned: Cell::new(false),
         }
@@ -282,7 +271,7 @@ impl GpuTimers {
     /// Tracked timing-buffer bytes: timestamp resolve buffer + mapped readback
     /// buffer. QuerySet driver memory is not exposed by wgpu and is not included.
     pub fn buffer_memory_bytes(&self) -> u64 {
-        self.liquid_offset + self.diffuse_offset + 32
+        self.liquid_offset * 2 + 16
     }
 
     /// Record how many substeps were actually submitted this frame so readback
@@ -378,7 +367,6 @@ impl GpuTimers {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         stats_buf: &wgpu::Buffer,
-        diffuse_counters: &wgpu::Buffer,
     ) -> bool {
         encoder.resolve_query_set(&self.query_set, 0..self.slots, &self.ts_resolve, 0);
 
@@ -389,8 +377,6 @@ impl GpuTimers {
         }
         encoder.copy_buffer_to_buffer(&self.ts_resolve, 0, &self.read_buf, 0, self.liquid_offset);
         encoder.copy_buffer_to_buffer(stats_buf, 0, &self.read_buf, self.liquid_offset, 4);
-        // Diffuse counters [0..6]: cursor, emitted, clamped, alive foam, legacy zeroes.
-        encoder.copy_buffer_to_buffer(diffuse_counters, 0, &self.read_buf, self.diffuse_offset, 24);
         self.pending.set(true);
         true
     }
@@ -404,7 +390,6 @@ impl GpuTimers {
         let period = self.period_ns;
         let slots = self.slots as usize;
         let liquid_offset = self.liquid_offset as usize;
-        let diffuse_offset = self.diffuse_offset as usize;
         let detailed = self.detailed;
         let pairs_per_substep = self.pairs_per_substep;
         let n_substeps = self.frame_substeps.get();
@@ -419,14 +404,6 @@ impl GpuTimers {
                 };
                 let liquid =
                     u32::from_le_bytes(data[liquid_offset..liquid_offset + 4].try_into().unwrap());
-                let du32 =
-                    |o: usize| -> u32 { u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) };
-                // Diffuse counters: [0]=cursor, [1]=emitted, [2]=clamped, [3]=alive foam.
-                let d_emitted = du32(diffuse_offset + 4);
-                let d_clamped = du32(diffuse_offset + 8);
-                let d_foam = du32(diffuse_offset + 12);
-                let d_spray = 0;
-                let d_bubble = 0;
                 let span = |a: u64, b: u64| -> f32 {
                     if b > a {
                         (b - a) as f32 * period * 1e-6
@@ -445,9 +422,6 @@ impl GpuTimers {
                     valid: true,
                     substeps: n_substeps,
                     detailed,
-                    diffuse_alive: [d_foam, d_spray, d_bubble],
-                    diffuse_emitted: d_emitted,
-                    diffuse_clamped: d_clamped,
                     ..Readout::default()
                 };
 
@@ -487,8 +461,8 @@ impl GpuTimers {
                     //   finish   = sections[FINISH_START..N_FINE]   (gradient_* .. g2p)
                     let sec = &out.sections;
                     out.prep_ms = sec[0..PREP_END].iter().sum();
-                    out.pressure_ms =
-                        sec[PREP_END..FINISH_START].iter().sum::<f32>() + out.cg_cats.iter().sum::<f32>();
+                    out.pressure_ms = sec[PREP_END..FINISH_START].iter().sum::<f32>()
+                        + out.cg_cats.iter().sum::<f32>();
                     out.finish_ms = sec[FINISH_START..N_FINE].iter().sum();
                 }
 

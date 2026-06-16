@@ -1,8 +1,8 @@
 ---
-status:        draft
-owner:         unassigned
+status:        shipped
+owner:         codex
 last_updated:  2026-06-16
-okay_to_delete: false
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/web-shell.md
@@ -18,6 +18,10 @@ future themes easy to add. Done means `?dev=true` reveals a Theme tab, theme sel
 persists in localStorage, the app styling is expressed through a broad CSS variable
 surface, and the initial theme set includes neutral, dual-color, and tri-color options
 with meaningful visual variety.
+
+Initial preset set: `default` (neutral restrained shell), `harbor` (dual-color blue/teal
+accents on neutral surfaces), and `signal` (tri-color accents with stronger action
+backgrounds). Additional presets are optional only if they remain visually distinct.
 
 ## Scope
 
@@ -41,6 +45,19 @@ Out of scope:
   variable is already clearly wired to those controls.
 - Settings-tab compaction, tab renaming, or Environment-tab gating beyond sharing the
   `dev=true` helper with `ui-shell-settings-simplification.md`.
+
+## Sequencing and ownership
+
+This plan runs third, after `render-feature-removals.md` and
+`ui-shell-settings-simplification.md`. Reuse the shared `dev=true` helper and the final
+flattened settings/tab structure from the UI simplification work.
+
+Owned surfaces: CSS variables, theme preset definitions, shell-owned theme state,
+localStorage persistence, dev-gated Theme tab, and `architecture/web-shell.md` updates.
+
+Do not own: settings-tab restructuring, Environment-tab behavior except shared dev-mode
+reuse, Rust settings registry unless a hard implementation need appears, or WebGPU
+render-color changes.
 
 ## Approach
 
@@ -82,9 +99,10 @@ actions.
 
 ## Migration notes (filled in at ship time)
 
-- Shell-owned theme state, dev gating, localStorage behavior, and CSS variable contract
-  go to `architecture/web-shell.md`.
-- Registry-backed theme metadata, if added, goes to `architecture/settings.md`.
+- Shell-owned theme state, dev gating, localStorage behavior, helper API, and the CSS
+  variable/preset contract went to `architecture/web-shell.md`.
+- No registry-backed theme metadata was added, so `architecture/settings.md` only
+  records that Theme is a shell-owned dev-only tab.
 
 ## See also
 

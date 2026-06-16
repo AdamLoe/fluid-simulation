@@ -1,8 +1,8 @@
 ---
-status:        draft
-owner:         unassigned
+status:        shipped
+owner:         codex
 last_updated:  2026-06-16
-okay_to_delete: false
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/rendering.md
@@ -22,12 +22,18 @@ passes, expose settings, report visible profiler state, or appear in current
 architecture docs, and the water renderer still builds and runs through the supported
 render modes.
 
+Foam here means the persistent surface-foam feature exposed by the Foam tab and its
+enable/disable control. Keep the Water composite's core speed-weighted whitewater/foam
+tint; this plan must not remove that whitewater signal.
+
 ## Scope
 
 In scope:
 
 - Remove surface foam as a runtime feature, including its settings, GPU resources,
   shaders/passes, render dispatch, visible profiler text, and docs references.
+- Keep core Water-mode whitewater tinting that is not backed by the Foam tab's
+  persistent `DiffuseSystem` resources/settings.
 - Remove micronormal controls and shader/runtime behavior from the water surface.
 - Remove flat-water / wall-contact controls and shader/runtime behavior.
 - Remove or simplify legacy compatibility for these ids. The user explicitly does not
@@ -40,6 +46,20 @@ Out of scope:
   `ui-shell-settings-simplification.md`.
 - Theme variables or color presets; that belongs to `dev-theme-system.md`.
 - Replacing removed features with a new SDF, level-set, wall-fill, or whitewater system.
+
+## Sequencing and ownership
+
+This plan runs first. `ui-shell-settings-simplification.md` and
+`dev-theme-system.md` should wait until these render settings and tabs are gone.
+
+Owned surfaces: Rust GPU/render/settings/profiler removal work plus
+`architecture/rendering.md`, `architecture/settings.md`,
+`architecture/gpu-resources.md`, `architecture/profiler.md`, and
+`decisions/rendering.md`.
+
+Do not own: cosmetic settings-tab restructuring, web-shell theme state, or the compact
+control layout except where deleting Foam/micronormal/flat-water controls leaves dead UI
+references.
 
 ## Approach
 
@@ -66,6 +86,9 @@ grid slice overlay.
 - Water, OpticalParticles, and SimpleParticles render paths still compile and run.
 - `cargo build --target wasm32-unknown-unknown` and `cargo test --lib` pass from `app/`.
 - A browser capture of Water mode succeeds without WebGPU validation/device-loss errors.
+- The Water-mode capture is reviewed near tank walls after flat-water/contact-fill
+  removal; any visible wall-contact regression is either fixed or explicitly accepted in
+  `decisions/rendering.md`.
 - `architecture/rendering.md`, `architecture/settings.md`,
   `architecture/gpu-resources.md`, `architecture/profiler.md`, and
   `decisions/rendering.md` reflect the smaller render surface.
@@ -81,12 +104,20 @@ grid slice overlay.
 
 ## Migration notes (filled in at ship time)
 
-- Current render-pass and removed-feature facts go to `architecture/rendering.md`.
-- Removed setting ids and any remaining legacy behavior go to `architecture/settings.md`.
-- Removed buffers/pipelines go to `architecture/gpu-resources.md`.
-- Stats/profiler shape changes go to `architecture/profiler.md`.
-- The rationale for not replacing these systems goes to `decisions/rendering.md` if it
-  is not already covered.
+- Current render-pass and removed-feature facts went to `architecture/rendering.md`:
+  Water still owns thickness/whitewater/depth smoothing and composite, while
+  persistent `DiffuseSystem`, micronormals, and flat-water/wall-contact correction are
+  absent.
+- Removed setting ids and legacy behavior went to `architecture/settings.md`: current
+  `render.diffuse.*`, `render.hero.micro_normal_*`, `render.hero.flat_water.*`, and
+  `render.hero.wall_contact_enabled` imports are rejected as unknown, while older
+  caustic/temporal/wet-wall compatibility ids remain hidden no-ops.
+- Removed buffers/pipelines went to `architecture/gpu-resources.md`; `DiffuseSystem`
+  buffers/counters are gone and tracked memory is sim/render-target/timing only.
+- Stats/profiler shape changes went to `architecture/profiler.md`; `gpu.diffuse`,
+  foam counters, and visible foam profiler rows are gone.
+- The rationale for keeping only the Water composite speed-weighted whitewater tint
+  went to `decisions/rendering.md`.
 
 ## See also
 

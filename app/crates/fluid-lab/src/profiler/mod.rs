@@ -149,10 +149,6 @@ struct GpuSample {
     cg_iters: u32,
     /// Substeps the per-pass totals were summed over (for ms/substep display).
     substeps: u32,
-    /// Surface-foam alive count in slot 0. Slots 1/2 are legacy zeroes for JSON shape.
-    diffuse_alive: [u32; 3],
-    diffuse_emitted: u32,
-    diffuse_clamped: u32,
 }
 
 impl Profiler {
@@ -275,9 +271,6 @@ impl Profiler {
             cg_cats: r.cg_cats,
             cg_iters: r.cg_iters,
             substeps: r.substeps,
-            diffuse_alive: r.diffuse_alive,
-            diffuse_emitted: r.diffuse_emitted,
-            diffuse_clamped: r.diffuse_clamped,
         });
     }
 
@@ -387,19 +380,6 @@ impl Profiler {
                 ));
             }
             out.push_str(&format!("│   liquid cells     {}\n", g.liquid_cells));
-            let diffuse_total = g.diffuse_alive[0];
-            if diffuse_total > 0 || g.diffuse_emitted > 0 {
-                out.push_str(&format!(
-                    "│   foam alive       {}  emitted {}  (compute outside timestamp total){}\n",
-                    diffuse_total,
-                    g.diffuse_emitted,
-                    if g.diffuse_clamped > 0 {
-                        format!("  ⚠ budget-clamped {}", g.diffuse_clamped)
-                    } else {
-                        String::new()
-                    },
-                ));
-            }
         }
         out.push_str("│ CPU scopes (encode time, ms/frame over window):\n");
         for s in &self.scopes {
@@ -477,17 +457,8 @@ impl Profiler {
                 } else {
                     String::new()
                 };
-                let diffuse = format!(
-                    r#","diffuse":{{"alive":{al},"foam":{fo},"spray":{sp},"bubble":{bu},"emitted":{em},"clamped":{cl},"compute_timed":false}}"#,
-                    al = g.diffuse_alive[0],
-                    fo = g.diffuse_alive[0],
-                    sp = g.diffuse_alive[1],
-                    bu = g.diffuse_alive[2],
-                    em = g.diffuse_emitted,
-                    cl = g.diffuse_clamped,
-                );
                 format!(
-                    r#"{{"sim_ms":{sim},"prep_ms":{prep},"pressure_ms":{pres},"finish_ms":{fin},"render_ms":{ren},"liquid_cells":{lc},"substeps":{subs},"detailed":{det}{detail}{diffuse}}}"#,
+                    r#"{{"sim_ms":{sim},"prep_ms":{prep},"pressure_ms":{pres},"finish_ms":{fin},"render_ms":{ren},"liquid_cells":{lc},"substeps":{subs},"detailed":{det}{detail}}}"#,
                     sim = fmt_ms(sim_ms as f64),
                     prep = fmt_ms(g.prep_ms as f64),
                     pres = fmt_ms(g.pressure_ms as f64),
@@ -497,7 +468,6 @@ impl Profiler {
                     subs = g.substeps,
                     det = g.detailed,
                     detail = detail,
-                    diffuse = diffuse,
                 )
             }
         };
@@ -525,7 +495,6 @@ impl Profiler {
         };
         let sim_buffers_mb = format!("{:.1}", sim_buffers_bytes as f64 / 1.0e6);
         let render_targets_mb = format!("{:.1}", f.memory.render_targets_bytes as f64 / 1.0e6);
-        let diffuse_mb = format!("{:.1}", f.memory.diffuse_bytes as f64 / 1.0e6);
         let timing_mb = if f.memory.timing_bytes > 0 {
             format!("{:.1}", f.memory.timing_bytes as f64 / 1.0e6)
         } else {
@@ -560,7 +529,7 @@ impl Profiler {
         };
 
         format!(
-            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"filled_volume":{fv},"liquid_fraction":{lf},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"particle_dispatch_groups_x":{pdgx},"particle_dispatch_groups_y":{pdgy},"particle_dispatch_capacity":{pdcap},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"sim_buffers_mb":{sim_mb},"render_targets_mb":{rt_mb},"diffuse_mb":{diffuse_mb},"timing_mb":{timing_mb},"total_tracked_mb":{total_mb},"substeps_this_frame":{stf},"fixed_dt_ms":{fdt},"max_substeps":{max_substeps},"natural_substeps":{natural_substeps},"substep_cap_hit":{cap_hit},"sim_advanced_ms":{sim_adv},"wall_raf_ms":{wall_raf},"real_time_factor":{rtf},"timestep_policy":"{policy}","accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
+            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"filled_volume":{fv},"liquid_fraction":{lf},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"particle_dispatch_groups_x":{pdgx},"particle_dispatch_groups_y":{pdgy},"particle_dispatch_capacity":{pdcap},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"sim_buffers_mb":{sim_mb},"render_targets_mb":{rt_mb},"timing_mb":{timing_mb},"total_tracked_mb":{total_mb},"substeps_this_frame":{stf},"fixed_dt_ms":{fdt},"max_substeps":{max_substeps},"natural_substeps":{natural_substeps},"substep_cap_hit":{cap_hit},"sim_advanced_ms":{sim_adv},"wall_raf_ms":{wall_raf},"real_time_factor":{rtf},"timestep_policy":"{policy}","accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
             timing = self.timing_source.label(),
             sample_count = samples.len(),
             avg = fmt_ms(avg),
@@ -589,7 +558,6 @@ impl Profiler {
             gmb = gpu_buffer_mb,
             sim_mb = sim_buffers_mb,
             rt_mb = render_targets_mb,
-            diffuse_mb = diffuse_mb,
             timing_mb = timing_mb,
             total_mb = total_tracked_mb,
             stf = ts.substeps_this_frame,

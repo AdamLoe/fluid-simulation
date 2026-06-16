@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-12
+last_updated:  2026-06-16
 okay_to_delete: false
 long_lived:    true
 ---
@@ -27,12 +27,14 @@ index.html -> main.js -> panels.js
 - Wiring Pause, Reset, Settings, the right-side settings panel, bottom Mode/Control
   segmented controls, keyboard shortcuts, pointer dispatch, and wheel zoom.
 - URL params `?set=id:value` (repeatable, registry-backed), plus legacy shell params
-  `?pressure=off`, `?paused=1`, `?flip=N`, `?slice=1`, and `?slicemode=N`.
+  `?pressure=off`, `?paused=1`, `?flip=N`, `?slice=1`, `?slicemode=N`, and
+  `?dev=true`.
 - Exposing `window.__fluidShell` helpers for captures, including
   `openSettings`, `selectSettingsTab`, `selectProductMode`, `selectControlTarget`,
   `reset`, `applySettings`, `importConfigPayload`, `exportConfig`, `shareUrl`,
-  `setting`, and `state`; close/workspace/manual-pointer aliases remain available for
-  compatibility. `reset` returns the underlying `FluidApp::reset` boolean.
+  `setting`, `setTheme`, `activeTheme`, and `state`; close/workspace/manual-pointer
+  aliases remain available for compatibility. `reset` returns the underlying
+  `FluidApp::reset` boolean.
 
 ## Canonical shell
 
@@ -52,13 +54,13 @@ body. There is no separate header band, no `#settings-nav-toggle`, no
 sits beside the body; on narrow screens the tabs wrap above the body. The toolbar
 settings button remains the open/close control.
 
-Tabs are derived from registry metadata in `app.config_json()`, grouped by
-`tab_group`, sorted by `tab_order`, and followed by a Profiler tab. Rows support
-slider+number controls, dropdowns, color pickers, log2 sliders (the color swatches),
-per-setting reset buttons, and help affordances. The Scenario tab also renders a
-read-only "Effective scenario" summary at its top (grid resolution, total cells, and
-the resolved particle count from `stats_json`), so the derived `particles.density`
-count is visible without opening the Profiler.
+Tabs are derived directly from registry metadata in `app.config_json()`, sorted by
+`tab_order`, and followed by Profiler. The shell does not render registry tab groups.
+`Environment` is hidden unless `?dev=true`; `Theme` is a shell-owned dev-only tab
+that also appears only with `?dev=true`. Rows support slider+number controls,
+dropdowns, color pickers, log2 sliders, color swatches, and per-setting reset buttons.
+The shell renders only functional help affordances; registry `technical_tooltip`
+metadata is not surfaced in the panel.
 
 Changes call `app.set_setting_result_json(id, value)` and persist visible non-default
 overrides to `localStorage` under `fluidlab.config.v1`. The result JSON reports
@@ -67,16 +69,15 @@ so sliders and number boxes reflect clamped stored values instead of assuming th
 requested value stuck.
 
 Hidden scheduler booleans are not rendered or persisted. Removed render ids are sent
-to the bridge during restore/import; Rust owns legacy mapping/ignoring and reports
-`legacy_mapped` or `legacy_ignored`. Future saves walk visible non-default rows only,
-so removed ids disappear on the next save.
+to the bridge during restore/import; Rust owns legacy mapping/ignoring/rejection and
+reports structured outcomes. Future saves walk visible non-default rows only, so
+removed ids disappear on the next save.
 
-Each config tab ends with compact portability actions: copy a share URL, export JSON,
-and import JSON. Export emits `{schema:"fluidlab.config.v1", settings:{id:value}}`
-over visible non-default rows. File import also accepts the older raw settings map,
-applies every entry through the same bridge-backed batch path as URL and
-localStorage restore, persists the resulting visible non-default settings, logs the
-structured outcomes, and shows a small applied/rejected/clamped/reset/reload summary.
+Portable config actions are no longer visible buttons in the panel. The capture/API
+helpers remain: `exportConfig()` emits `{schema:"fluidlab.config.v1",
+settings:{id:value}}` over visible non-default rows, `importConfigPayload()` applies
+entries through the same bridge-backed batch path as URL and localStorage restore, and
+`shareUrl()` returns a URL containing repeated `set` params.
 
 Shareable registry settings use repeated `set` URL params:
 
@@ -96,9 +97,15 @@ browser smoke checks. `window.__fluidShell.setting(id)` returns the current regi
 row from `config_json()`, and the shell methods above expose the same import/export
 and share URL behavior without needing to click the panel.
 
-The Profiler tab polls `app.stats_json()` at 4 Hz while open. It reports foam
-particles/emitted/clamped only; legacy JSON keys for spray and bubble may be present
-as zeroes but are not shown as visible feature counts.
+The Profiler tab polls `app.stats_json()` at 4 Hz while open. Persistent foam particle
+rows were removed with `DiffuseSystem`; the panel reports the remaining timing,
+memory, scale, and liveness facts.
+
+The Theme tab is shell-owned rather than registry-owned. It offers the preset ids
+`default`, `harbor`, and `signal`, writes the selected id to `localStorage` under
+`fluidlab.theme.v1`, and applies the choice by setting `data-theme` on the root. The
+choice is included in `window.__fluidShell.state().theme` and can be changed through
+`window.__fluidShell.setTheme(id)`.
 
 GPU platform status is exposed through `app.gpu_device_status()` and mirrored in
 `window.__fluidShell.state().gpuDeviceStatus`. Current values are `ok`,

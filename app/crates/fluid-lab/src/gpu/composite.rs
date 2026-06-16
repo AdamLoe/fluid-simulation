@@ -30,7 +30,6 @@ struct HeroUniform {
     envc: [f32; 4], // x = environment rotation, y = environment mode, z = roughness base, w = unused
     rough: [f32; 4], // x = velocity scale, y = normal-variance scale, z = foam scale, w = unused
     sun: [f32; 4],  // xyz = world sun direction, w = sun intensity
-    micro: [f32; 4], // x = enabled, y = strength, z = scale, w = velocity scale
     spec: [f32; 4], // x = specular strength, yzw = unused
     // --- Surface normal quality (v1.19 round-2) ---
     norm: [f32; 4], // x = normal_stencil (as f32), y = normal_smooth_strength, z = feature_preservation, w = unused
@@ -38,21 +37,10 @@ struct HeroUniform {
 
 /// Per-frame camera uniform for composite.wgsl.
 /// - eye_to_world: camera-only eye->world rotation (mat4x4, upper-left 3x3 used).
-/// - box_eye_local: camera eye in box-local space (xyz, w=unused).
-/// - box_rot_col0/1/2: box-local→world rotation columns (mat3 padded to vec4s).
-/// - tank_lo/hi: tank bounds in box-local space (xyz, w=unused).
-/// - flat: flat_water params (x=strength, y=epsilon, z=depth_strength, w=unused).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct CamUniform {
     eye_to_world: [[f32; 4]; 4],
-    box_eye_local: [f32; 4],
-    box_rot_col0: [f32; 4],
-    box_rot_col1: [f32; 4],
-    box_rot_col2: [f32; 4],
-    tank_lo: [f32; 4],
-    tank_hi: [f32; 4],
-    flat: [f32; 4], // x=strength, y=epsilon, z=depth_strength, w=contact_fill
 }
 
 fn hero_uniform(hero: &HeroParams) -> HeroUniform {
@@ -116,12 +104,6 @@ fn hero_uniform(hero: &HeroParams) -> HeroUniform {
             hero.sun_direction[1],
             hero.sun_direction[2],
             hero.sun_intensity.max(0.0),
-        ],
-        micro: [
-            if hero.micro_normal_enabled { 1.0 } else { 0.0 },
-            hero.micro_normal_strength.max(0.0),
-            hero.micro_normal_scale.max(1.0),
-            hero.micro_normal_velocity_scale.max(0.0),
         ],
         spec: [hero.specular_strength.max(0.0), 0.0, 0.0, 0.0],
         norm: [
@@ -220,13 +202,6 @@ impl CompositeRenderer {
             label: Some("composite camera uniform"),
             contents: bytemuck::bytes_of(&CamUniform {
                 eye_to_world: glam::Mat4::IDENTITY.to_cols_array_2d(),
-                box_eye_local: [0.0; 4],
-                box_rot_col0: [1.0, 0.0, 0.0, 0.0],
-                box_rot_col1: [0.0, 1.0, 0.0, 0.0],
-                box_rot_col2: [0.0, 0.0, 1.0, 0.0],
-                tank_lo: [-1.0, -1.0, -1.0, 0.0],
-                tank_hi: [1.0, 1.0, 1.0, 0.0],
-                flat: [0.0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -423,48 +398,10 @@ impl CompositeRenderer {
         queue.write_buffer(&self.hero_buf, 0, bytemuck::bytes_of(&hero_uniform(hero)));
     }
 
-    /// Push the per-frame camera uniforms needed by composite.wgsl.
-    /// - `eye_to_world`: camera-only eye->world rotation (env reflection stays world-fixed).
-    /// - `eye_world_local`: camera eye in box-local space (for flat-water plane tests).
-    /// - `box_rot`: box-local→world rotation (for env sample direction from box-local).
-    /// - `tank_lo`/`tank_hi`: tank bounds in box-local space.
-    /// - `hero`: hero params carrying flat_water_strength, flat_water_epsilon, and flat_water_depth_strength.
-    pub fn set_camera(
-        &self,
-        queue: &wgpu::Queue,
-        eye_to_world: &glam::Mat4,
-        eye_world_local: glam::Vec3,
-        box_rot: glam::Mat3,
-        tank_lo: [f32; 3],
-        tank_hi: [f32; 3],
-        hero: &crate::settings::HeroParams,
-    ) {
+    /// Push the camera rotation needed by composite.wgsl for world-fixed reflection.
+    pub fn set_camera(&self, queue: &wgpu::Queue, eye_to_world: &glam::Mat4) {
         let cam = CamUniform {
             eye_to_world: eye_to_world.to_cols_array_2d(),
-            box_eye_local: [eye_world_local.x, eye_world_local.y, eye_world_local.z, 0.0],
-            box_rot_col0: [box_rot.x_axis.x, box_rot.x_axis.y, box_rot.x_axis.z, 0.0],
-            box_rot_col1: [box_rot.y_axis.x, box_rot.y_axis.y, box_rot.y_axis.z, 0.0],
-            box_rot_col2: [box_rot.z_axis.x, box_rot.z_axis.y, box_rot.z_axis.z, 0.0],
-            tank_lo: [tank_lo[0], tank_lo[1], tank_lo[2], 0.0],
-            tank_hi: [tank_hi[0], tank_hi[1], tank_hi[2], 0.0],
-            flat: [
-                if hero.wall_contact_enabled {
-                    hero.flat_water_strength.clamp(0.0, 1.0)
-                } else {
-                    0.0
-                },
-                hero.flat_water_epsilon.max(0.0),
-                if hero.wall_contact_enabled {
-                    hero.flat_water_depth_strength.clamp(0.0, 1.0)
-                } else {
-                    0.0
-                },
-                if hero.wall_contact_enabled {
-                    hero.flat_water_contact_fill.clamp(0.0, 1.0)
-                } else {
-                    0.0
-                },
-            ],
         };
         queue.write_buffer(&self.cam_buf, 0, bytemuck::bytes_of(&cam));
     }

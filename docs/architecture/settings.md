@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-12
+last_updated:  2026-06-16
 okay_to_delete: false
 long_lived:    true
 ---
@@ -69,10 +69,9 @@ nonzero value pins an exact absolute count and ignores density. The registry acc
 are `particle_density()` and `particle_count_override()`; resolution happens in
 `SceneConfig::from_settings`. The override no longer uses a log2 slider.
 
-Grid resolution (`grid.res_x/y/z`) and `particles.density` are the prominent
-Scenario-tab controls; the web panel shows the resolved effective particle count in a
-read-only summary at the top of that tab (sourced from `stats_json`), so users can see
-what a density yields before reset.
+Grid resolution (`grid.res_x/y/z`) and `particles.density` live in the Scenario tab.
+The resolved effective particle count remains in `stats_json` and the Profiler, but
+the settings shell no longer renders a Scenario summary row.
 
 `solver.pressure_residual_tolerance` is a Live `f32` pressure setting. Default `0`
 means disabled; finite inputs clamp to the registry's conservative relative-residual
@@ -97,10 +96,17 @@ Enum settings currently serialize as their numeric registry values, not stable s
 ## Functional tabs
 
 The visible config-tab routing lives in
-`crates/fluid-lab/src/settings/mod.rs -> settings_tab`; the web shell appends
-Profiler as a non-config tab. Removed render-feature tabs are not visible;
-`rendering.md` owns the removed-feature set, while this doc owns registry and
-legacy-id behavior.
+`crates/fluid-lab/src/settings/mod.rs -> settings_tab`. Registry-owned tabs are:
+Scenario, Simulation, Camera, Surface, Color, Environment, Refraction, and Reflection.
+The web shell appends Profiler as a non-config tab and appends a shell-owned Theme tab
+only when `?dev=true`. Environment is also hidden outside dev mode. Removed
+render-feature tabs are not visible; `rendering.md` owns the removed-feature set,
+while this doc owns registry and legacy-id behavior.
+
+The Camera tab default pitch is `camera.rot_x = -0.3` so the initial view sees more of
+the floor and water surface. The old tab ids `modes`, `camera-view`, `water-surface`,
+`water-color`, and `sun-reflection` are shell aliases only; they are not registry tab
+ids.
 
 ## Render controls
 
@@ -110,22 +116,17 @@ Most `render.hero.*` controls share one Live snapshot path:
 are declared with the rest of the hero controls in
 `crates/fluid-lab/src/settings/mod.rs -> Registry`.
 
-The cheap wall-contact snap remains visible through
-`render.hero.flat_water.strength`, `render.hero.flat_water.epsilon`,
-`render.hero.flat_water.depth_strength`, and `render.hero.flat_water.contact_fill` (the
-contact-band coverage lift for a flush, see-through aquarium contact — see
-[`rendering.md`](rendering.md)).
-
 Screen-space surface quality is tuned by the `render.hero.smooth_*`,
 `render.hero.normal_*`, and `render.hero.feature_preservation` Live controls. The last
 drives the curvature-adaptive feature-preserving filter (smooth faces + sharp crests; 0
 = legacy isotropic behaviour) — see [`rendering.md`](rendering.md).
 
-`render.diffuse.*` now means surface foam. It shares one Live snapshot path:
-`crates/fluid-lab/src/settings/mod.rs -> Registry::diffuse_params`, then
-`crates/fluid-lab/src/gpu/mod.rs -> GpuContext::set_diffuse_params`. Visible foam
-controls are owned by the `render.diffuse.*` rows in `Registry`. There are no visible
-spray, bubble, wall-impact, or diffuse debug settings.
+Persistent surface foam, flat-water wall-contact correction, and micronormal controls
+are not settings anymore. `render.diffuse.*`,
+`render.hero.wall_contact_enabled`, `render.hero.micro_normal_*`, and
+`render.hero.flat_water.*` are removed ids and current imports reject them as unknown.
+The retained whitewater controls are the Water composite tint/threshold/smoothing rows,
+which continue to use the speed-weighted whitewater accumulation target.
 
 ## Legacy replay
 
@@ -135,7 +136,9 @@ apply, map, ignore, or reject them. `rendering.md` owns which removed render fea
 families are absent; `crates/fluid-lab/src/settings/mod.rs ->
 legacy_hidden_setting_id` owns the accepted legacy-id set. `render.hero.mode_enabled`
 maps only the core optical toggles; removed caustic, temporal, wet-wall, dense
-wall-fill, and obsolete diffuse ids replay as hidden compatibility no-ops.
+wall-fill, and obsolete diffuse spray/bubble/wall-impact ids replay as hidden
+compatibility no-ops. The later persistent-foam ids (`render.diffuse.*`) and removed
+flat-water/micronormal ids are no longer accepted.
 
 Future saves walk visible non-default rows only, so removed ids drop out naturally.
 
@@ -153,6 +156,8 @@ payloads that used to be skipped before Rust saw them.
 - Hidden scheduler booleans (`interaction.auto_roll_enabled`,
   `interaction.wave_enabled`) are real settings but not visible durable preferences.
 - There is no `solver.density` setting.
+- `technical_tooltip` metadata may still be emitted by Rust for docs/debug consumers,
+  but the web shell renders only functional help affordances.
 
 ## Update when
 

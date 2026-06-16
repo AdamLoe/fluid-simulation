@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-15
+last_updated:  2026-06-16
 okay_to_delete: false
 long_lived:    true
 ---
@@ -20,7 +20,7 @@ render targets, sub-renderers, timers, caps, and `GpuFluid` simulation state.
 - `GpuFluid` - simulation buffers and compute pipelines.
 - Sub-renderers - `WireframeRenderer`, `EnvironmentRenderer`, `SkyboxRenderer`,
   `ParticleRenderer`, `CompositeRenderer`, `WaterSmoothRenderer`,
-  `ThicknessSmoothRenderer`, `SliceRenderer`, and `DiffuseSystem`.
+  `ThicknessSmoothRenderer`, and `SliceRenderer`.
 - `HeroParams` - one Live snapshot pushed to composite, environment, skybox, and
   smoothing state.
 - `GpuTimers` - optional timestamp-query readback, rebuilt when reset-time timer
@@ -42,12 +42,6 @@ in `app/crates/fluid-lab/src/gpu/mod.rs → GpuContext::new`, `GpuContext::resiz
 
 Removed render-feature targets are intentionally absent; see `rendering.md` for the
 canonical removed-feature list and legacy setting ids.
-
-`DiffuseSystem` owns a fixed-capacity particle storage buffer
-(`app/crates/fluid-lab/src/gpu/diffuse.rs → DIFFUSE_CAPACITY`), a counter buffer, and
-uniform buffers. `DiffuseSystem::memory_bytes` owns the byte accounting.
-`render.diffuse.max_particles` is an active cap inside that fixed capacity and is
-Live.
 
 ## Buffer layout and storage-buffer budget
 
@@ -91,10 +85,10 @@ or particle changes rebuild `GpuFluid` and renderers that bind sim buffers.
 
 `GpuContext::recreate_fluid` preflights the requested particle scale before mutating
 the active scale facts, then rebuilds the simulation, wireframe/environment geometry,
-particle renderer, slice renderer, and diffuse system against fresh sim buffers.
+particle renderer, and slice renderer against fresh sim buffers.
 Rejected recreates leave the active fluid and reported scale facts intact except for a
-log line describing the rejected request. Rebuilding `DiffuseSystem` clears foam
-particles. `GpuTimers` is also rebuilt when timestamp queries are available.
+log line describing the rejected request. `GpuTimers` is also rebuilt when timestamp
+queries are available.
 
 `resize` recreates the surface-sized targets and rebinds smoothing/composite views.
 
@@ -118,10 +112,10 @@ or rebuild every GPU owner after true device loss. The shell treats `device-lost
 Normal sim/render frames do not map GPU buffers. Allowed readbacks are:
 
 - boot smoke test,
-- throttled `GpuTimers` timing/liveness/diffuse-counter readback.
+- throttled `GpuTimers` timing/liveness readback.
 
-Diffuse counters are copied as cursor/emitted/clamped/alive-foam plus legacy zero
-slots for spray/bubble. The profiler reports foam only while preserving the JSON shape.
+The throttled timing readback copies timestamp resolves plus the `liquid_cells`
+liveness counter. There are no diffuse/foam counter slots.
 
 ## Gotchas
 
@@ -131,7 +125,7 @@ slots for spray/bubble. The profiler reports foam only while preserving the JSON
 - Particle-scale preflight rejects impossible create/Reset attempts before allocation.
 - `gpu_buffer_mb` reports simulation buffers for legacy consumers. `stats_json`
   also reports tracked categories (`sim_buffers_mb`, `render_targets_mb`,
-  `diffuse_mb`, `timing_mb`, `total_tracked_mb`), but those are allocation math
+  `timing_mb`, `total_tracked_mb`), but those are allocation math
   from known owners, not total driver-resident VRAM. When timers exist, `timing_mb`
   counts the timestamp resolve buffer plus the mapped readback buffer; it does not
   include hidden `QuerySet` driver memory because `wgpu` does not expose that byte
@@ -143,7 +137,7 @@ slots for spray/bubble. The profiler reports foam only while preserving the JSON
 - A new GPU pass or render subsystem is added.
 - Render-target formats/recreation rules change.
 - Reset-class settings or timer construction parameters change.
-- Diffuse counter/readback shape changes.
+- Timing readback shape changes.
 
 ## See also
 

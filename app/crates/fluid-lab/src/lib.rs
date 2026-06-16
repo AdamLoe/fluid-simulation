@@ -393,14 +393,6 @@ impl FluidApp {
         self.profiler.scope_end("update");
         self.gpu.set_frame_substeps(n_substeps);
 
-        // Advance the render-only surface foam once per frame, only when the sim
-        // actually stepped, using the summed substep time. Reads the freshly
-        // stepped sim buffers; no-op while disabled/paused.
-        if n_substeps > 0 {
-            let dt = n_substeps as f32 * self.settings.fixed_dt();
-            self.gpu.update_diffuse(dt);
-        }
-
         // --- render ---
         self.profiler.scope_begin("render");
         let aspect = self.gpu.aspect();
@@ -670,13 +662,6 @@ impl FluidApp {
         // of plumbing each id individually.
         if id.starts_with("render.hero.") {
             self.gpu.set_hero_params(self.settings.hero_params());
-            log(&format!("[fluid-lab] live {id} = {value}"));
-            return true;
-        }
-        // Surface-foam settings are all Live too: rebuild the single DiffuseParams
-        // snapshot instead of plumbing each id.
-        if id.starts_with("render.diffuse.") {
-            self.gpu.set_diffuse_params(self.settings.diffuse_params());
             log(&format!("[fluid-lab] live {id} = {value}"));
             return true;
         }

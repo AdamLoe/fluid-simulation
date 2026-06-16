@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-12
+last_updated:  2026-06-16
 ---
 
 # Decisions - Rendering
@@ -118,11 +118,10 @@ depth, reconstructed normal, Fresnel, Beer-Lambert absorption). A second top-lev
 would duplicate that renderer. Keeping hero features Live keeps the broad control
 surface navigable with no reset and no pipeline rebuilds.
 
-**Tradeoffs** - One composite shader grows in complexity and uniform size across the
-series instead of being split into independent pipelines. The old
-`render.hero.mode_enabled` id is compatibility-only; visible controls split refraction,
-reflection, body color, and wall-contact correction so comparisons do not disable
-unrelated effects.
+**Tradeoffs** - One composite shader grows in complexity instead of being split into
+independent pipelines. The old `render.hero.mode_enabled` id is compatibility-only;
+visible controls split refraction, reflection, and body color so comparisons do not
+disable unrelated effects.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/mod.rs -> RenderMode`;
 `crates/fluid-lab/src/gpu/composite.rs -> CompositeRenderer`;
@@ -134,15 +133,14 @@ unrelated effects.
 
 ## Weak hero-water add-ons are removed until they earn a new case
 
-**Decision** - Caustics, temporal stabilization, wet walls, and dense wall fill are
-not shipped runtime feature groups. Their modules, shaders, pass scheduling, visible
-settings, debug views, and resource allocations are removed. Old persisted ids replay
-safely as hidden compatibility no-ops. The cheap wall-contact normal/depth/coverage snap
-remains — including a `flat_water.contact_fill` term that lifts the near-wall contact
-band's effective thickness so water reads as a flush, see-through sheet at the wall. That
-fill stays inside the screen-space composite (no new pass or buffer); the **dense**
-wall-fill atlas remains removed and would still require a fresh decision, owned
-allocation, and measured captures to return.
+**Decision** - Caustics, temporal stabilization, wet walls, dense wall fill, flat-water
+wall-contact correction, micronormals, and persistent surface foam are not shipped
+runtime feature groups. Their modules, shaders, pass scheduling, visible settings,
+debug views, profiler counters, and resource allocations are removed. Older caustic,
+temporal, wet-wall, dense wall-fill, and obsolete diffuse spray/bubble/wall-impact ids
+remain hidden compatibility no-ops; the later `render.diffuse.*`,
+`render.hero.flat_water.*`, `render.hero.wall_contact_enabled`, and
+`render.hero.micro_normal_*` ids are rejected as removed settings.
 
 **Why** - Default Water should be a coherent liquid body with a small, understandable
 control surface. The removed add-ons had cost, artifacts, or weak visual value without
@@ -150,7 +148,7 @@ enough evidence to justify runtime ownership.
 
 **Tradeoffs** - Reintroducing any of those effects requires a fresh plan, measured
 captures, runtime ownership, settings, docs, and profiler evidence. Legacy replay is
-kept so old localStorage payloads do not break startup.
+kept only for the older compatibility ids already owned by the registry.
 
 **Code anchors** - `crates/fluid-lab/src/settings/mod.rs -> Registry`;
 `crates/fluid-lab/src/gpu/mod.rs -> GpuContext::render`.
@@ -158,29 +156,25 @@ kept so old localStorage payloads do not break startup.
 **Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
 `architecture/gpu-resources.md`.
 
-## Whitewater foam is conservative surface particles, not spray/bubbles
+## Whitewater is a composite tint, not persistent particles
 
-**Decision** - Whitewater can use persistent, render-only surface foam particles born
-only at moving liquid-air cells. There is no spray, no bubbles, no wall-impact spawn,
-no airborne confetti, and no wall decals. The original speed-weighted whitewater
-target remains the fallback signal. Foam particles do not conserve mass, affect
-pressure, or feed back into the solver.
+**Decision** - The retained whitewater signal is the screen-space speed-weighted target
+inside the Water composite. It tints fast water toward white/ice-blue and contributes
+to roughness, but there is no persistent foam particle system, no spray, no bubbles,
+no wall-impact spawn, no airborne confetti, and no wall decals.
 
-**Why** - A fast-water mask alone reads as a white *tint* that flashes only while
-water is moving; it cannot show foam that lingers a second or more after an impact and
-fades. Persistent diffuse state is what makes churn read as foam (see the
-`fluid-system-llm-brief.md` diagnosis). Keeping it render-only avoids touching the
-fixed-point P2G determinism invariant (`../architecture/simulation.md`).
+**Why** - The persistent `DiffuseSystem` added resources, passes, settings, profiler
+state, and visual ambiguity without enough evidence to justify permanent runtime
+ownership. The composite tint keeps the useful speed cue while preserving the simpler
+screen-space render path and fixed-point simulation invariants.
 
-**Tradeoffs** - A fixed-capacity particle buffer and extra compute work per enabled
-frame. Emission is bounded by an integer-atomic per-frame budget, and over-budget
-frames are reported (`stats_json.gpu.diffuse.clamped`). Slot choice is not
-deterministic because of the atomic ring cursor, which is acceptable because the
-system is render-only.
+**Tradeoffs** - Whitewater now appears only as an instantaneous speed-weighted
+composite effect; lingering foam requires a future feature with fresh resource,
+settings, docs, and capture evidence.
 
-**Code anchors** - `crates/fluid-lab/src/gpu/diffuse.rs -> DiffuseSystem`;
-`crates/fluid-lab/src/gpu/shaders/diffuse_emit.wgsl -> main`;
-`crates/fluid-lab/src/settings/mod.rs -> DiffuseParams`.
+**Code anchors** - `crates/fluid-lab/src/gpu/shaders/composite.wgsl`;
+`crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer`;
+`crates/fluid-lab/src/settings/mod.rs -> Registry`.
 
 **Applies to** - `architecture/rendering.md`, `architecture/settings.md`,
 `architecture/gpu-resources.md`.
@@ -202,8 +196,7 @@ the world. SSR and real IBL are a heavier, separate project and out of this seri
 
 **Tradeoffs** - The reflection is a stylized environment, not a true mirror of the scene;
 it cannot show the tank's own geometry reflected. Roughness softening blends toward an
-averaged sky rather than a true pre-filtered mip. Micro-normals can shimmer, so they
-default off unless a future stabilizer returns.
+averaged sky rather than a true pre-filtered mip.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/shaders/env.wgsl -> env_sample`;
 `crates/fluid-lab/src/gpu/skybox.rs -> SkyboxRenderer`;
@@ -214,9 +207,11 @@ default off unless a future stabilizer returns.
 
 ## Removed add-ons keep only compatibility decisions
 
-**Decision** - Caustics, wet-wall material cues, dense wall fill, and temporal history
-blend are not active product decisions. Their old design notes remain history in git,
-but current docs describe only their removed status and legacy replay compatibility.
+**Decision** - Caustics, wet-wall material cues, dense wall fill, temporal history
+blend, flat-water wall-contact correction, micronormals, and persistent surface foam
+are not active product decisions. Their old design notes remain history in git, but
+current docs describe only their removed status and any retained legacy replay
+compatibility.
 
 **Why** - Keeping stale runtime decisions in active docs makes future implementers
 rebuild deleted systems by accident.

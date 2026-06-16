@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-12
+last_updated:  2026-06-16
 okay_to_delete: false
 long_lived:    true
 ---
@@ -10,8 +10,8 @@ long_lived:    true
 
 The render layer draws the wireframe tank, the default screen-space Water view,
 the procedural world skybox/environment, selectable optical/simple particle views,
-an optional grid-slice overlay, and conservative surface foam. Normal frames do
-not read simulation state back to the CPU; throttled diagnostics in
+and an optional grid-slice overlay. Normal frames do not read simulation state back to
+the CPU; throttled diagnostics in
 `crates/fluid-lab/src/gpu/timing.rs -> GpuTimers` own the runtime readback path.
 
 ## What it owns
@@ -29,14 +29,13 @@ reflection use that camera-only basis so rotating the tank changes gravity, not 
 world background.
 
 `GpuContext::render` records all visible render paths. Water mode owns the
-scene-color/depth prepass, screen-space water targets, smoothing, composite, and
-optional foam pass; the two particle modes use the opaque tank/background pass plus
-their particle renderer. The optional grid slice is recorded after the selected mode
-as an overlay.
+scene-color/depth prepass, screen-space water targets, smoothing, and composite; the
+two particle modes use the opaque tank/background pass plus their particle renderer.
+The optional grid slice is recorded after the selected mode as an overlay.
 
 The current runtime does not schedule, allocate, rebind, or draw caustics, temporal
-stabilization, wet walls, or dense wall fill. Their old setting ids are accepted only
-for legacy replay compatibility.
+stabilization, wet walls, dense wall fill, flat-water wall-contact correction,
+micronormals, or persistent surface foam.
 
 ## View anchors
 
@@ -49,7 +48,7 @@ background/prepass, `crates/fluid-lab/src/gpu/particles.rs -> ParticleRenderer` 
 screen-space water accumulation and particle views,
 `crates/fluid-lab/src/gpu/smoothing.rs -> WaterSmoothRenderer` plus
 `crates/fluid-lab/src/gpu/composite.rs -> CompositeRenderer` for the water surface,
-`crates/fluid-lab/src/gpu/diffuse.rs -> DiffuseSystem` for surface foam, and
+and
 `crates/fluid-lab/src/gpu/slice.rs -> SliceRenderer` for the optional grid overlay.
 
 ## Screen-space water
@@ -87,18 +86,10 @@ The environment prepass writes:
 There is no wet-wall material path. The environment shader has one bind group: the
 camera/material uniform. The right and front tank faces remain open viewing faces.
 
-`render.hero.wall_contact_enabled` keeps the cheap near-wall snap. It gates
-`render.hero.flat_water.strength`, `render.hero.flat_water.epsilon`,
-`render.hero.flat_water.depth_strength`, and `render.hero.flat_water.contact_fill`, which
-flatten near-wall normals/depth **and** lift the contact-band coverage in the composite
-without allocating a dense wall-fill atlas. The `contact_fill` term lifts the near-wall
-band's effective thickness (ramped by the same wall-proximity weight as the normal/depth
-snap) so water reads as a continuous sheet flush to the wall instead of a faded fringe
-that lets the dark matte wall show through; it is kept moderate so the water still
-refracts the background (see-through), and it is routed through the composite
-`Cam.flat.w` slot. This is the aquarium-contact look achieved within the surviving cheap
-screen-space snap — a dense wall-fill pass is still **not** allocated (see "Removed
-features" and [`../decisions/rendering.md`](../decisions/rendering.md)).
+The composite no longer owns flat-water wall-contact correction or micronormal detail.
+It reconstructs its normal from the smoothed nearest-depth target and uses the retained
+speed-weighted whitewater target as a soft tint and roughness signal. There is no
+persistent foam-particle overlay.
 
 `render.hero.debug_view` routes retained intermediate views only: scene color/depth,
 thickness, refraction offset, Fresnel, absorption, final water, reflection, environment,
@@ -130,22 +121,6 @@ visible-volume acceptance is the screenshots; the physics-cell ratio is only a p
 because the dilation rind is density-dependent. The SDF/level-set surface rewrite is
 deliberately deferred (`../decisions/scope.md`).
 
-## Surface foam
-
-`DiffuseSystem` is now conservative surface foam only. It is render-only and never
-writes simulation buffers. The compute passes read `cell_type` and MAC velocities:
-
-- `diffuse_emit.wgsl` spawns foam only from liquid cells touching air and moving above
-  the configured surface-speed threshold.
-- `diffuse_update.wgsl` advects foam with local MAC flow while it remains on a
-  liquid-air surface, kills stranded particles, and kills vertical-wall-hugging foam
-  above the floor band.
-- `diffuse_render.wgsl` draws soft off-white billboards over the water composite.
-
-There is no spray, no bubbles, no wall-impact spawning, no airborne confetti, and no
-wall decals. Legacy profiler JSON keys for `spray` and `bubble` remain zero for shape
-compatibility, while visible profiler text reports foam only.
-
 ## Removed features
 
 This section is the canonical owner for removed render features. Resource and
@@ -161,16 +136,24 @@ The following app-relative files are intentionally absent from the current runti
   `crates/fluid-lab/src/gpu/shaders/wetwall_update.wgsl`
 - `crates/fluid-lab/src/gpu/wallfill.rs`,
   `crates/fluid-lab/src/gpu/shaders/wallfill.wgsl`
+- `crates/fluid-lab/src/gpu/diffuse.rs`,
+  `crates/fluid-lab/src/gpu/shaders/diffuse_{emit,update,render}.wgsl`
 
 Persisted ids under `render.hero.caustics.*`, `render.hero.temporal.*`,
-`render.hero.wet_wall.*`, dense `render.hero.flat_water.fill_*`, and obsolete
-diffuse spray/bubble/wall-impact ids are accepted and ignored during restore.
+`render.hero.wet_wall.*`, dense `render.hero.flat_water.fill_*`, and obsolete diffuse
+spray/bubble/wall-impact ids are accepted and ignored during restore. The later
+Foam-tab ids for persistent surface foam (`render.diffuse.*`), plus
+`render.hero.wall_contact_enabled`, `render.hero.micro_normal_*`, and
+`render.hero.flat_water.*`, are removed rather than carried as visible or hidden
+settings; current restore/import rejects them as unknown ids. The Water composite's
+speed-weighted whitewater target remains active and is not part of the removed
+`DiffuseSystem`.
 
 ## Update when
 
 - Render pass order, target formats, view modes, or debug-view ids change.
 - A removed feature returns or a new render subsystem allocates targets.
-- Surface-foam spawning, update, render, profiler, or settings semantics change.
+- Whitewater tint, removed-feature compatibility, or render-subsystem ownership changes.
 
 ## See also
 

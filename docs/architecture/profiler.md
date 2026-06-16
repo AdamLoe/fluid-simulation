@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-12
+last_updated:  2026-06-16
 okay_to_delete: false
 long_lived:    true
 ---
@@ -29,9 +29,6 @@ is the single load-bearing design rule.
 - `record_resolve_and_maybe_copy` — resolves timestamps every frame; copies to the mappable read buffer **throttled** by `app/crates/fluid-lab/src/gpu/timing.rs → THROTTLE` to avoid per-frame stall
 - `map_readback` — async-maps the read buffer; on completion writes a `Readout` into an `Rc<Cell<Readout>>` and calls `unmap`; `pending` guard prevents overlapping maps
 - the liveness counter (`liquid_cells`) is read back in the same throttled buffer copy, not in a separate readback
-- surface-foam counters are read back in the same throttled buffer copy; visible
-  profiler text reports foam alive/emitted/clamped only, while legacy JSON keys for
-  spray and bubble remain present as zeroes
 
 ## Scope model & timing sources
 
@@ -96,10 +93,9 @@ submitted sim time over sanitized rAF wall time.
 
 The GPU block stays source-honest: it is `null` until a real timestamp sample arrives,
 then exposes coarse totals plus sampled substep and liveness facts. Detailed-only data
-comes from `FINE_SECTIONS` and `CG_CATS`; when diffuse counters are present,
-`gpu.diffuse.compute_timed:false` means the counters were sampled but diffuse compute
-still sits outside the timestamp totals. Legacy `spray` / `bubble` compatibility slots
-remain zero-filled rather than fabricated from new behavior.
+comes from `FINE_SECTIONS` and `CG_CATS`. Persistent foam counters were removed with
+`DiffuseSystem`; the profiler no longer emits a `gpu.diffuse` block or foam particle
+text rows.
 
 ## Non-obvious invariants and gotchas
 
@@ -111,7 +107,6 @@ remain zero-filled rather than fabricated from new behavior.
 memory fields come from owners that know their allocation sizes:
 `app/crates/fluid-lab/src/gpu/fluid.rs → GpuFluid::buffer_memory_bytes`,
 `app/crates/fluid-lab/src/gpu/mod.rs → GpuContext::render_target_memory_bytes`,
-`app/crates/fluid-lab/src/gpu/diffuse.rs → DiffuseSystem::memory_bytes`, and
 `app/crates/fluid-lab/src/gpu/timing.rs → GpuTimers::buffer_memory_bytes`.
 They do not include hidden driver allocations, pipeline caches, swapchain memory, or
 the `GpuTimers` `QuerySet` backing allocation because `wgpu` does not expose that
@@ -151,14 +146,13 @@ hardcode pressure or any other pass as dominant.
 and stall policy lives in `../decisions/observability.md`; this doc consumes those
 threshold names but does not duplicate the decision-owned constants.
 
-**`liquid_cells` and foam liveness.** The occupied-cell count and diffuse counter
-slots are read back in the same throttled copy as the timestamps
+**`liquid_cells` liveness.** The occupied-cell count is read back in the same
+throttled copy as the timestamps
 (`app/crates/fluid-lab/src/gpu/timing.rs -> GpuTimers::record_resolve_and_maybe_copy`).
-`liquid_cells` is a single `u32`; foam counters are cursor/emitted/clamped/alive foam
-with legacy spray/bubble slots forced to zero. `FluidApp::frame` writes the frame's
-actual substep count into `GpuTimers` before render, including zero-substep paused
-frames, so the readout owns the sampled substep count rather than borrowing the
-profiler's current frame count.
+`liquid_cells` is a single `u32`. `FluidApp::frame` writes the frame's actual substep
+count into `GpuTimers` before render, including zero-substep paused frames, so the
+readout owns the sampled substep count rather than borrowing the profiler's current
+frame count.
 
 ## Update when
 
