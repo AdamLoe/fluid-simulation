@@ -352,7 +352,10 @@ Revised tolerance notes for the next behavior pass:
 
 ## Implementation Shipped 2026-06-17
 
-The behavior pass implemented the selected checkpoint direction:
+The first behavior pass implemented the selected checkpoint direction, but follow-up
+visual review rejected that outcome because it made the presets occupy far more space
+and degraded the tuned look. The whole-tank volume semantics below are superseded by
+the regression correction that follows.
 
 - `scene.fill_level` now targets whole-tank represented volume:
   `target_normalized_volume = clamp(fill_level / 100, 0, 1)`.
@@ -401,6 +404,26 @@ than density 1/8 because low/reference-density cases get the auto surface-dilati
 rind while high density does not. The source-of-truth represented volume and particle
 mass target are the seeded block volume and generated particle count, which the host
 tests cover directly.
+
+## Regression Correction 2026-06-17
+
+User visual review rejected the whole-tank behavior: the fluid took up far more space
+than before and looked materially worse. The correction preserves the density fix but
+restores the water amount semantics to preset-authored scale:
+
+- `scene.fill_level` is a scenario amount, not a universal whole-tank volume target.
+- Falling Blob scales as a suspended blob around the tuned 20% default.
+- Dam Break grows taller inside its authored wall footprint instead of expanding to
+  occupy a whole-tank volume fraction.
+- Double Splash stretches its two authored suspended drops.
+- `particles.density` remains volume-neutral: it changes requested/generated count and
+  spacing, not seeded geometry.
+- Generated lattice count remains the calibration source for effective density, Auto
+  rest density, auto surface dilation, splat spacing, and diagnostics where available.
+
+Corrective tests pin preset-authored scale (`Dam Break` 50% at roughly `0.163` seeded
+fraction, live-default `Falling Blob` 50% at roughly `0.434`) while keeping the
+generated-count density tests.
 
 ## Candidate Implementation Directions
 

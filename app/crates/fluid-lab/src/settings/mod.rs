@@ -422,8 +422,8 @@ impl Default for Registry {
                 default: Value::F32(20.0),
                 value: Value::F32(20.0),
                 validation: Validation::F32Range { min: 0.0, max: 100.0 },
-                tooltip: Some("% of the tank represented as water at reset. Presets keep their shape (blob, dam, double splash), but the amount targets this whole-tank fraction. Suspended presets keep a small top-air margin at very high fills."),
-                technical_tooltip: Some("Reset-class percentage, stored 0–100; Registry::fill_level() maps it to target_normalized_volume = clamp(fill_level / 100, 0, 1). Preset blocks target that whole-tank normalized volume, with an explicit 2% top-air guardrail for suspended/full-tank cases. The resolved particle target tracks this represented volume; particles.density stays volume-neutral."),
+                tooltip: Some("Scenario amount at reset. Presets keep their tuned shape scale: Falling Blob grows as a suspended blob, Dam Break gets taller in its wall footprint, and Double Splash stretches its drops."),
+                technical_tooltip: Some("Reset-class percentage, stored 0-100; Registry::fill_level() maps it to a [0,1] scenario amount. Preset blocks map that amount through their authored geometry rather than a universal whole-tank volume. The resolved particle target tracks the seeded block volume; particles.density stays volume-neutral."),
                 apply: ApplyClass::Reset,
             },
             Setting {

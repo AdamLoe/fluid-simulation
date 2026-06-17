@@ -48,12 +48,12 @@ substep count exceeds the cap.
 
 ### Particle density and derived count
 
-`scene.fill_level` is a Reset-class percentage over represented whole-tank volume.
-`Registry::fill_level()` maps the stored 0-100 value to
-`target_normalized_volume = clamp(fill_level / 100, 0, 1)`. Presets keep their own
-geometry, but the scene blocks target that normalized tank-volume fraction unless the
-closed-tank top-air guardrail caps a near-full case. The 0% setting produces no
-represented liquid blocks.
+`scene.fill_level` is a Reset-class scenario amount percentage. `Registry::fill_level()`
+maps the stored 0-100 value to a `[0,1]` amount, and each preset maps that amount
+through its authored geometry rather than a universal whole-tank volume. Falling Blob
+scales as a suspended body, Dam Break gets taller within its wall footprint, and
+Double Splash stretches its two suspended drops. The 0% setting keeps a tiny
+compatibility seed so the existing particle/GPU paths remain valid.
 
 The seeded particle count is **derived**, not a fixed absolute number. The primary
 control is `particles.density` (Reset-class `f32`, default `8`, range `1..32`): the
@@ -63,10 +63,10 @@ target particles-per-seeded-cell crowding of the represented liquid at reset.
 is the liquid-block volume measured in cells, i.e. `seeded_volume_fraction *
 res_x*res_y*res_z`, where `seeded_volume_fraction` is the fraction of the normalized
 [0,1]^3 tank the scenario's liquid blocks occupy. The requested count is
-`round(density * seeded_volume_fraction * total_cells)`, floored at 1024 for nonempty
-very-small scenes. Empty represented water remains an empty seed target. This keeps
-the default `80×40×80` falling-blob scene near the historical particle budget and
-scales correctly when grid resolution, scenario, or water amount changes. The
+`round(density * seeded_volume_fraction * total_cells)`, floored at 1024 for
+very-small compatibility seeds. This keeps the default `80×40×80` falling-blob scene
+near the historical particle budget and scales correctly when grid resolution,
+preset-authored scenario amount, or water amount changes. The
 derivation lives in `crates/fluid-lab/src/scene/mod.rs -> resolved_particle_count`;
 `gpu` reads the resolved `SceneConfig::particle_count`, so validation and the reported
 "requested" count agree.

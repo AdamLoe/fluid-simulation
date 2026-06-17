@@ -32,17 +32,18 @@ Tracked plan lifecycle. This touches user-facing settings, simulation initializa
 |---|---|---|---|---|---|
 | Plan | Simulation/settings calibration | completed | Wrote and revised `docs/plans/water-level-density-calibration.md` with explicit whole-tank volume semantics, alternatives, metrics, tolerances, and a post-measurement checkpoint. | None. | None |
 | Plan review | Experiment design/correctness | completed | Review found ambiguity in partial-footprint fill semantics, weak compression metrics, missing numeric tolerances, and no hard measurement checkpoint; the plan was revised to address those findings. | None. | None |
-| Implementation | Code + tests + captures | completed | Runtime now uses canonical whole-tank represented volume semantics plus generated-count effective density for reset calibration. Host tests, WASM build, and browser captures are green. | None. | None |
+| Implementation | Code + tests + captures | completed | Whole-tank represented volume was implemented, visually rejected, then corrected back to preset-authored scenario amount while preserving generated-count density calibration. | None. | None |
 | Work review | Shipped behavior verification | completed | Diff inspected; durable docs updated; plan context migrated. | None. | None |
 
 ## Decisions
 
 - Treat this as a calibration/stability investigation, not a direct tuning patch.
 - Evidence should include current formula tracing, bounded experiments across tank sizes and level/density values, and verification that target volume/mass maps predictably to initialized particles.
-- Shipped semantics: `scene.fill_level` targets whole-tank represented volume;
-  presets keep shape but not footprint-relative volume. A 2% top-air guardrail caps
-  near-full/suspended cases. `particles.density` is fidelity/cost; generated lattice
-  count calibrates reset-time effective density where known.
+- Shipped semantics after regression correction: `scene.fill_level` is a preset-authored
+  scenario amount, not a universal whole-tank volume target. Presets keep their tuned
+  scale: Falling Blob grows as a suspended blob, Dam Break grows in its authored wall
+  footprint, and Double Splash stretches its paired drops. `particles.density` is
+  fidelity/cost; generated lattice count calibrates effective density where known.
 
 ## Open Questions
 
@@ -101,3 +102,10 @@ Tracked plan lifecycle. This touches user-facing settings, simulation initializa
   - Migration: durable facts moved into `architecture/simulation.md`,
     `architecture/settings.md`, `architecture/rendering.md`,
     `decisions/scope.md`, and `decisions/simulation.md`.
+- Regression correction on 2026-06-17:
+  - User visual review rejected the whole-tank volume behavior because it made the
+    fluid occupy far too much space and look worse than before.
+  - Code restored `preset_blocks` to preset-authored amount semantics while keeping
+    generated-count density calibration.
+  - Durable docs and setting help were corrected so whole-tank volume is no longer the
+    final contract.

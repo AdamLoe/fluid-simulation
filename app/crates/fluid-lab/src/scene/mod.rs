@@ -10,20 +10,18 @@
 use crate::settings::Registry;
 use glam::{UVec3, Vec3};
 
-const DEFAULT_DROP_HEIGHT: f32 = 1.0;
-const SUSPENDED_TOP_AIR_MARGIN: f32 = 0.02;
-const MIN_BLOCK_EXTENT: f32 = 1.0e-4;
+const DEFAULT_DROP_HEIGHT: f32 = 0.72;
 
 /// Reference particle density that reproduces the historical look (8 particles
 /// per seeded cell). Used by the renderer to keep splat coverage volume-neutral
 /// and by the auto surface-dilation trigger. Mirrors `particles.density`'s default.
 pub const REFERENCE_DENSITY: f32 = 8.0;
 
-/// Default `scene.fill_level` as a [0,1] whole-tank volume fraction.
+/// Default `scene.fill_level` as a [0,1] scenario amount fraction.
 /// The registry stores this as a 0-100 percentage; `Registry::fill_level()`
-/// converts to this fraction. Presets choose different shapes, but their
-/// represented block volume tracks this whole-tank target except where an
-/// explicit guardrail leaves top air in a suspended or closed-tank case.
+/// converts to this fraction. Presets map the fraction into their authored
+/// geometry differently, but the resulting seeded block volume is monotone in
+/// this value. See `preset_blocks` for the per-scenario mapping.
 pub const DEFAULT_FILL_LEVEL: f32 = 0.2;
 
 /// Selectable scripted scenarios. The integer values are the wire format of the
@@ -211,125 +209,69 @@ fn resolved_particle_count(settings: &Registry, res: UVec3, blocks: &[LiquidBloc
 
 /// The deterministic liquid layout for each preset (normalized [0,1]^3, y up).
 ///
-/// `fill_level` is a whole-tank target volume fraction in [0,1]. Presets keep
-/// their authored shape language, but the sum of their normalized block volumes
-/// matches that target unless the top-air guardrail caps the representable volume:
+/// `fill_level` is a scenario amount fraction in [0,1]. Presets keep their
+/// authored scale so the visual composition stays close to the tuned scene:
 ///
 /// - **FallingBlob (the default):** a suspended central blob. `drop_height`
-///   positions the blob vertically, clamped to leave a small top-air margin.
-/// - **DamBreak:** a floor-anchored wall slab. It grows upward first, then widens
-///   across the tank when the historical footprint can no longer hold the target
-///   whole-tank volume. `drop_height` does not apply.
+///   positions the blob vertically; `fill_level` scales the blob around the
+///   default 20% amount.
+/// - **DamBreak:** a floor-anchored wall slab over its historical X/Z footprint.
+///   `fill_level` controls height inside that footprint; `drop_height` does not
+///   apply.
 /// - **DoubleSplash:** two suspended drops near opposite walls that fall and
-///   collide. Each carries half of the target volume and uses the same top-air
-///   guardrail as FallingBlob.
+///   collide. `fill_level` scales each authored drop vertically around the
+///   default 20% amount.
 fn preset_blocks(preset: ScenePreset, drop_height: f32, fill_level: f32) -> Vec<LiquidBlock> {
     let fill = fill_level.clamp(0.0, 1.0);
-    if fill <= 0.0 {
-        return Vec::new();
-    }
     match preset {
         ScenePreset::FallingBlob => {
-            let ext = extents_for_volume(
-                fill.min(1.0 - SUSPENDED_TOP_AIR_MARGIN),
-                Vec3::new(0.62, 0.52, 0.62),
-                Vec3::new(1.0, 1.0 - SUSPENDED_TOP_AIR_MARGIN, 1.0),
-            );
-            vec![suspended_block(Vec3::new(0.5, 0.5, 0.5), ext, drop_height)]
+            let delta = drop_height.clamp(0.0, 1.0) - DEFAULT_DROP_HEIGHT;
+            let block = LiquidBlock::new([0.19, 0.2, 0.19], [0.81, 0.72, 0.81]);
+            vec![scale_block_about_center(shift_block_y(block, delta), fill)]
         }
-        ScenePreset::DamBreak => vec![dam_break_block(fill)],
-        ScenePreset::DoubleSplash => {
-            let each = (fill * 0.5).min((1.0 - SUSPENDED_TOP_AIR_MARGIN) * 0.5);
-            let ext = extents_for_volume(
-                each,
-                Vec3::new(0.24, 0.47, 0.40),
-                Vec3::new(0.5, 1.0 - SUSPENDED_TOP_AIR_MARGIN, 1.0),
-            );
-            vec![
-                suspended_block(Vec3::new(0.25, 0.5, 0.5), ext, drop_height),
-                suspended_block(Vec3::new(0.75, 0.5, 0.5), ext, drop_height),
-            ]
+        ScenePreset::DamBreak => {
+            const CEILING: f32 = 0.98;
+            let top = (fill * CEILING).clamp(1.0e-3, CEILING);
+            vec![LiquidBlock::new([0.05, 0.0, 0.05], [0.42, top, 0.95])]
         }
+        ScenePreset::DoubleSplash => vec![
+            LiquidBlock::new([0.1, 0.45, 0.3], [0.34, 0.92, 0.7]),
+            LiquidBlock::new([0.66, 0.45, 0.3], [0.9, 0.92, 0.7]),
+        ]
+        .into_iter()
+        .map(|block| shift_block_y(block, drop_height.clamp(0.0, 1.0) - DEFAULT_DROP_HEIGHT))
+        .map(|block| scale_suspended_drop(block, fill))
+        .collect(),
     }
 }
 
-fn dam_break_block(fill: f32) -> LiquidBlock {
-    const INITIAL_WIDTH: f32 = 0.37;
-    const INITIAL_DEPTH: f32 = 0.90;
-    const MAX_HEIGHT: f32 = 0.98;
-
-    let target = fill.min(MAX_HEIGHT);
-    let mut width = INITIAL_WIDTH;
-    let mut depth = INITIAL_DEPTH;
-    let mut height = (target / (width * depth)).min(MAX_HEIGHT);
-    if width * depth * height < target {
-        width = (target / (depth * height)).min(1.0);
-    }
-    if width * depth * height < target {
-        depth = (target / (width * height)).min(1.0);
-    }
-    height = (target / (width * depth)).min(MAX_HEIGHT);
-
-    let z0 = 0.5 - 0.5 * depth;
-    LiquidBlock::new([0.0, 0.0, z0], [width, height, z0 + depth])
+fn scale_block_about_center(block: LiquidBlock, fill: f32) -> LiquidBlock {
+    let factor = (fill.max(1.0e-4) / DEFAULT_FILL_LEVEL).powf(1.0 / 3.0);
+    scale_block_axes(block, Vec3::splat(factor))
 }
 
-fn suspended_block(center: Vec3, ext: Vec3, drop_height: f32) -> LiquidBlock {
-    let top_limit = 1.0 - SUSPENDED_TOP_AIR_MARGIN;
-    let drop = drop_height.clamp(0.0, 1.0);
-    let top = ext.y + drop * (top_limit - ext.y).max(0.0);
-    let y0 = (top - ext.y).clamp(0.0, top_limit - ext.y);
-    let x0 = (center.x - 0.5 * ext.x).clamp(0.0, 1.0 - ext.x);
-    let z0 = (center.z - 0.5 * ext.z).clamp(0.0, 1.0 - ext.z);
-    LiquidBlock::new([x0, y0, z0], [x0 + ext.x, y0 + ext.y, z0 + ext.z])
+fn shift_block_y(mut block: LiquidBlock, delta: f32) -> LiquidBlock {
+    let shift = delta.clamp(-block.min.y, 1.0 - block.max.y);
+    block.min.y += shift;
+    block.max.y += shift;
+    block
 }
 
-fn extents_for_volume(target_volume: f32, base_ext: Vec3, max_ext: Vec3) -> Vec3 {
-    let max_volume = max_ext.x * max_ext.y * max_ext.z;
-    let target = target_volume
-        .clamp(0.0, max_volume)
-        .max(MIN_BLOCK_EXTENT.powi(3));
-    let base = base_ext.max(Vec3::splat(MIN_BLOCK_EXTENT));
-    let mut capped = [false; 3];
-    let max = [max_ext.x, max_ext.y, max_ext.z];
-    let base_arr = [base.x, base.y, base.z];
+fn scale_suspended_drop(block: LiquidBlock, fill: f32) -> LiquidBlock {
+    scale_block_axes(block, Vec3::new(1.0, fill / DEFAULT_FILL_LEVEL, 1.0))
+}
 
-    for _ in 0..3 {
-        let mut capped_product = 1.0f32;
-        let mut base_product = 1.0f32;
-        let mut free_count = 0i32;
-        for i in 0..3 {
-            if capped[i] {
-                capped_product *= max[i];
-            } else {
-                base_product *= base_arr[i];
-                free_count += 1;
-            }
-        }
-        if free_count == 0 {
-            return max_ext;
-        }
-        let factor = (target / (capped_product * base_product))
-            .max(0.0)
-            .powf(1.0 / free_count as f32);
-        let mut ext = [0.0; 3];
-        let mut exceeded = false;
-        for i in 0..3 {
-            ext[i] = if capped[i] {
-                max[i]
-            } else {
-                base_arr[i] * factor
-            };
-            if ext[i] > max[i] {
-                capped[i] = true;
-                exceeded = true;
-            }
-        }
-        if !exceeded {
-            return Vec3::new(ext[0], ext[1], ext[2]).max(Vec3::splat(MIN_BLOCK_EXTENT));
-        }
-    }
-    max_ext
+fn scale_block_axes(mut block: LiquidBlock, factor: Vec3) -> LiquidBlock {
+    let center = 0.5 * (block.min + block.max);
+    let half = 0.5 * (block.max - block.min);
+    let scaled = half * factor.max(Vec3::splat(1.0e-3));
+    block.min = (center - scaled).clamp(Vec3::ZERO, Vec3::ONE);
+    block.max = (center + scaled).clamp(block.min + Vec3::splat(1.0e-3), Vec3::ONE);
+    block.min = block
+        .min
+        .min(block.max - Vec3::splat(1.0e-3))
+        .max(Vec3::ZERO);
+    block
 }
 
 /// The effective particles-per-seeded-cell density that the *resolved* spawn count
@@ -543,8 +485,8 @@ mod tests {
         let block = falling.initial_liquid.blocks[0];
         assert!(block.min.y > 0.0, "falling blob should be suspended");
         assert!(
-            (1.0 - block.max.y - SUSPENDED_TOP_AIR_MARGIN).abs() < 1.0e-6,
-            "default-height blob should preserve the top-air guardrail"
+            block.max.y < 1.0,
+            "default-height helper blob should not be ceiling-clamped"
         );
         assert!(
             (seeded_volume_fraction(&falling.initial_liquid.blocks) - DEFAULT_FILL_LEVEL).abs()
@@ -563,7 +505,7 @@ mod tests {
             .blocks[0];
         assert!((low.min.y - 0.0).abs() < 1.0e-6);
         assert!(high.min.y > low.min.y + 0.25);
-        assert!((high.max.y - (1.0 - SUSPENDED_TOP_AIR_MARGIN)).abs() < 1.0e-6);
+        assert!((high.max.y - 1.0).abs() < 1.0e-6);
     }
 
     #[test]
@@ -628,20 +570,19 @@ mod tests {
     }
 
     #[test]
-    fn full_fill_fills_the_tank() {
-        // fill_level = 100% -> the guardrail leaves only a thin air margin.
+    fn full_fill_uses_preset_authored_max_not_whole_tank() {
         let mut settings = Registry::default();
         settings.set_value_f64("scene.fill_level", 100.0);
         let scene = SceneConfig::from_settings(&settings);
         let frac = seeded_volume_fraction(&scene.initial_liquid.blocks);
         assert!(
-            (frac - (1.0 - SUSPENDED_TOP_AIR_MARGIN)).abs() < 0.001,
-            "full fill seeded fraction {frac} should hit the top-air guardrail"
+            (0.55..=0.75).contains(&frac),
+            "full fill seeded fraction {frac} should stay on the tuned falling-blob scale"
         );
     }
 }
 
-/// Tank-fill (`scene.fill_level`) + volume-neutral density decoupling.
+/// Scenario amount (`scene.fill_level`) + volume-neutral density decoupling.
 ///
 /// These assert the pure host derivations that back the visual feature:
 /// (a) `fill_level` is monotone in seeded fraction and resolved count;
@@ -651,7 +592,7 @@ mod tests {
 mod fill_level_tests {
     use super::*;
 
-    /// `fill` is a [0,1] tank-fill fraction; the registry stores it as a 0–100
+    /// `fill` is a [0,1] scenario amount fraction; the registry stores it as a 0-100
     /// percentage, so multiply by 100 here.
     fn registry(preset: ScenePreset, fill: f32, density: f32) -> Registry {
         let mut s = Registry::default();
@@ -672,32 +613,36 @@ mod fill_level_tests {
     ];
 
     #[test]
-    fn preset_seeded_fraction_tracks_whole_tank_target() {
-        for preset in PRESETS {
-            for &fill in &[0.05f32, 0.2, 0.5, 0.8] {
-                let blocks = preset_blocks(preset, DEFAULT_DROP_HEIGHT, fill);
-                let frac = seeded_volume_fraction(&blocks);
-                assert!(
-                    (frac - fill).abs() < 0.02,
-                    "{} fill {fill}: seeded fraction {frac} should track whole-tank target",
-                    preset.name()
-                );
-            }
+    fn preset_seeded_fraction_keeps_authored_scale() {
+        let cases = [
+            (ScenePreset::FallingBlob, 0.2, 0.199888),
+            (ScenePreset::FallingBlob, 0.5, 0.499720),
+            (ScenePreset::DamBreak, 0.5, 0.163170),
+            (ScenePreset::DoubleSplash, 0.5, 0.173280),
+        ];
+        for (preset, fill, expected) in cases {
+            let blocks = preset_blocks(preset, DEFAULT_DROP_HEIGHT, fill);
+            let frac = seeded_volume_fraction(&blocks);
+            assert!(
+                (frac - expected).abs() < 0.005,
+                "{} fill {fill}: seeded fraction {frac} should stay near authored scale {expected}",
+                preset.name()
+            );
         }
     }
 
     #[test]
-    fn zero_fill_seeds_no_represented_water() {
+    fn zero_fill_keeps_minimum_viable_seed() {
         for preset in PRESETS {
             let blocks = preset_blocks(preset, DEFAULT_DROP_HEIGHT, 0.0);
             assert!(
-                blocks.is_empty(),
-                "{} should have no blocks at 0% fill",
+                !blocks.is_empty(),
+                "{} should keep a tiny compatibility seed at 0% fill",
                 preset.name()
             );
-            assert_eq!(seeded_volume_fraction(&blocks), 0.0);
+            assert!(seeded_volume_fraction(&blocks) > 0.0);
             let scene = scene(preset, 0.0, 8.0);
-            assert_eq!(scene.particle_count, 0);
+            assert_eq!(scene.particle_count, 1_024);
         }
     }
 
@@ -730,22 +675,23 @@ mod fill_level_tests {
     }
 
     #[test]
-    fn full_fill_hits_documented_guardrail() {
+    fn default_scene_fill_is_roughly_linear_before_clamping() {
         let f20 = seeded_volume_fraction(&preset_blocks(
             ScenePreset::FallingBlob,
             DEFAULT_DROP_HEIGHT,
             0.2,
         ));
         assert!((f20 - 0.2).abs() < 0.001);
-
-        for preset in PRESETS {
-            let f100 = seeded_volume_fraction(&preset_blocks(preset, DEFAULT_DROP_HEIGHT, 1.0));
-            assert!(
-                (f100 - (1.0 - SUSPENDED_TOP_AIR_MARGIN)).abs() < 0.001,
-                "{} full fill {f100} should leave the explicit top-air guardrail",
-                preset.name()
-            );
-        }
+        let f50 = seeded_volume_fraction(&preset_blocks(
+            ScenePreset::FallingBlob,
+            DEFAULT_DROP_HEIGHT,
+            0.5,
+        ));
+        let ratio = f50 / f20;
+        assert!(
+            (2.4..=2.6).contains(&ratio),
+            "50%/20% seeded ratio {ratio} should be ~2.5"
+        );
     }
 
     #[test]
@@ -832,7 +778,7 @@ mod fill_level_tests {
         assert!((requested - 8.0).abs() < 0.001);
         assert!(actual < requested);
         assert!(
-            (actual - 7.856).abs() < 0.02,
+            (actual - 7.920).abs() < 0.02,
             "actual density {actual} should reflect lattice flooring"
         );
     }
@@ -1002,27 +948,23 @@ mod measurement_tests {
     }
 
     #[test]
-    fn behavior_formula_supports_canonical_whole_tank_volume_fraction() {
+    fn behavior_formula_supports_preset_authored_amount() {
         let res = UVec3::new(80, 40, 80);
         let falling = measured(ScenePreset::FallingBlob, res, 0.5, 8.0);
         let dam = measured(ScenePreset::DamBreak, res, 0.5, 8.0);
         let double = measured(ScenePreset::DoubleSplash, res, 0.5, 8.0);
 
         assert!(
-            (falling.seeded_fraction - 0.5).abs() < 0.001,
-            "falling blob should target whole-tank represented volume"
+            (falling.seeded_fraction - 0.434).abs() < 0.005,
+            "falling blob should stay near its tuned visual scale"
         );
         assert!(
-            (dam.seeded_fraction - 0.5).abs() < 0.001,
-            "dam break should target whole-tank represented volume"
+            (dam.seeded_fraction - 0.163).abs() < 0.005,
+            "dam break should use its authored footprint-relative scale"
         );
         assert!(
-            (double.seeded_fraction - 0.5).abs() < 0.001,
-            "double splash should target whole-tank represented volume"
-        );
-        assert!(
-            falling.top_margin_fraction >= SUSPENDED_TOP_AIR_MARGIN - 1.0e-6,
-            "suspended default should leave documented top-air margin"
+            (double.seeded_fraction - 0.158).abs() < 0.005,
+            "double splash should use its authored suspended-drop scale"
         );
     }
 }

@@ -67,13 +67,11 @@ that need an exact number.
 ## Represented water volume and density are orthogonal; low-density coverage is fixed by splat-radius scaling, not an SDF surface
 
 **Decision** — Split the conflated density concept into two orthogonal knobs.
-`scene.fill_level` (the **tank-fill percentage**, Reset, stored 0–100, default `20`)
-controls *how much* water is represented at reset:
-`target_normalized_volume = clamp(fill_level / 100, 0, 1)`. Presets keep their
-authored shape language, but their block volumes target that whole-tank fraction
-instead of a per-footprint waterline. Suspended or near-full cases leave an explicit
-thin top-air guardrail, so 100% means nearly full inside the closed tank rather than
-silently ceiling-clamped overfill. `particles.density` becomes a pure fidelity/cost
+`scene.fill_level` (the **scenario amount percentage**, Reset, stored 0-100, default
+`20`) controls *how much* water is represented at reset inside each preset's tuned
+shape language. It is not a universal whole-tank volume target: Falling Blob scales
+as a suspended blob, Dam Break grows taller inside its authored wall footprint, and
+Double Splash stretches its paired drops. `particles.density` becomes a pure fidelity/cost
 knob and is made **volume-neutral**: the visible body stays the same size as density
 drops, just blobbier. This is achieved cheaply by (a) scaling the render splat radius
 with the generated lattice's effective inter-particle spacing, (b) auto-enabling the
@@ -92,11 +90,12 @@ splat-radius + dilation approach decouples the two knobs at a fraction of the co
 an SDF surface, which would be a large graphics-surface investment ahead of the
 product need (see "Optional features are deferred").
 
-**Tradeoffs** — Presets no longer treat the same fill value as "height within this
-shape's own footprint"; Dam Break widens when its historical footprint cannot hold the
-whole-tank target. The splat approach remains a coverage approximation: at very low
-density the body looks blobby (accepted), and the physics liquid-cell count is only
-~density-invariant within ~15% (a density-dependent dilation rind) rather than exact.
+**Tradeoffs** — Fill values are comparable as monotone scenario amounts, not exact
+cross-preset tank-volume fractions. This preserves the tuned visual scale better than
+forcing every preset to occupy the same whole-tank volume. The splat approach remains
+a coverage approximation: at very low density the body looks blobby (accepted), and
+the physics liquid-cell count is only ~density-invariant within ~15% (a
+density-dependent dilation rind) rather than exact.
 The fast `filled_volume` proxy (`liquid_cells × H³`) and browser captures back the
 invariant; the screenshots are the real acceptance.
 

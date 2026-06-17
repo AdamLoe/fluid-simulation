@@ -117,14 +117,14 @@ valid for both pipelines.
 
 ## Volume And Density
 
-`scene.fill_level` is the Reset-class represented-volume percentage. Runtime maps it
-to `target_normalized_volume = clamp(fill_level / 100, 0, 1)` and asks each preset's
-normalized blocks to represent that whole-tank fraction, not a footprint-relative
-waterline. Falling Blob remains one suspended body, Dam Break remains floor-anchored,
-and Double Splash remains two suspended bodies; the shapes expand to meet the target
-volume. The closed-tank high-fill guardrail caps the representable volume at a thin
-top-air margin, so 100% behaves as "nearly full with margin" rather than a silently
-ceiling-clamped suspended overfill. A 0% fill produces no represented liquid blocks.
+`scene.fill_level` is the Reset-class scenario amount percentage. Runtime maps the
+stored `0..100` value to a `[0,1]` amount and each preset applies that amount through
+its authored geometry rather than a universal whole-tank volume. Falling Blob grows
+as a suspended blob around the tuned 20% default, Dam Break raises the waterline
+inside its historical wall footprint, and Double Splash stretches two suspended
+drops. This keeps the visible compositions close to the tuned presets while making
+the amount monotone and density-invariant. A 0% fill keeps a tiny compatibility seed
+rather than an entirely empty particle dispatch.
 
 `particles.density` is a fidelity/cost knob. It derives the requested seed target as
 particles per represented seeded cell and does not change the target water volume.
@@ -134,8 +134,8 @@ reset-time rest density, auto surface dilation, render splat spacing, and diagno
 therefore use the generated count divided by seeded cells where the generated count
 is known. The current scene block geometry is in
 `app/crates/fluid-lab/src/scene/mod.rs → preset_blocks`; host tests in the same file
-cover whole-tank fill targets, density-invariant geometry, generated-count effective
-density, and the high-fill margin.
+cover preset-authored fill scale, density-invariant geometry, and generated-count
+effective density.
 
 Low-density cells can leave holes in the pressure active set. The effective surface
 dilation is resolved by `app/crates/fluid-lab/src/scene/mod.rs →
