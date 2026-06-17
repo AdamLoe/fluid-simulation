@@ -110,7 +110,8 @@ Lowering density coarsens the lattice and the splats grow to keep coverage
 approximately constant: the body stays the same size, just blobbier. The hidden
 compatibility `particles.count` override changes the requested effective spacing too.
 The reset path intentionally uses requested effective density, not generated-count
-drift, so density `8` remains the tuned reference for optical coverage.
+drift. Density `10` is the tuned optical-quality default; density `8` remains a
+lower-cost setting.
 The radius is recomputed on every Reset at both `GpuContext::new` and
 `GpuContext::recreate_fluid`. `render.particle_size` remains the **Live** user
 multiplier applied on top via `ParticleRenderer::set_radius_scale`;

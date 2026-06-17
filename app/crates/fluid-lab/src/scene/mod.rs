@@ -12,9 +12,8 @@ use glam::{UVec3, Vec3};
 
 const DEFAULT_DROP_HEIGHT: f32 = 0.72;
 
-/// Reference particle density that reproduces the historical look (8 particles
-/// per seeded cell). Used by the renderer to keep splat coverage volume-neutral
-/// and by the auto surface-dilation trigger. Mirrors `particles.density`'s default.
+/// Low-density reference threshold for automatic surface dilation. The product
+/// default can sit above this; values below this need extra coverage help.
 pub const REFERENCE_DENSITY: f32 = 8.0;
 
 /// Default `scene.fill_level` as a [0,1] scenario amount fraction.
@@ -515,12 +514,12 @@ mod tests {
 
     #[test]
     fn default_density_derives_count_from_seeded_cells() {
-        // Default registry: density 8/seeded-cell, 80x40x80 grid, falling-blob preset.
-        // The default blob's seeded fraction is ~0.2, so count is near 410k.
+        // Default registry: density 10/seeded-cell, 80x40x80 grid, falling-blob preset.
+        // The default blob's seeded fraction is ~0.2, so count is near 512k.
         let scene = SceneConfig::from_settings(&Registry::default());
         assert!(
-            (409_000..=410_000).contains(&scene.particle_count),
-            "default count {} should be ~410k (8/seeded-cell, 20% fill)",
+            (511_000..=513_000).contains(&scene.particle_count),
+            "default count {} should be ~512k (10/seeded-cell, 20% fill)",
             scene.particle_count
         );
     }
@@ -530,11 +529,11 @@ mod tests {
         let mut settings = Registry::default();
         settings.set_value_f64("grid.res_x", 128.0);
         settings.set_value_f64("grid.res_z", 128.0);
-        // 128x40x128, density 8, falling blob at ~20% seeded volume -> ~1.049M.
+        // 128x40x128, density 10, falling blob at ~20% seeded volume -> ~1.31M.
         let blob = SceneConfig::from_settings(&settings).particle_count;
         assert!(
-            (1_040_000..=1_055_000).contains(&blob),
-            "falling-blob count {blob} should be ~1.05M"
+            (1_305_000..=1_315_000).contains(&blob),
+            "falling-blob count {blob} should be ~1.31M"
         );
     }
 

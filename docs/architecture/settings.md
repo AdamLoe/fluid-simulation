@@ -56,7 +56,7 @@ Double Splash stretches its two suspended drops. The 0% setting keeps a tiny
 compatibility seed so the existing particle/GPU paths remain valid.
 
 The seeded particle count is **derived**, not a fixed absolute number. The primary
-control is `particles.density` (Reset-class `f32`, default `8`, range `1..32`): the
+control is `particles.density` (Reset-class `f32`, default `10`, range `1..32`): the
 target particles-per-seeded-cell crowding of the represented liquid at reset.
 
 "Per cell" means **per seeded fluid cell**, not per total grid cell. The seeded region
@@ -65,7 +65,7 @@ res_x*res_y*res_z`, where `seeded_volume_fraction` is the fraction of the normal
 [0,1]^3 tank the scenario's liquid blocks occupy. The requested count is
 `round(density * seeded_volume_fraction * total_cells)`, floored at 1024 for
 very-small compatibility seeds. This keeps the default `80×40×80` falling-blob scene
-near the historical particle budget and scales correctly when grid resolution,
+near the optical-quality particle budget and scales correctly when grid resolution,
 preset-authored scenario amount, or water amount changes. The
 derivation lives in `crates/fluid-lab/src/scene/mod.rs -> resolved_particle_count`;
 `gpu` reads the resolved `SceneConfig::particle_count`, so validation and the reported
@@ -74,7 +74,8 @@ derivation lives in `crates/fluid-lab/src/scene/mod.rs -> resolved_particle_coun
 The deterministic lattice can generate slightly fewer particles than requested
 because per-axis lattice counts are floored. Runtime rest density, auto
 `classify.surface_dilation`, and render splat spacing intentionally use the requested
-effective density so the reference value `8` remains the tuned visual baseline;
+effective density. The default value `10` is the visual-quality baseline; `8` remains
+available as a lower-cost setting and as the auto-dilation threshold;
 `stats_json` still exposes requested, estimated/generated, and actual particle counts
 so captures can show the drift.
 

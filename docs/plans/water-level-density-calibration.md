@@ -419,9 +419,9 @@ restores the water amount semantics to preset-authored scale:
 - `particles.density` remains volume-neutral: it changes requested/generated count and
   spacing, not seeded geometry.
 - Runtime rest density, auto surface dilation, and splat spacing use requested
-  effective density so the reference value `8` remains the tuned visual baseline.
-  Generated lattice count remains diagnostic/measurement evidence rather than a
-  render/runtime calibration input.
+  effective density. Density `10` is now the tuned visual-quality default after
+  density `8` proved visibly too sparse; generated lattice count remains
+  diagnostic/measurement evidence rather than a render/runtime calibration input.
 
 Corrective tests pin preset-authored scale (`Dam Break` 50% at roughly `0.163` seeded
 fraction, live-default `Falling Blob` 50% at roughly `0.434`) while keeping the

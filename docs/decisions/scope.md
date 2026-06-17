@@ -43,7 +43,7 @@ introducing anisotropic spacing, which would complicate the pressure operator an
 ## Particle count is derived from a per-seeded-cell density, not a raw absolute
 
 **Decision** — The seeded particle population is controlled by a particles-per-cell
-density (`particles.density`, default `8`), and the spawn count is **derived** as
+density (`particles.density`, default `10`), and the spawn count is **derived** as
 `round(density * seeded_volume_fraction * total_grid_cells)`. "Per cell" means per
 *seeded fluid cell* (the liquid-block volume in cell units), not per total grid cell.
 The old raw `particles.count` becomes an advanced manual override where `0` = Auto
@@ -51,9 +51,10 @@ The old raw `particles.count` becomes an advanced manual override where `0` = Au
 
 **Why** — A raw absolute count silently became wrong density whenever grid resolution
 changed (e.g. ~11/cell at 128×64×128). Per-seeded-cell keeps both the default
-`80×40×80` scene (~410k at the default fill) and larger grids sane, and tracks how much
-of the tank a scenario fills, so denser scenes get proportionally more particles. Density `8` matches
-the standard FLIP/PIC ~8/cell target and the prior default's effective ~7.7/seeded-cell.
+`80×40×80` scene (~512k at the default fill) and larger grids sane, and tracks how much
+of the tank a scenario fills, so denser scenes get proportionally more particles.
+Density `10` is the current visual-quality default; density `8` remains available as
+a lower-cost setting.
 
 **Tradeoffs** — The exact count now depends on the active scenario's fill fraction, so
 it varies between presets at the same density; the advanced override exists for callers
@@ -78,8 +79,8 @@ with the requested effective inter-particle spacing, (b) auto-enabling the exist
 one-ring `classify.wgsl` surface dilation below the reference density (8/cell) so the
 physics liquid region stays hole-free at genuinely low densities, and (c) coupling the
 divergence anti-clump rest target to requested effective density
-(`effective_rest_density`) so the *dynamics* are density-aware while density `8`
-remains the tuned visual baseline. The **SDF / marching-cubes surface rewrite — the
+(`effective_rest_density`) so the *dynamics* are density-aware while density `10`
+is the tuned visual-quality baseline. The **SDF / marching-cubes surface rewrite — the
 "proper" coverage fix — is deliberately deferred** to a future plan.
 
 **Why** — The visible water is built from particle splats, not liquid cells, so a
