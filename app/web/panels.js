@@ -454,6 +454,38 @@ const APPLY_BADGE = {
   reload: { text: "reload to apply", cls: "badge-reload" },
 };
 
+function applyLegendItem(apply) {
+  const info = APPLY_DOT[apply];
+  if (!info) return "";
+  return `
+    <span class="settings-legend-item" title="${info.title}">
+      <span class="settings-legend-dot" style="background:${info.color}"></span>
+      ${apply[0].toUpperCase()}${apply.slice(1)}
+    </span>
+  `;
+}
+
+function renderSettingsHeader(header, tab, settingsCount) {
+  if (!header) return;
+  const countText = tab.profiler
+    ? "live stats"
+    : tab.shell
+      ? "shell"
+      : `${settingsCount} ${settingsCount === 1 ? "setting" : "settings"}`;
+
+  header.innerHTML = `
+    <div class="settings-title-row">
+      <div class="settings-title">${tab.label}</div>
+      <div class="settings-count">${countText}</div>
+    </div>
+    <div class="settings-legend" aria-label="Apply status legend">
+      ${applyLegendItem("live")}
+      ${applyLegendItem("reset")}
+      ${applyLegendItem("reload")}
+    </div>
+  `;
+}
+
 function showApplyBadge(badge, apply) {
   const bi = APPLY_BADGE[apply];
   if (!bi) {
@@ -835,24 +867,34 @@ function buildProfilerPanel(container, app) {
   const maxSubstepsText = stats.max_substeps != null ? `cap ${stats.max_substeps}` : "cap —";
 
   let html = `
-    <div class="prof-row" style="align-items:baseline;padding-top:2px;padding-bottom:2px;">
-      <span class="prof-key" style="font-size:12px;">FPS</span>
-      <span class="prof-val" style="font-size:20px;font-weight:700;color:${fpsColor};line-height:1;">${fmt(fps, 0)}</span>
-    </div>
-    <div class="prof-row">
-      <span class="prof-key">Sim / real-time</span>
-      <span class="prof-val" style="color:${rtfColor}">${fmt(rtf, 2)}x &nbsp;<span class="prof-fps">(${fmt(stats.sim_advanced_ms, 2)} / ${fmt(stats.wall_raf_ms, 2)} ms)</span></span>
-    </div>
-    <div class="prof-divider"></div>
-    <div class="prof-row prof-header-row">
-      <span class="prof-key">Timing</span>
-      <span class="prof-val" style="color:${timingColor}">${timing} (${stats.frame_samples ?? "—"} frames)</span>
+    <div class="prof-summary">
+      <div class="prof-summary-item">
+        <span class="prof-summary-label">FPS</span>
+        <span class="prof-summary-value" style="color:${fpsColor}">${fmt(fps, 0)}</span>
+        <span class="prof-summary-detail">${fmt(stats.frame_avg_ms, 2)} ms avg</span>
+      </div>
+      <div class="prof-summary-item">
+        <span class="prof-summary-label">Real-time</span>
+        <span class="prof-summary-value" style="color:${rtfColor}">${fmt(rtf, 2)}x</span>
+        <span class="prof-summary-detail">${fmt(stats.sim_advanced_ms, 2)} / ${fmt(stats.wall_raf_ms, 2)} ms</span>
+      </div>
+      <div class="prof-summary-item">
+        <span class="prof-summary-label">Timing</span>
+        <span class="prof-summary-value" style="color:${timingColor}">${timing}</span>
+        <span class="prof-summary-detail">${stats.frame_samples ?? "—"} frames</span>
+      </div>
+      <div class="prof-summary-item">
+        <span class="prof-summary-label">Scale</span>
+        <span class="prof-summary-value" style="color:${scaleColor}">${stats.scale_status ?? "—"}</span>
+        <span class="prof-summary-detail">${stats.particles != null ? stats.particles.toLocaleString() : "—"} particles</span>
+      </div>
     </div>`;
   const liquidCells = stats.gpu && stats.gpu.liquid_cells != null ? stats.gpu.liquid_cells : null;
   const dispatchShape = stats.particle_dispatch_groups_x != null && stats.particle_dispatch_groups_y != null
     ? `${stats.particle_dispatch_groups_x.toLocaleString()} x ${stats.particle_dispatch_groups_y.toLocaleString()} x 1`
     : "—";
   html += `
+    <div class="prof-section-label">Scale and device</div>
     <div class="prof-row">
       <span class="prof-key">Grid res</span>
       <span class="prof-val">${stats.grid_res ?? stats.grid_n ?? "—"}</span>
@@ -886,6 +928,7 @@ function buildProfilerPanel(container, app) {
       <span class="prof-val">${stats.gpu_buffer_mb != null ? fmt(stats.gpu_buffer_mb, 1) + " MB" : "—"}</span>
     </div>
     <div class="prof-divider"></div>
+    <div class="prof-section-label">Frame and simulation</div>
     <div class="prof-row">
       <span class="prof-key">Frame avg</span>
       <span class="prof-val">${fmt(stats.frame_avg_ms, 2)} ms &nbsp;<span class="prof-fps">(${fmt(stats.fps, 1)} fps)</span></span>
@@ -1003,11 +1046,12 @@ function buildProfilerPanel(container, app) {
 export function initPanels(app) {
   const settingsPanel = document.getElementById("settings-panel");
   const settingsBody = document.getElementById("settings-body");
+  const settingsHeader = document.getElementById("settings-header");
   const tabsRoot = document.getElementById("settings-tabs");
   const btnConfig = document.getElementById("btn-config");
   const toolbarReset = document.getElementById("btn-reset");
 
-  if (!settingsPanel || !settingsBody || !tabsRoot || !btnConfig) {
+  if (!settingsPanel || !settingsBody || !settingsHeader || !tabsRoot || !btnConfig) {
     console.warn("[panels] Settings DOM elements not found - skipping initPanels.");
     return null;
   }
@@ -1030,6 +1074,11 @@ export function initPanels(app) {
 
   function renderActiveTab() {
     const currentSettings = safeConfigJson(app);
+    const tab = tabMeta.get(activeTab) || tabs[0] || PROFILER_TAB;
+    const settingsCount = tab.profiler || tab.shell
+      ? 0
+      : filteredSettingsForTab(currentSettings, activeTab).length;
+    renderSettingsHeader(settingsHeader, tab, settingsCount);
     if (activeTab === "profiler") {
       buildProfilerPanel(settingsBody, app);
     } else if (activeTab === "theme") {

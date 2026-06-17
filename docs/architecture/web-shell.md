@@ -48,17 +48,20 @@ Open `http://localhost:5184/`.
 and opens from the toolbar settings icon. On desktop it is a layout column beside the
 canvas; on narrow screens it overlays to preserve viewport space.
 
-The panel contains only `.settings-content`: the settings navigator and active settings
-body. There is no separate header band, no `#settings-nav-toggle`, no
-`nav-collapsed` class, and no navigator-collapse behavior. On desktop the navigator
-sits beside the body; on narrow screens the tabs wrap above the body. The toolbar
-settings button remains the open/close control.
+The panel uses `.settings-content` with a tab navigator plus `.settings-main`, which
+contains a compact header and the active scroll body. The header names the active tab,
+shows the setting count or shell/profiler state, and keeps the Live/Reset/Reload
+apply-class legend visible. There is no `#settings-nav-toggle`, no `nav-collapsed`
+class, and no navigator-collapse behavior. On desktop the navigator sits beside the
+body; on narrow screens the tabs wrap above the body. The toolbar settings button
+remains the open/close control.
 
 Tabs are derived directly from registry metadata in `app.config_json()`, sorted by
 `tab_order`, and followed by Profiler. The shell does not render registry tab groups.
 `Environment` is hidden unless `?dev=true`; `Theme` is a shell-owned dev-only tab
 that also appears only with `?dev=true`. Rows support slider+number controls,
-dropdowns, color pickers, log2 sliders, color swatches, and per-setting reset buttons.
+dropdowns, color pickers, log2 sliders, color swatches, and per-setting reset buttons;
+labels can wrap within the panel while controls keep stable value/reset affordances.
 The shell renders only functional help affordances; registry `technical_tooltip`
 metadata is not surfaced in the panel.
 
@@ -97,9 +100,10 @@ browser smoke checks. `window.__fluidShell.setting(id)` returns the current regi
 row from `config_json()`, and the shell methods above expose the same import/export
 and share URL behavior without needing to click the panel.
 
-The Profiler tab polls `app.stats_json()` at 4 Hz while open. Persistent foam particle
-rows were removed with `DiffuseSystem`; the panel reports the remaining timing,
-memory, scale, and liveness facts.
+The Profiler tab polls `app.stats_json()` at 4 Hz while open. It starts with a compact
+summary of FPS, real-time factor, timing source, and scale status, then groups the
+remaining timing, memory, scale, and liveness rows. Persistent foam particle rows were
+removed with `DiffuseSystem`.
 
 The Theme tab is shell-owned rather than registry-owned. The preset catalog lives in
 `web/panels.js → THEMES`, with matching CSS variable blocks in `web/index.html`; the
@@ -126,7 +130,8 @@ with reload guidance; the app does not attempt in-place WebGPU device recovery.
 
 ## Bottom controls and pointer dispatch
 
-The bottom launcher has two always-visible segmented controls:
+The bottom launcher is raised above the viewport edge with a safe-area-aware inset and
+has two always-visible segmented controls:
 
 - `Mode: Auto rotate / Waves / Manual`
 - `Control: Camera / Cube`

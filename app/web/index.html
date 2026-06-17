@@ -761,6 +761,69 @@
         grid-template-columns: var(--settings-nav-width) minmax(0, 1fr);
       }
 
+      .settings-main {
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .settings-header {
+        flex: 0 0 auto;
+        padding: 8px 12px 7px;
+        border-bottom: 1px solid var(--panel-border);
+        background: color-mix(in srgb, var(--panel-bg) 82%, var(--control-bg));
+      }
+
+      .settings-title-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .settings-title {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--text-strong);
+        font-size: 13px;
+        font-weight: 700;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .settings-count {
+        flex-shrink: 0;
+        color: var(--text-faint);
+        font-size: 10px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .settings-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px 8px;
+        margin-top: 6px;
+      }
+
+      .settings-legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        color: var(--text-muted);
+        font-size: 10px;
+        line-height: 1.2;
+        white-space: nowrap;
+      }
+
+      .settings-legend-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+
       .settings-tabs {
         display: flex;
         flex-direction: column;
@@ -806,12 +869,16 @@
       }
 
       .settings-body {
-        flex: 1;
+        min-height: 0;
+        flex: 1 1 auto;
         overflow-y: auto;
         overflow-x: hidden;
-        padding: 8px 0 12px;
+        padding: 8px 0 18px;
+        scroll-padding-block: 12px 28px;
+        overscroll-behavior: contain;
         scrollbar-width: thin;
         scrollbar-color: var(--panel-border) transparent;
+        scrollbar-gutter: stable;
       }
 
       .settings-body::-webkit-scrollbar {
@@ -893,10 +960,10 @@
       .cfg-expert-drawers .cfg-group-count { display: none; }
       .cfg-row {
         display: grid;
-        grid-template-columns: 1fr auto;
+        grid-template-columns: minmax(0, 1fr);
         grid-template-rows: auto auto;
-        gap: 2px 8px;
-        padding: 5px 12px 4px;
+        gap: 5px;
+        padding: 6px 12px 7px;
         border-bottom: 1px solid var(--row-border);
         transition: background 0.1s;
       }
@@ -918,9 +985,9 @@
       .cfg-label {
         font-size: 12px;
         color: var(--text-body);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        line-height: 1.25;
+        white-space: normal;
+        overflow-wrap: anywhere;
         min-width: 0;
       }
       .cfg-help {
@@ -959,14 +1026,16 @@
         box-shadow: var(--info-focus-shadow);
       }
       .cfg-controls {
-        display: flex;
+        display: grid;
+        grid-template-columns: minmax(92px, 1fr) max-content max-content;
         align-items: center;
         gap: 6px;
         grid-column: 1 / -1;
         padding-left: 13px;
+        min-width: 0;
       }
       .cfg-slider {
-        flex: 1;
+        width: 100%;
         height: 3px;
         accent-color: var(--accent-strong);
         cursor: pointer;
@@ -985,7 +1054,8 @@
       }
       .cfg-number:focus { outline: none; border-color: var(--accent-strong); }
       .cfg-select {
-        flex: 1;
+        grid-column: 1 / 3;
+        width: 100%;
         min-width: 0;
         background: var(--control-bg);
         border: 1px solid var(--panel-border);
@@ -1038,7 +1108,7 @@
       .cfg-actions {
         display: flex;
         gap: 8px;
-        padding: 10px 12px 4px;
+        padding: 10px 12px 18px;
         flex-wrap: wrap;
       }
       .cfg-share-actions {
@@ -1071,8 +1141,8 @@
         font-size: 12px;
       }
       .prof-row {
-        display: flex;
-        justify-content: space-between;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) max-content;
         align-items: baseline;
         padding: 3px 12px;
         gap: 8px;
@@ -1080,8 +1150,8 @@
       .prof-key {
         color: var(--text-faint);
         font-size: 11px;
-        white-space: nowrap;
-        flex-shrink: 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
       }
       .prof-val {
         color: var(--text-body);
@@ -1099,7 +1169,7 @@
         margin: 5px 0;
       }
       .prof-section-label {
-        padding: 3px 12px 1px;
+        padding: 8px 12px 2px;
         font-size: 10px;
         font-weight: 700;
         letter-spacing: 0.1em;
@@ -1112,12 +1182,56 @@
         color: var(--warning);
         line-height: 1.5;
       }
+      .prof-summary {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        border-bottom: 1px solid var(--divider);
+      }
+      .prof-summary-item {
+        min-width: 0;
+        padding: 8px 12px;
+        border-right: 1px solid var(--divider);
+        border-bottom: 1px solid var(--divider);
+      }
+      .prof-summary-item:nth-child(2n) {
+        border-right: 0;
+      }
+      .prof-summary-item:nth-last-child(-n + 2) {
+        border-bottom: 0;
+      }
+      .prof-summary-label {
+        display: block;
+        color: var(--text-faint);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .prof-summary-value {
+        display: block;
+        margin-top: 3px;
+        color: var(--text-body);
+        font-size: 16px;
+        font-weight: 700;
+        line-height: 1.05;
+        overflow-wrap: anywhere;
+        font-variant-numeric: tabular-nums;
+      }
+      .prof-summary-detail {
+        display: block;
+        margin-top: 2px;
+        color: var(--text-faint);
+        font-size: 10px;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+      }
 
       #launcher {
         position: absolute;
         left: 0;
         right: 0;
-        bottom: 0;
+        bottom: max(14px, calc(env(safe-area-inset-bottom) + 10px));
+        padding: 0 12px;
         z-index: 30;
         display: flex;
         justify-content: center;
@@ -1134,8 +1248,7 @@
         gap: 6px 8px;
         padding: 6px 8px;
         border: 1px solid var(--chrome-border);
-        border-bottom: 0;
-        border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+        border-radius: var(--radius-lg);
         background: var(--chrome-bg);
         backdrop-filter: blur(10px);
         -webkit-backdrop-filter: blur(10px);
@@ -1315,6 +1428,10 @@
           flex-direction: column;
         }
 
+        .settings-main {
+          flex: 1 1 auto;
+        }
+
         .settings-tabs {
           max-height: 112px;
           flex-direction: row;
@@ -1402,7 +1519,10 @@
         <aside id="settings-panel" class="settings-panel" aria-label="Settings" hidden>
           <div class="settings-content">
             <div id="settings-tabs" class="settings-tabs" role="tablist" aria-label="Settings sections"></div>
-            <div id="settings-body" class="settings-body"></div>
+            <div class="settings-main">
+              <div id="settings-header" class="settings-header"></div>
+              <div id="settings-body" class="settings-body"></div>
+            </div>
           </div>
         </aside>
       </div>
