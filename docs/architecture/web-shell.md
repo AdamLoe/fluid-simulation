@@ -38,7 +38,7 @@ index.html -> main.js -> panels.js
 
 ## Canonical shell
 
-The live shell is `web/index.html -> web/main.js -> web/panels.js`. `app/run.sh`
+The live shell is `web/index.html -> web/main.js -> web/panels.js`. `app/local_dev.sh`
 rebuilds the wasm package, frees port 5184, and serves `web/` with no-cache headers.
 Open `http://localhost:5184/`.
 

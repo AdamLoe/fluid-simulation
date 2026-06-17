@@ -54,7 +54,7 @@ Then browser-verify at the bare `http://localhost:5184/`.
 
 ## What not to do
 
-- Don't expect `run.sh` to prepare a deployable package. It is for the inner loop and
+- Don't expect `local_dev.sh` to prepare a deployable package. It is for the inner loop and
   writes a dev build into `web/pkg`.
 - Don't hand-edit the generated `app/web/dist` contents.
 

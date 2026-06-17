@@ -4,8 +4,8 @@
 #
 # Always does all three: rebuild WASM, kill any running server, serve.
 #
-#   ./run.sh            rebuild (dev profile) + kill + serve
-#   ./run.sh --clean    cargo clean first, then rebuild + kill + serve
+#   ./local_dev.sh            rebuild (dev profile) + kill + serve
+#   ./local_dev.sh --clean    cargo clean first, then rebuild + kill + serve
 #
 # Must run inside WSL (cargo/wasm-pack/python3 on PATH). See
 # docs/agent-context/build-run.md.

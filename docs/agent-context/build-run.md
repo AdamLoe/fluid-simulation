@@ -34,12 +34,12 @@ the capture harness is `app/tools/`. Build commands run from `app/`.
 
 ## Run the app (the canonical loop)
 
-**`app/run.sh` is the one command.** It always does all three steps — rebuild the WASM,
+**`app/local_dev.sh` is the one command.** It always does all three steps — rebuild the WASM,
 free port 5184, serve the shell — so "restart the app" / "rebuild and run" is just:
 
 ```
-cd /home/adamg/fluid-simulation/app && ./run.sh           # rebuild + free port + serve
-cd /home/adamg/fluid-simulation/app && ./run.sh --clean   # cargo clean first, then the same
+cd /home/adamg/fluid-simulation/app && ./local_dev.sh           # rebuild + free port + serve
+cd /home/adamg/fluid-simulation/app && ./local_dev.sh --clean   # cargo clean first, then the same
 ```
 
 It runs in the **foreground** (Ctrl-C stops the server); re-run it any time to rebuild
@@ -48,21 +48,21 @@ and reserve. Then open the **bare** URL:
 > **http://localhost:5184/**
 
 The canonical shell is **`web/index.html`**, so the bare `/` serves it under any server
-(it is the default directory index — no path remap). `run.sh` wraps `http.server` only to
+(it is the default directory index — no path remap). `local_dev.sh` wraps `http.server` only to
 add **no-cache headers**, so an ordinary browser reload always picks up the freshly built
 `.wasm` — no Ctrl-Shift-R, and you never put a filename in the URL or start a server by
-hand. Port **5184 is the one fixed web port**; `run.sh` frees only listeners on that
+hand. Port **5184 is the one fixed web port**; `local_dev.sh` frees only listeners on that
 port before serving, so there is never a second instance to manage without killing
 unrelated development servers.
 
 Do **not** hand-run `python3 -m http.server` — that skips the rebuild, the port-free, and
 the no-cache headers (it serves the right `index.html` at `/`, but caches the `.wasm`),
-i.e. most of the reason `run.sh` exists.
+i.e. most of the reason `local_dev.sh` exists.
 
-## What run.sh does under the hood
+## What local_dev.sh does under the hood
 
 You only need these when debugging the loop or running a single piece in isolation;
-`run.sh` already chains all three. Source of truth: `app/run.sh`.
+`local_dev.sh` already chains all three. Source of truth: `app/local_dev.sh`.
 
 1. **Rebuild the WASM:**
 
@@ -87,7 +87,7 @@ You only need these when debugging the loop or running a single piece in isolati
 
 The stale path is now just the orphaned `web/src/main.ts` (the old Vite/TS entry): it
 lacks the panels and nothing loads it — `index.html` imports `./main.js`, not
-`src/main.ts`. `vite.config.ts` still binds 5184 with `strictPort`, but `run.sh` does not
+`src/main.ts`. `vite.config.ts` still binds 5184 with `strictPort`, but `local_dev.sh` does not
 use Vite. See [`../architecture/web-shell.md`](../architecture/web-shell.md).
 
 ## Browser-verify with the capture harness (real GPU)
@@ -116,7 +116,7 @@ stats, rejected requested reset setup, or boot smoke-test failure. It must run u
   ```
 
 Point the harness at the **bare** `http://localhost:5184/` (the same URL you open in a
-browser); the bare `/` serves `web/index.html`. `run.sh` must already be
+browser); the bare `/` serves `web/index.html`. `local_dev.sh` must already be
 serving in another shell — the harness only drives the page, it does not build or serve.
 
 It writes the PNG + a `<out>.console.txt` beside it. **A bare output filename (e.g.
@@ -160,14 +160,14 @@ wgpu 29 · wasm-pack 0.15 · rustc/cargo ~1.95 · node 20 (WSL) / 24 (Windows). 
 
 ## What NOT to do
 
-- Don't hand-run `python3 -m http.server`. Use `./run.sh` and the bare
+- Don't hand-run `python3 -m http.server`. Use `./local_dev.sh` and the bare
   `http://localhost:5184/` — the manual path skips the rebuild, port-free, and no-cache
   headers.
 - Don't run builds from a Windows shell without the `wsl.exe` wrapper (and conversely,
-  don't add the wrapper when your shell is already inside WSL). `run.sh` itself must run
+  don't add the wrapper when your shell is already inside WSL). `local_dev.sh` itself must run
   inside WSL.
 - Don't serve on an ad-hoc port — the web instance lives on **5184**.
-- Don't verify against the Vite path; use the static path (`run.sh` serves it).
+- Don't verify against the Vite path; use the static path (`local_dev.sh` serves it).
 - Don't try to drive the capture harness with WSL node — it can't launch Windows Chrome.
 - Don't make a performance claim without profiler output (see [`testing.md`](testing.md)).
 
