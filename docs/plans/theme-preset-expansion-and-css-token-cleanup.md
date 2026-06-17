@@ -1,8 +1,8 @@
 ---
-status:        draft
+status:        shipped
 owner:         unassigned
-last_updated:  2026-06-16
-okay_to_delete: false
+last_updated:  2026-06-17
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/web-shell.md
@@ -112,9 +112,8 @@ in sync.
 
 ## Migration notes (filled in at ship time)
 
-- Pending. Migrate the final theme contract and current preset behavior into
-  `architecture/web-shell.md`, then set this plan to `shipped` and
-  `okay_to_delete: true`.
+- Migrated the current theme contract, true-black `void` expectation, CSS token
+  ownership, and six-swatch selector behavior into `docs/architecture/web-shell.md`.
 
 ## See also
 

@@ -18,22 +18,125 @@ const DEV_ONLY_TABS = new Set(["environment", "theme"]);
 const DEFAULT_TAB = "scenario";
 const PROFILER_TAB = { id: "profiler", label: "Profiler", order: 1000, profiler: true };
 const THEME_TAB = { id: "theme", label: "Theme", order: 1100, shell: true };
+const THEME_SWATCH_TOKENS = [
+  ["--app-bg", "Page"],
+  ["--text-body", "Text"],
+  ["--accent", "Accent"],
+  ["--button-bg", "Action"],
+  ["--control-bg", "Control"],
+  ["--panel-border", "Border"],
+];
+const THEME_TOKENS = {
+  default: {
+    "--app-bg": "#0a0c10",
+    "--text-body": "#cdd6e4",
+    "--accent": "#7dd3fc",
+    "--button-bg": "#1b2130",
+    "--control-bg": "#0f1219",
+    "--panel-border": "#2a3142",
+  },
+  harbor: {
+    "--app-bg": "#081013",
+    "--text-body": "#c8dde2",
+    "--accent": "#5eead4",
+    "--button-bg": "#0f3740",
+    "--control-bg": "#0b1a1f",
+    "--panel-border": "#24545c",
+  },
+  signal: {
+    "--app-bg": "#101014",
+    "--text-body": "#e5dde1",
+    "--accent": "#22d3ee",
+    "--button-bg": "#b45309",
+    "--control-bg": "#17171d",
+    "--panel-border": "#4a3c30",
+  },
+  void: {
+    "--app-bg": "#000000",
+    "--text-body": "#d6dae2",
+    "--accent": "#ffffff",
+    "--button-bg": "#111111",
+    "--control-bg": "#050505",
+    "--panel-border": "#303030",
+  },
+  basalt: {
+    "--app-bg": "#121212",
+    "--text-body": "#d7d7d7",
+    "--accent": "#e5e7eb",
+    "--button-bg": "#2a2a2a",
+    "--control-bg": "#191919",
+    "--panel-border": "#3a3a3a",
+  },
+  ember: {
+    "--app-bg": "#130b0c",
+    "--text-body": "#f0d9cf",
+    "--accent": "#fb923c",
+    "--button-bg": "#7c2d12",
+    "--control-bg": "#221312",
+    "--panel-border": "#7f3f2f",
+  },
+  orchid: {
+    "--app-bg": "#120d1f",
+    "--text-body": "#eadcff",
+    "--accent": "#f0abfc",
+    "--button-bg": "#5b21b6",
+    "--control-bg": "#1f1730",
+    "--panel-border": "#6d4a9c",
+  },
+  circuit: {
+    "--app-bg": "#03120d",
+    "--text-body": "#c8f7df",
+    "--accent": "#22c55e",
+    "--button-bg": "#064e3b",
+    "--control-bg": "#071b13",
+    "--panel-border": "#1f7a4d",
+  },
+  glacier: {
+    "--app-bg": "#dceaf3",
+    "--text-body": "#1f3342",
+    "--accent": "#0f6f9f",
+    "--button-bg": "#c9dde8",
+    "--control-bg": "#edf5f9",
+    "--panel-border": "#88a9bb",
+  },
+  lagoon: {
+    "--app-bg": "#07161b",
+    "--text-body": "#d7f3f0",
+    "--accent": "#2dd4bf",
+    "--button-bg": "#14532d",
+    "--control-bg": "#0d2428",
+    "--panel-border": "#2b6d72",
+  },
+  eclipse: {
+    "--app-bg": "#0f1022",
+    "--text-body": "#e3e7ff",
+    "--accent": "#a78bfa",
+    "--button-bg": "#312e81",
+    "--control-bg": "#181935",
+    "--panel-border": "#4f46e5",
+  },
+  coral: {
+    "--app-bg": "#171016",
+    "--text-body": "#ffe1dc",
+    "--accent": "#fb7185",
+    "--button-bg": "#9f1239",
+    "--control-bg": "#26151b",
+    "--panel-border": "#be4560",
+  },
+};
 const THEMES = [
-  {
-    id: "default",
-    label: "Default",
-    swatches: ["#0a0c10", "#7dd3fc", "#4ade80"],
-  },
-  {
-    id: "harbor",
-    label: "Harbor",
-    swatches: ["#081013", "#22d3ee", "#5eead4"],
-  },
-  {
-    id: "signal",
-    label: "Signal",
-    swatches: ["#101014", "#f59e0b", "#f43f5e"],
-  },
+  { id: "default", label: "Default", tokens: THEME_TOKENS.default },
+  { id: "harbor", label: "Harbor", tokens: THEME_TOKENS.harbor },
+  { id: "signal", label: "Signal", tokens: THEME_TOKENS.signal },
+  { id: "void", label: "Void", tokens: THEME_TOKENS.void },
+  { id: "basalt", label: "Basalt", tokens: THEME_TOKENS.basalt },
+  { id: "ember", label: "Ember", tokens: THEME_TOKENS.ember },
+  { id: "orchid", label: "Orchid", tokens: THEME_TOKENS.orchid },
+  { id: "circuit", label: "Circuit", tokens: THEME_TOKENS.circuit },
+  { id: "glacier", label: "Glacier", tokens: THEME_TOKENS.glacier },
+  { id: "lagoon", label: "Lagoon", tokens: THEME_TOKENS.lagoon },
+  { id: "eclipse", label: "Eclipse", tokens: THEME_TOKENS.eclipse },
+  { id: "coral", label: "Coral", tokens: THEME_TOKENS.coral },
 ];
 const TAB_ALIASES = {
   general: "scenario",
@@ -217,8 +320,8 @@ function getTipEl() {
   _tipEl.className = "cfg-tip";
   _tipEl.style.cssText =
     "position:fixed;z-index:1000;max-width:300px;padding:7px 9px;" +
-    "background:#0f1219;color:#cdd6e4;border:1px solid #2a3142;border-radius:6px;" +
-    "font-size:11px;line-height:1.45;box-shadow:0 4px 14px rgba(0,0,0,0.5);" +
+    "background:var(--tip-bg);color:var(--tip-text);border:1px solid var(--tip-border);border-radius:var(--radius-md);" +
+    "font-size:11px;line-height:1.45;box-shadow:var(--shadow-tip);" +
     "pointer-events:none;visibility:hidden;opacity:0;white-space:normal;" +
     "transition:opacity 0.06s ease;";
   document.body.appendChild(_tipEl);
@@ -227,13 +330,13 @@ function getTipEl() {
 
 function styleTip(tip, kind) {
   if (kind === "technical") {
-    tip.style.background = "#151427";
-    tip.style.color = "#ded8ff";
-    tip.style.borderColor = "#6d5dfc";
+    tip.style.background = "var(--tip-technical-bg)";
+    tip.style.color = "var(--tip-technical-text)";
+    tip.style.borderColor = "var(--tip-technical-border)";
   } else {
-    tip.style.background = "#0f1219";
-    tip.style.color = "#cdd6e4";
-    tip.style.borderColor = "#2a3142";
+    tip.style.background = "var(--tip-bg)";
+    tip.style.color = "var(--tip-text)";
+    tip.style.borderColor = "var(--tip-border)";
   }
 }
 
@@ -341,9 +444,9 @@ function buildShareUrl(app) {
 }
 
 const APPLY_DOT = {
-  live:   { color: "#4ade80", title: "Live - takes effect immediately" },
-  reset:  { color: "#fbbf24", title: "Reset - takes effect after Reset" },
-  reload: { color: "#f87171", title: "Reload - takes effect after page reload" },
+  live:   { color: "var(--success)", title: "Live - takes effect immediately" },
+  reset:  { color: "var(--warning)", title: "Reset - takes effect after Reset" },
+  reload: { color: "var(--danger)", title: "Reload - takes effect after page reload" },
 };
 
 const APPLY_BADGE = {
@@ -402,10 +505,12 @@ function buildThemePanel(container) {
 
     const swatches = document.createElement("span");
     swatches.className = "theme-swatches";
-    for (const color of theme.swatches) {
+    for (const [token, label] of THEME_SWATCH_TOKENS) {
       const swatch = document.createElement("span");
       swatch.className = "theme-swatch";
+      const color = theme.tokens[token];
       swatch.style.background = color;
+      swatch.title = `${label}: ${token} ${color}`;
       swatches.appendChild(swatch);
     }
 
@@ -718,14 +823,14 @@ function buildProfilerPanel(container, app) {
   }
 
   const timing = stats.timing || "unknown";
-  const timingColor = timing === "gpu-timestamp" ? "#4ade80" : "#fbbf24";
+  const timingColor = timing === "gpu-timestamp" ? "var(--success)" : "var(--warning)";
   const scaleOk = !stats.scale_status || stats.scale_status === "ok";
-  const scaleColor = scaleOk ? "#4ade80" : "#f87171";
+  const scaleColor = scaleOk ? "var(--success)" : "var(--danger)";
   const fps = stats.fps;
-  const fpsColor = fps == null ? "#6b7689" : fps >= 55 ? "#4ade80" : fps >= 30 ? "#fbbf24" : "#f87171";
+  const fpsColor = fps == null ? "var(--text-faint)" : fps >= 55 ? "var(--success)" : fps >= 30 ? "var(--warning)" : "var(--danger)";
   const rtf = stats.real_time_factor;
-  const rtfColor = rtf == null ? "#6b7689" : rtf >= 0.95 ? "#4ade80" : rtf >= 0.5 ? "#fbbf24" : "#f87171";
-  const capColor = stats.substep_cap_hit ? "#f87171" : "#94a3b8";
+  const rtfColor = rtf == null ? "var(--text-faint)" : rtf >= 0.95 ? "var(--success)" : rtf >= 0.5 ? "var(--warning)" : "var(--danger)";
+  const capColor = stats.substep_cap_hit ? "var(--danger)" : "var(--prof-muted)";
   const substepText = `${stats.substeps_this_frame ?? stats.substeps ?? "—"} / ${stats.natural_substeps ?? "—"}`;
   const maxSubstepsText = stats.max_substeps != null ? `cap ${stats.max_substeps}` : "cap —";
 

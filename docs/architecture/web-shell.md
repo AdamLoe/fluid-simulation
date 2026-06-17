@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-16
+last_updated:  2026-06-17
 okay_to_delete: false
 long_lived:    true
 ---
@@ -101,10 +101,20 @@ The Profiler tab polls `app.stats_json()` at 4 Hz while open. Persistent foam pa
 rows were removed with `DiffuseSystem`; the panel reports the remaining timing,
 memory, scale, and liveness facts.
 
-The Theme tab is shell-owned rather than registry-owned. It offers the preset ids
-`default`, `harbor`, and `signal`, writes the selected id to `localStorage` under
-`fluidlab.theme.v1`, and applies the choice by setting `data-theme` on the root. The
-choice is included in `window.__fluidShell.state().theme` and can be changed through
+The Theme tab is shell-owned rather than registry-owned. The preset catalog lives in
+`web/panels.js → THEMES`, with matching CSS variable blocks in `web/index.html`; the
+set is intentionally broad enough for manual visual testing and includes `void`, whose
+app background is true `#000000`. The top-level CSS variables own shell backgrounds,
+surfaces, text hierarchy, borders/dividers, hover states, action/accent treatments,
+status colors, focus rings, shadows, radii, spacing, and stable control dimensions.
+Component rules should consume those tokens instead of reintroducing local color
+literals.
+
+Each theme option previews six semantic swatches from named variables:
+`--app-bg`, `--text-body`, `--accent`, `--button-bg`, `--control-bg`, and
+`--panel-border`. The selected id is written to `localStorage` under
+`fluidlab.theme.v1` and applied by setting `data-theme` on the root. The choice is
+included in `window.__fluidShell.state().theme` and can be changed through
 `window.__fluidShell.setTheme(id)`.
 
 GPU platform status is exposed through `app.gpu_device_status()` and mirrored in

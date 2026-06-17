@@ -365,6 +365,9 @@ async function main() {
     setTheme(id) {
       return panelApi?.setTheme(id) || "default";
     },
+    activeTheme() {
+      return panelApi?.activeTheme() ?? "default";
+    },
     state() {
       return {
         settingsOpen: panelApi?.isOpen() ?? false,
