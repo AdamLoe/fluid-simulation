@@ -15,7 +15,8 @@ mod timing;
 pub use timing::Readout as GpuReadout;
 pub use timing::FINE_SECTIONS;
 
-pub(crate) use fluid::effective_rest_density;
+pub(crate) use fluid::effective_surface_dilation_for_count;
+pub(crate) use fluid::effective_rest_density_for_count;
 
 use crate::log;
 use crate::scene::SceneConfig;
