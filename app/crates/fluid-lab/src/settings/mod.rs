@@ -422,8 +422,8 @@ impl Default for Registry {
                 default: Value::F32(20.0),
                 value: Value::F32(20.0),
                 validation: Validation::F32Range { min: 0.0, max: 100.0 },
-                tooltip: Some("% of the tank filled with water (0 = empty, 100 = full). 50 fills the tank halfway up; the default 20 fills the bottom fifth. The particle count follows automatically, independent of particle density. Changes apply on reset."),
-                technical_tooltip: Some("Reset-class tank-fill percentage, stored 0–100; Registry::fill_level() maps it to a [0,1] fraction. The default scene (Falling blob) is a full-footprint floor slab from y=0 to fill*height, so the seeded volume fraction equals the fill fraction. Dam Break scales its wall-slab height by fill; Double Splash scales its suspended drops by fill. The resolved particle count tracks the seeded fraction; density stays volume-neutral."),
+                tooltip: Some("% of the tank represented as water at reset. Presets keep their shape (blob, dam, double splash), but the amount targets this whole-tank fraction. Suspended presets keep a small top-air margin at very high fills."),
+                technical_tooltip: Some("Reset-class percentage, stored 0–100; Registry::fill_level() maps it to target_normalized_volume = clamp(fill_level / 100, 0, 1). Preset blocks target that whole-tank normalized volume, with an explicit 2% top-air guardrail for suspended/full-tank cases. The resolved particle target tracks this represented volume; particles.density stays volume-neutral."),
                 apply: ApplyClass::Reset,
             },
             Setting {
@@ -477,8 +477,8 @@ impl Default for Registry {
                 default: Value::F32(8.0),
                 value: Value::F32(8.0),
                 validation: Validation::F32Range { min: 1.0, max: 32.0 },
-                tooltip: Some("How many particles seed each fluid cell at reset. The actual particle count is derived from this density, the grid resolution, and how much of the tank the scenario fills — so it stays sane when you change grid size."),
-                technical_tooltip: Some("Reset-class particles-per-seeded-cell density. The spawn count is round(density * seeded_volume_fraction * total_grid_cells); 'seeded cells' are the liquid-block volume in cell units, not every grid cell. Set Particle count (advanced) to a nonzero value to override this derivation."),
+                tooltip: Some("Fidelity/cost at reset: how many particles to target per represented fluid cell. It changes particle count and spacing, not the amount of water."),
+                technical_tooltip: Some("Reset-class particles-per-seeded-cell target. The requested spawn count is round(density * seeded_volume_fraction * total_grid_cells); the deterministic lattice may generate slightly fewer particles, and reset-time rest density, auto dilation, splat spacing, and diagnostics use the generated count where available. Set Particle count (advanced) to a nonzero value to override the requested target."),
                 apply: ApplyClass::Reset,
             },
             Setting {

@@ -64,27 +64,26 @@ that need an exact number.
 
 **Applies to** — `architecture/settings.md`.
 
-## Volume (tank fill) and density are orthogonal; low-density volume is fixed by splat-radius scaling, not an SDF surface
+## Represented water volume and density are orthogonal; low-density coverage is fixed by splat-radius scaling, not an SDF surface
 
 **Decision** — Split the conflated density concept into two orthogonal knobs.
 `scene.fill_level` (the **tank-fill percentage**, Reset, stored 0–100, default `20`)
-controls *how much* water there is — it is a literal waterline (0 = empty tank,
-100 = full, 50 = halfway up by height). The default scene seeds a full-footprint
-floor slab from y=0 up to `fill` of the tank height, so the particle count follows
-automatically. The named dynamic scenarios keep their shape but scale with `fill`
-(dam-break wall height = `fill`; double-splash drop size = `fill`). `particles.density` becomes a pure
-fidelity/cost knob and is made **volume-neutral**: the visible body stays the same
-size as density drops, just blobbier. This is achieved cheaply by (a) scaling the
-render splat radius with the seeded inter-particle spacing
-(`radius = H · effective_density^(-1/3) · SPLAT_RADIUS_PER_SPACING`, constant `0.7`
-to reproduce today at density 8), (b) auto-enabling the existing one-ring
-`classify.wgsl` surface dilation below the reference density (8/cell) so the physics
-liquid region stays hole-free, and (c) coupling the divergence anti-clump rest target
-to the actual particle density (`effective_rest_density`) so the *dynamics* are
-density-invariant too — without it, the occupancy-driven outward push scaled with
-density and the water moved like a different volume (see `decisions/simulation.md`).
-The **SDF / marching-cubes surface rewrite — the "proper" coverage fix — is
-deliberately deferred** to a future plan.
+controls *how much* water is represented at reset:
+`target_normalized_volume = clamp(fill_level / 100, 0, 1)`. Presets keep their
+authored shape language, but their block volumes target that whole-tank fraction
+instead of a per-footprint waterline. Suspended or near-full cases leave an explicit
+thin top-air guardrail, so 100% means nearly full inside the closed tank rather than
+silently ceiling-clamped overfill. `particles.density` becomes a pure fidelity/cost
+knob and is made **volume-neutral**: the visible body stays the same size as density
+drops, just blobbier. This is achieved cheaply by (a) scaling the render splat radius
+with the generated lattice's effective inter-particle spacing, (b) auto-enabling the
+existing one-ring `classify.wgsl` surface dilation below the reference density
+(8/cell) so the physics liquid region stays hole-free, and (c) coupling the
+divergence anti-clump rest target to generated-count effective density
+(`effective_rest_density`) so the *dynamics* are density-invariant too. Without that,
+the occupancy-driven outward push scaled with density and the water moved like a
+different volume (see `decisions/simulation.md`). The **SDF / marching-cubes surface
+rewrite — the "proper" coverage fix — is deliberately deferred** to a future plan.
 
 **Why** — The visible water is built from particle splats, not liquid cells, so a
 fixed-radius splat made lowering density *look like less water* even though the
@@ -93,15 +92,17 @@ splat-radius + dilation approach decouples the two knobs at a fraction of the co
 an SDF surface, which would be a large graphics-surface investment ahead of the
 product need (see "Optional features are deferred").
 
-**Tradeoffs** — The splat approach is a coverage approximation: at very low density
-the body looks blobby (accepted), and the physics liquid-cell count is only
+**Tradeoffs** — Presets no longer treat the same fill value as "height within this
+shape's own footprint"; Dam Break widens when its historical footprint cannot hold the
+whole-tank target. The splat approach remains a coverage approximation: at very low
+density the body looks blobby (accepted), and the physics liquid-cell count is only
 ~density-invariant within ~15% (a density-dependent dilation rind) rather than exact.
-The fast `filled_volume` proxy (`liquid_cells × H³`) and `app/tools/density_motion_sweep.mjs`
-back the invariant; the screenshots are the real acceptance. Tuning
-`SPLAT_RADIUS_PER_SPACING` and the dilation trigger is Phase-2 calibration-sweep work.
+The fast `filled_volume` proxy (`liquid_cells × H³`) and browser captures back the
+invariant; the screenshots are the real acceptance.
 
 **Code anchors** — `app/crates/fluid-lab/src/scene/mod.rs → preset_blocks /
-effective_particle_density / effective_surface_dilation / seeded_spacing`;
+effective_particle_density_for_count / effective_surface_dilation /
+seeded_spacing_for_particle_count`;
 `app/crates/fluid-lab/src/gpu/mod.rs → SPLAT_RADIUS_PER_SPACING`;
 `app/crates/fluid-lab/src/gpu/fluid.rs → effective_surface_dilation`.
 

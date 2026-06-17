@@ -47,8 +47,8 @@ operator remains isotropic; any per-axis `hx/hy/hz` change belongs in
 - **Particle seeding and scene-derived density** —
   `app/crates/fluid-lab/src/gpu/fluid.rs → generate_particles`;
   `app/crates/fluid-lab/src/scene/mod.rs → preset_blocks`,
-  `effective_particle_density`, `effective_surface_dilation`,
-  `effective_rest_density`
+  `effective_particle_density`, `effective_particle_density_for_count`,
+  `effective_surface_dilation`, `effective_rest_density`
 - **Simulation WGSL kernels** — `app/crates/fluid-lab/src/gpu/shaders/{clear,mark,classify,scatter,scatter_local,normalize,save_vel,forces,boundaries,divergence,gradient,g2p,impulse}.wgsl`;
   CG/pressure kernels are owned by `pressure-solver.md`
 - **Interaction impulses** — `app/crates/fluid-lab/src/gpu/fluid.rs →
@@ -117,16 +117,25 @@ valid for both pipelines.
 
 ## Volume And Density
 
-`scene.fill_level` is the Reset-class tank-fill percentage and controls how much
-water is seeded. Each preset maps that fraction into its own normalized block
-geometry: Falling Blob is a suspended central blob, Dam Break is a floor-anchored wall
-slab, and Double Splash is a pair of suspended drops. `particles.density` controls
-particles per seeded cell and is meant to be a fidelity/cost knob, not a volume knob.
+`scene.fill_level` is the Reset-class represented-volume percentage. Runtime maps it
+to `target_normalized_volume = clamp(fill_level / 100, 0, 1)` and asks each preset's
+normalized blocks to represent that whole-tank fraction, not a footprint-relative
+waterline. Falling Blob remains one suspended body, Dam Break remains floor-anchored,
+and Double Splash remains two suspended bodies; the shapes expand to meet the target
+volume. The closed-tank high-fill guardrail caps the representable volume at a thin
+top-air margin, so 100% behaves as "nearly full with margin" rather than a silently
+ceiling-clamped suspended overfill. A 0% fill produces no represented liquid blocks.
+
+`particles.density` is a fidelity/cost knob. It derives the requested seed target as
+particles per represented seeded cell and does not change the target water volume.
 `particles.count` remains a hidden absolute compatibility override where `0` means
-Auto. The current scene block geometry is in
+Auto. The deterministic lattice can generate slightly fewer particles than requested;
+reset-time rest density, auto surface dilation, render splat spacing, and diagnostics
+therefore use the generated count divided by seeded cells where the generated count
+is known. The current scene block geometry is in
 `app/crates/fluid-lab/src/scene/mod.rs → preset_blocks`; host tests in the same file
-cover fill-level monotonicity, density scaling, and the Falling Blob suspended-block
-shape.
+cover whole-tank fill targets, density-invariant geometry, generated-count effective
+density, and the high-fill margin.
 
 Low-density cells can leave holes in the pressure active set. The effective surface
 dilation is resolved by `app/crates/fluid-lab/src/scene/mod.rs →
@@ -139,9 +148,10 @@ The occupancy-driven volume correction is the trio
 `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp`.
 `app/crates/fluid-lab/src/scene/mod.rs → effective_rest_density` makes the Auto rest
 target track effective particle density; `app/crates/fluid-lab/src/gpu/fluid.rs →
-effective_rest_density` writes that target into `Params.spc`. `divergence.wgsl`
-applies the clamped occupancy bias before projection. This is a
-liveness/compactness correction, not physical mass conservation.
+effective_rest_density` covers pre-generation estimates and the reset path uses the
+generated-count density before writing `Params.spc`. `divergence.wgsl` applies the
+clamped occupancy bias before projection. This is a liveness/compactness correction,
+not physical mass conservation.
 
 `stats_json` exposes `filled_volume` and `liquid_fraction` from the throttled liquid
 cell counter (`app/crates/fluid-lab/src/profiler/mod.rs → stats_json`).

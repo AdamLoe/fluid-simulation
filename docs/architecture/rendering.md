@@ -105,11 +105,12 @@ radius therefore makes the body look smaller when `particles.density` drops (the
 splats stop overlapping and pinhole). To make density a pure fidelity/cost knob, the
 base splat radius tracks the seeded inter-particle spacing through
 `crates/fluid-lab/src/gpu/mod.rs -> SPLAT_RADIUS_PER_SPACING` and
-`crates/fluid-lab/src/scene/mod.rs -> SceneConfig::seeded_spacing`. Lowering density
-coarsens the lattice and the splats grow to keep coverage approximately constant: the
-body stays the same size, just blobbier. The hidden compatibility `particles.count`
-override changes the effective spacing too, so the splat follows with no silent volume
-change.
+`crates/fluid-lab/src/scene/mod.rs -> SceneConfig::seeded_spacing_for_particle_count`.
+Lowering density coarsens the lattice and the splats grow to keep coverage
+approximately constant: the body stays the same size, just blobbier. The hidden
+compatibility `particles.count` override changes the effective spacing too, and the
+reset path uses the generated lattice count rather than only the requested target, so
+splat coverage follows the particles that actually exist.
 The radius is recomputed on every Reset at both `GpuContext::new` and
 `GpuContext::recreate_fluid`. `render.particle_size` remains the **Live** user
 multiplier applied on top via `ParticleRenderer::set_radius_scale`;

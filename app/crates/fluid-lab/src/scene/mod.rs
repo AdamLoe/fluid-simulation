@@ -10,18 +10,20 @@
 use crate::settings::Registry;
 use glam::{UVec3, Vec3};
 
-const DEFAULT_DROP_HEIGHT: f32 = 0.72;
+const DEFAULT_DROP_HEIGHT: f32 = 1.0;
+const SUSPENDED_TOP_AIR_MARGIN: f32 = 0.02;
+const MIN_BLOCK_EXTENT: f32 = 1.0e-4;
 
 /// Reference particle density that reproduces the historical look (8 particles
 /// per seeded cell). Used by the renderer to keep splat coverage volume-neutral
 /// and by the auto surface-dilation trigger. Mirrors `particles.density`'s default.
 pub const REFERENCE_DENSITY: f32 = 8.0;
 
-/// Default `scene.fill_level` as a [0,1] fill fraction (20% of the tank volume).
-/// The registry stores this as a 0–100 percentage; `Registry::fill_level()`
-/// converts to this fraction. Presets map the fraction into their authored
-/// geometry differently, but the resulting seeded block volume is monotone in
-/// this value. See `preset_blocks` for the per-scenario mapping.
+/// Default `scene.fill_level` as a [0,1] whole-tank volume fraction.
+/// The registry stores this as a 0-100 percentage; `Registry::fill_level()`
+/// converts to this fraction. Presets choose different shapes, but their
+/// represented block volume tracks this whole-tank target except where an
+/// explicit guardrail leaves top air in a suspended or closed-tank case.
 pub const DEFAULT_FILL_LEVEL: f32 = 0.2;
 
 /// Selectable scripted scenarios. The integer values are the wire format of the
@@ -121,6 +123,20 @@ impl SceneConfig {
         let density =
             effective_particle_density(settings, self.grid_resolution, &self.initial_liquid.blocks)
                 .max(1.0e-3);
+        self.seeded_spacing_for_density(density)
+    }
+
+    pub fn seeded_spacing_for_particle_count(&self, particle_count: u32) -> f32 {
+        let density = effective_particle_density_for_count(
+            self.grid_resolution,
+            &self.initial_liquid.blocks,
+            particle_count,
+        )
+        .max(1.0e-3);
+        self.seeded_spacing_for_density(density)
+    }
+
+    fn seeded_spacing_for_density(&self, density: f32) -> f32 {
         crate::sim::H * density.powf(-1.0 / 3.0)
     }
 
@@ -162,6 +178,11 @@ fn seeded_volume_fraction(blocks: &[LiquidBlock]) -> f32 {
         .clamp(0.0, 1.0)
 }
 
+fn seeded_cell_count(res: UVec3, blocks: &[LiquidBlock]) -> f64 {
+    let total_cells = (res.x as f64) * (res.y as f64) * (res.z as f64);
+    total_cells * seeded_volume_fraction(blocks) as f64
+}
+
 /// Resolve the spawn particle count.
 ///
 /// "Per cell" means **per seeded fluid cell**, not per total grid cell: the seeded
@@ -177,8 +198,10 @@ fn resolved_particle_count(settings: &Registry, res: UVec3, blocks: &[LiquidBloc
     if override_count > 0 {
         return override_count;
     }
-    let total_cells = (res.x as f64) * (res.y as f64) * (res.z as f64);
-    let seeded_cells = total_cells * seeded_volume_fraction(blocks) as f64;
+    let seeded_cells = seeded_cell_count(res, blocks);
+    if seeded_cells <= 0.0 {
+        return 0;
+    }
     let density = settings.particle_density().max(0.0) as f64;
     let count = (seeded_cells * density).round();
     // Keep a small floor so degenerate scenes still seed something the solver and
@@ -188,83 +211,125 @@ fn resolved_particle_count(settings: &Registry, res: UVec3, blocks: &[LiquidBloc
 
 /// The deterministic liquid layout for each preset (normalized [0,1]^3, y up).
 ///
-/// `fill_level` is a tank-fill fraction in [0,1] (0 = minimum viable seed,
-/// 1 = the preset's largest authored amount):
+/// `fill_level` is a whole-tank target volume fraction in [0,1]. Presets keep
+/// their authored shape language, but the sum of their normalized block volumes
+/// matches that target unless the top-air guardrail caps the representable volume:
 ///
-/// - **FallingBlob (the default):** a suspended central blob. At the default
-///   20% fill its normalized volume is about 0.2, which keeps the historical
-///   particle budget, and `drop_height` moves the blob vertically.
-/// - **DamBreak:** a slab pinned to the -X wall over its historical x/z footprint,
-///   with its top at `fill` of the tank height (`max.y = fill`). Released, it
-///   collapses and races across the floor. More fill = a taller, heavier column.
-///   `drop_height` does not apply (floor-anchored).
+/// - **FallingBlob (the default):** a suspended central blob. `drop_height`
+///   positions the blob vertically, clamped to leave a small top-air margin.
+/// - **DamBreak:** a floor-anchored wall slab. It grows upward first, then widens
+///   across the tank when the historical footprint can no longer hold the target
+///   whole-tank volume. `drop_height` does not apply.
 /// - **DoubleSplash:** two suspended drops near opposite walls that fall and
-///   collide. `fill` scales each drop's size about its (drop-height-shifted)
-///   center, so more fill drops a bigger pair of bodies. `drop_height` positions
-///   them vertically.
+///   collide. Each carries half of the target volume and uses the same top-air
+///   guardrail as FallingBlob.
 fn preset_blocks(preset: ScenePreset, drop_height: f32, fill_level: f32) -> Vec<LiquidBlock> {
     let fill = fill_level.clamp(0.0, 1.0);
+    if fill <= 0.0 {
+        return Vec::new();
+    }
     match preset {
         ScenePreset::FallingBlob => {
-            let delta = drop_height.clamp(0.0, 1.0) - DEFAULT_DROP_HEIGHT;
-            let block = LiquidBlock::new([0.19, 0.2, 0.19], [0.81, 0.72, 0.81]);
-            vec![scale_block_about_center(shift_block_y(block, delta), fill)]
+            let ext = extents_for_volume(
+                fill.min(1.0 - SUSPENDED_TOP_AIR_MARGIN),
+                Vec3::new(0.62, 0.52, 0.62),
+                Vec3::new(1.0, 1.0 - SUSPENDED_TOP_AIR_MARGIN, 1.0),
+            );
+            vec![suspended_block(Vec3::new(0.5, 0.5, 0.5), ext, drop_height)]
         }
-        // Wall slab pinned to -X over its footprint; height = fill * tank height.
-        ScenePreset::DamBreak => {
-            const CEILING: f32 = 0.98;
-            let top = (fill * CEILING).clamp(1.0e-3, CEILING);
-            vec![LiquidBlock::new([0.05, 0.0, 0.05], [0.42, top, 0.95])]
-        }
-        // Two suspended drops near opposite walls — fall and collide. `fill`
-        // scales each drop's size about its (drop-height-shifted) center.
+        ScenePreset::DamBreak => vec![dam_break_block(fill)],
         ScenePreset::DoubleSplash => {
-            let delta = drop_height.clamp(0.0, 1.0) - DEFAULT_DROP_HEIGHT;
+            let each = (fill * 0.5).min((1.0 - SUSPENDED_TOP_AIR_MARGIN) * 0.5);
+            let ext = extents_for_volume(
+                each,
+                Vec3::new(0.24, 0.47, 0.40),
+                Vec3::new(0.5, 1.0 - SUSPENDED_TOP_AIR_MARGIN, 1.0),
+            );
             vec![
-                LiquidBlock::new([0.1, 0.45, 0.3], [0.34, 0.92, 0.7]),
-                LiquidBlock::new([0.66, 0.45, 0.3], [0.9, 0.92, 0.7]),
+                suspended_block(Vec3::new(0.25, 0.5, 0.5), ext, drop_height),
+                suspended_block(Vec3::new(0.75, 0.5, 0.5), ext, drop_height),
             ]
-            .into_iter()
-            .map(|block| shift_block_y(block, delta))
-            .map(|block| scale_suspended_drop(block, fill))
-            .collect()
         }
     }
 }
 
-fn scale_block_about_center(block: LiquidBlock, fill: f32) -> LiquidBlock {
-    let factor = (fill.max(1.0e-4) / DEFAULT_FILL_LEVEL).powf(1.0 / 3.0);
-    scale_block_axes(block, Vec3::splat(factor))
+fn dam_break_block(fill: f32) -> LiquidBlock {
+    const INITIAL_WIDTH: f32 = 0.37;
+    const INITIAL_DEPTH: f32 = 0.90;
+    const MAX_HEIGHT: f32 = 0.98;
+
+    let target = fill.min(MAX_HEIGHT);
+    let mut width = INITIAL_WIDTH;
+    let mut depth = INITIAL_DEPTH;
+    let mut height = (target / (width * depth)).min(MAX_HEIGHT);
+    if width * depth * height < target {
+        width = (target / (depth * height)).min(1.0);
+    }
+    if width * depth * height < target {
+        depth = (target / (width * height)).min(1.0);
+    }
+    height = (target / (width * depth)).min(MAX_HEIGHT);
+
+    let z0 = 0.5 - 0.5 * depth;
+    LiquidBlock::new([0.0, 0.0, z0], [width, height, z0 + depth])
 }
 
-fn shift_block_y(mut block: LiquidBlock, delta: f32) -> LiquidBlock {
-    let shift = delta.clamp(-block.min.y, 1.0 - block.max.y);
-    block.min.y += shift;
-    block.max.y += shift;
-    block
+fn suspended_block(center: Vec3, ext: Vec3, drop_height: f32) -> LiquidBlock {
+    let top_limit = 1.0 - SUSPENDED_TOP_AIR_MARGIN;
+    let drop = drop_height.clamp(0.0, 1.0);
+    let top = ext.y + drop * (top_limit - ext.y).max(0.0);
+    let y0 = (top - ext.y).clamp(0.0, top_limit - ext.y);
+    let x0 = (center.x - 0.5 * ext.x).clamp(0.0, 1.0 - ext.x);
+    let z0 = (center.z - 0.5 * ext.z).clamp(0.0, 1.0 - ext.z);
+    LiquidBlock::new([x0, y0, z0], [x0 + ext.x, y0 + ext.y, z0 + ext.z])
 }
 
-/// Scale a suspended drop (DoubleSplash) by the tank-fill fraction.
-///
-/// The block's vertical extent is scaled about its (drop-height-shifted) center by
-/// `fill / DEFAULT_FILL_LEVEL`, so the default fill reproduces the historical drop
-/// size and larger fills drop a bigger body. Clamped inside the tank, preserving a
-/// valid (non-empty) block.
-fn scale_suspended_drop(block: LiquidBlock, fill: f32) -> LiquidBlock {
-    scale_block_axes(block, Vec3::new(1.0, fill / DEFAULT_FILL_LEVEL, 1.0))
-}
+fn extents_for_volume(target_volume: f32, base_ext: Vec3, max_ext: Vec3) -> Vec3 {
+    let max_volume = max_ext.x * max_ext.y * max_ext.z;
+    let target = target_volume
+        .clamp(0.0, max_volume)
+        .max(MIN_BLOCK_EXTENT.powi(3));
+    let base = base_ext.max(Vec3::splat(MIN_BLOCK_EXTENT));
+    let mut capped = [false; 3];
+    let max = [max_ext.x, max_ext.y, max_ext.z];
+    let base_arr = [base.x, base.y, base.z];
 
-fn scale_block_axes(mut block: LiquidBlock, factor: Vec3) -> LiquidBlock {
-    let center = 0.5 * (block.min + block.max);
-    let half = 0.5 * (block.max - block.min);
-    let scaled = half * factor.max(Vec3::splat(1.0e-3));
-    block.min = (center - scaled).clamp(Vec3::ZERO, Vec3::ONE);
-    block.max = (center + scaled).clamp(block.min + Vec3::splat(1.0e-3), Vec3::ONE);
-    block.min = block
-        .min
-        .min(block.max - Vec3::splat(1.0e-3))
-        .max(Vec3::ZERO);
-    block
+    for _ in 0..3 {
+        let mut capped_product = 1.0f32;
+        let mut base_product = 1.0f32;
+        let mut free_count = 0i32;
+        for i in 0..3 {
+            if capped[i] {
+                capped_product *= max[i];
+            } else {
+                base_product *= base_arr[i];
+                free_count += 1;
+            }
+        }
+        if free_count == 0 {
+            return max_ext;
+        }
+        let factor = (target / (capped_product * base_product))
+            .max(0.0)
+            .powf(1.0 / free_count as f32);
+        let mut ext = [0.0; 3];
+        let mut exceeded = false;
+        for i in 0..3 {
+            ext[i] = if capped[i] {
+                max[i]
+            } else {
+                base_arr[i] * factor
+            };
+            if ext[i] > max[i] {
+                capped[i] = true;
+                exceeded = true;
+            }
+        }
+        if !exceeded {
+            return Vec3::new(ext[0], ext[1], ext[2]).max(Vec3::splat(MIN_BLOCK_EXTENT));
+        }
+    }
+    max_ext
 }
 
 /// The effective particles-per-seeded-cell density that the *resolved* spawn count
@@ -275,13 +340,23 @@ fn scale_block_axes(mut block: LiquidBlock, factor: Vec3) -> LiquidBlock {
 /// water volume-neutral. Returns [`REFERENCE_DENSITY`] for degenerate (empty)
 /// scenes so the radius falls back to today's value.
 pub fn effective_particle_density(settings: &Registry, res: UVec3, blocks: &[LiquidBlock]) -> f32 {
-    let total_cells = (res.x as f64) * (res.y as f64) * (res.z as f64);
-    let seeded_cells = total_cells * seeded_volume_fraction(blocks) as f64;
+    effective_particle_density_for_count(
+        res,
+        blocks,
+        resolved_particle_count(settings, res, blocks),
+    )
+}
+
+pub fn effective_particle_density_for_count(
+    res: UVec3,
+    blocks: &[LiquidBlock],
+    particle_count: u32,
+) -> f32 {
+    let seeded_cells = seeded_cell_count(res, blocks);
     if seeded_cells <= 0.0 {
         return REFERENCE_DENSITY;
     }
-    let count = resolved_particle_count(settings, res, blocks) as f64;
-    (count / seeded_cells).max(1.0e-3) as f32
+    (particle_count as f64 / seeded_cells).max(1.0e-3) as f32
 }
 
 /// Effective anti-clump rest target (particles per liquid cell) the divergence
@@ -320,6 +395,138 @@ pub fn effective_surface_dilation(user_dilation: u32, density: f32) -> u32 {
 }
 
 #[cfg(test)]
+#[derive(Debug)]
+struct BlockSeedMeasurement {
+    normalized_volume: f32,
+    requested_particles: u32,
+    generated_particles: u32,
+    lattice_counts: UVec3,
+    lattice_spacing: f32,
+    top_margin_fraction: f32,
+    empty_cell_layers_above: f32,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct SceneSeedMeasurement {
+    seeded_fraction: f32,
+    requested_particles: u32,
+    generated_particles: u32,
+    requested_effective_density: f32,
+    actual_effective_density: f32,
+    seeded_cells: f32,
+    top_margin_fraction: f32,
+    empty_cell_layers_above: f32,
+    non_seeded_interior_fraction: f32,
+    uniform_density_clamp_proxy: f32,
+    blocks: Vec<BlockSeedMeasurement>,
+}
+
+#[cfg(test)]
+fn measure_current_seed(settings: &Registry) -> SceneSeedMeasurement {
+    let scene = SceneConfig::from_settings(settings);
+    measure_current_scene_seed(settings, &scene)
+}
+
+#[cfg(test)]
+fn measure_current_scene_seed(settings: &Registry, scene: &SceneConfig) -> SceneSeedMeasurement {
+    let total_cells = (scene.grid_resolution.x as f32)
+        * (scene.grid_resolution.y as f32)
+        * (scene.grid_resolution.z as f32);
+    let seeded_fraction = seeded_volume_fraction(&scene.initial_liquid.blocks);
+    let seeded_cells = total_cells * seeded_fraction;
+    let total_volume = scene
+        .initial_liquid
+        .blocks
+        .iter()
+        .map(|block| block_measure_volume(block, scene.grid_resolution))
+        .sum::<f32>()
+        .max(1.0e-6);
+    let requested_particles = scene.particle_count;
+    let requested_effective_density = effective_particle_density(
+        settings,
+        scene.grid_resolution,
+        &scene.initial_liquid.blocks,
+    );
+
+    let mut generated_particles = 0u32;
+    let mut top_margin_fraction = 1.0f32;
+    let mut blocks = Vec::with_capacity(scene.initial_liquid.blocks.len());
+    for block in &scene.initial_liquid.blocks {
+        let volume = block_measure_volume(block, scene.grid_resolution).max(1.0e-6);
+        let target = (requested_particles.max(1) as f32 * (volume / total_volume)).max(1.0);
+        let spacing = (volume / target).cbrt().max(1.0e-4);
+        let ext = block_measure_extent(block, scene.grid_resolution);
+        let lattice_counts = UVec3::new(
+            ((ext.x / spacing).floor() as u32).max(1),
+            ((ext.y / spacing).floor() as u32).max(1),
+            ((ext.z / spacing).floor() as u32).max(1),
+        );
+        let count = lattice_counts
+            .x
+            .saturating_mul(lattice_counts.y)
+            .saturating_mul(lattice_counts.z);
+        generated_particles = generated_particles.saturating_add(count);
+        let block_top_margin = (1.0 - block.max.y).max(0.0);
+        top_margin_fraction = top_margin_fraction.min(block_top_margin);
+        blocks.push(BlockSeedMeasurement {
+            normalized_volume: block_normalized_volume(block),
+            requested_particles: target.round() as u32,
+            generated_particles: count,
+            lattice_counts,
+            lattice_spacing: spacing,
+            top_margin_fraction: block_top_margin,
+            empty_cell_layers_above: block_top_margin * scene.grid_resolution.y as f32,
+        });
+    }
+
+    let actual_effective_density = if seeded_cells > 0.0 {
+        generated_particles as f32 / seeded_cells
+    } else {
+        REFERENCE_DENSITY
+    };
+    let rest_density = effective_rest_density(settings.rest_density(), requested_effective_density);
+    let unclamped = if rest_density > 0.0 {
+        settings.volume_stiffness()
+            * ((actual_effective_density - rest_density).max(0.0) / rest_density)
+    } else {
+        0.0
+    };
+
+    SceneSeedMeasurement {
+        seeded_fraction,
+        requested_particles,
+        generated_particles,
+        requested_effective_density,
+        actual_effective_density,
+        seeded_cells,
+        top_margin_fraction,
+        empty_cell_layers_above: top_margin_fraction * scene.grid_resolution.y as f32,
+        non_seeded_interior_fraction: (1.0 - seeded_fraction).clamp(0.0, 1.0),
+        uniform_density_clamp_proxy: unclamped.min(settings.drift_clamp()),
+        blocks,
+    }
+}
+
+#[cfg(test)]
+fn block_normalized_volume(block: &LiquidBlock) -> f32 {
+    let ext = block.max - block.min;
+    (ext.x.max(0.0) * ext.y.max(0.0) * ext.z.max(0.0)).max(0.0)
+}
+
+#[cfg(test)]
+fn block_measure_extent(block: &LiquidBlock, res: UVec3) -> Vec3 {
+    let grid_extent = Vec3::new(res.x as f32, res.y as f32, res.z as f32) * crate::sim::H;
+    (block.max - block.min) * grid_extent
+}
+
+#[cfg(test)]
+fn block_measure_volume(block: &LiquidBlock, res: UVec3) -> f32 {
+    let ext = block_measure_extent(block, res);
+    ext.x.max(0.0) * ext.y.max(0.0) * ext.z.max(0.0)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -334,10 +541,10 @@ mod tests {
     fn default_fill_level_is_falling_blob() {
         let falling = scene_for(ScenePreset::FallingBlob, DEFAULT_DROP_HEIGHT);
         let block = falling.initial_liquid.blocks[0];
-        assert!(block.min.y > 0.15, "falling blob should be suspended");
+        assert!(block.min.y > 0.0, "falling blob should be suspended");
         assert!(
-            block.max.y < 0.75,
-            "default-height blob should not be a full tank slab"
+            (1.0 - block.max.y - SUSPENDED_TOP_AIR_MARGIN).abs() < 1.0e-6,
+            "default-height blob should preserve the top-air guardrail"
         );
         assert!(
             (seeded_volume_fraction(&falling.initial_liquid.blocks) - DEFAULT_FILL_LEVEL).abs()
@@ -356,7 +563,7 @@ mod tests {
             .blocks[0];
         assert!((low.min.y - 0.0).abs() < 1.0e-6);
         assert!(high.min.y > low.min.y + 0.25);
-        assert!((high.max.y - 1.0).abs() < 1.0e-6);
+        assert!((high.max.y - (1.0 - SUSPENDED_TOP_AIR_MARGIN)).abs() < 1.0e-6);
     }
 
     #[test]
@@ -422,14 +629,14 @@ mod tests {
 
     #[test]
     fn full_fill_fills_the_tank() {
-        // fill_level = 100% -> the blob scales into a much larger suspended body.
+        // fill_level = 100% -> the guardrail leaves only a thin air margin.
         let mut settings = Registry::default();
         settings.set_value_f64("scene.fill_level", 100.0);
         let scene = SceneConfig::from_settings(&settings);
         let frac = seeded_volume_fraction(&scene.initial_liquid.blocks);
         assert!(
-            frac > 0.7,
-            "full fill seeded fraction {frac} should be a large body"
+            (frac - (1.0 - SUSPENDED_TOP_AIR_MARGIN)).abs() < 0.001,
+            "full fill seeded fraction {frac} should hit the top-air guardrail"
         );
     }
 }
@@ -465,14 +672,32 @@ mod fill_level_tests {
     ];
 
     #[test]
-    fn falling_blob_seeded_fraction_tracks_fill_scale() {
-        for &fill in &[0.1f32, 0.2, 0.5] {
-            let blocks = preset_blocks(ScenePreset::FallingBlob, DEFAULT_DROP_HEIGHT, fill);
-            let frac = seeded_volume_fraction(&blocks);
+    fn preset_seeded_fraction_tracks_whole_tank_target() {
+        for preset in PRESETS {
+            for &fill in &[0.05f32, 0.2, 0.5, 0.8] {
+                let blocks = preset_blocks(preset, DEFAULT_DROP_HEIGHT, fill);
+                let frac = seeded_volume_fraction(&blocks);
+                assert!(
+                    (frac - fill).abs() < 0.02,
+                    "{} fill {fill}: seeded fraction {frac} should track whole-tank target",
+                    preset.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_fill_seeds_no_represented_water() {
+        for preset in PRESETS {
+            let blocks = preset_blocks(preset, DEFAULT_DROP_HEIGHT, 0.0);
             assert!(
-                (frac - fill).abs() < 0.03,
-                "fill {fill}: seeded fraction {frac} should track fill before clamping"
+                blocks.is_empty(),
+                "{} should have no blocks at 0% fill",
+                preset.name()
             );
+            assert_eq!(seeded_volume_fraction(&blocks), 0.0);
+            let scene = scene(preset, 0.0, 8.0);
+            assert_eq!(scene.particle_count, 0);
         }
     }
 
@@ -505,22 +730,22 @@ mod fill_level_tests {
     }
 
     #[test]
-    fn default_scene_fill_is_roughly_linear_before_clamping() {
+    fn full_fill_hits_documented_guardrail() {
         let f20 = seeded_volume_fraction(&preset_blocks(
             ScenePreset::FallingBlob,
             DEFAULT_DROP_HEIGHT,
             0.2,
         ));
-        let f50 = seeded_volume_fraction(&preset_blocks(
-            ScenePreset::FallingBlob,
-            DEFAULT_DROP_HEIGHT,
-            0.5,
-        ));
-        let ratio = f50 / f20;
-        assert!(
-            (2.4..=2.6).contains(&ratio),
-            "50%/20% seeded ratio {ratio} should be ~2.5"
-        );
+        assert!((f20 - 0.2).abs() < 0.001);
+
+        for preset in PRESETS {
+            let f100 = seeded_volume_fraction(&preset_blocks(preset, DEFAULT_DROP_HEIGHT, 1.0));
+            assert!(
+                (f100 - (1.0 - SUSPENDED_TOP_AIR_MARGIN)).abs() < 0.001,
+                "{} full fill {f100} should leave the explicit top-air guardrail",
+                preset.name()
+            );
+        }
     }
 
     #[test]
@@ -579,7 +804,7 @@ mod fill_level_tests {
     }
 
     #[test]
-    fn effective_density_is_density_invariant_geometry() {
+    fn requested_effective_density_tracks_slider_density() {
         // effective_particle_density must equal the slider density when Auto count
         // is used (it is just count/seeded_cells with count = density*seeded_cells).
         let res = UVec3::new(64, 64, 64);
@@ -592,6 +817,24 @@ mod fill_level_tests {
                 "effective density {eff} should track slider {d}"
             );
         }
+    }
+
+    #[test]
+    fn actual_effective_density_uses_generated_count() {
+        let res = UVec3::new(80, 40, 80);
+        let settings = registry(ScenePreset::FallingBlob, 0.5, 8.0);
+        let scene = SceneConfig::from_settings(&settings);
+        let requested = effective_particle_density(&settings, res, &scene.initial_liquid.blocks);
+        let generated = measure_current_scene_seed(&settings, &scene).generated_particles;
+        let actual =
+            effective_particle_density_for_count(res, &scene.initial_liquid.blocks, generated);
+
+        assert!((requested - 8.0).abs() < 0.001);
+        assert!(actual < requested);
+        assert!(
+            (actual - 7.856).abs() < 0.02,
+            "actual density {actual} should reflect lattice flooring"
+        );
     }
 
     #[test]
@@ -644,5 +887,142 @@ mod fill_level_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod measurement_tests {
+    use super::*;
+
+    fn registry(
+        preset: ScenePreset,
+        res: UVec3,
+        fill: f32,
+        density: f32,
+        override_count: u32,
+    ) -> Registry {
+        let mut settings = Registry::default();
+        settings.set_value_f64("scene.preset", preset as u32 as f64);
+        settings.set_value_f64("grid.res_x", res.x as f64);
+        settings.set_value_f64("grid.res_y", res.y as f64);
+        settings.set_value_f64("grid.res_z", res.z as f64);
+        settings.set_value_f64("scene.fill_level", (fill * 100.0) as f64);
+        settings.set_value_f64("particles.density", density as f64);
+        settings.set_value_f64("particles.count", override_count as f64);
+        settings
+    }
+
+    fn measured(preset: ScenePreset, res: UVec3, fill: f32, density: f32) -> SceneSeedMeasurement {
+        measure_current_seed(&registry(preset, res, fill, density, 0))
+    }
+
+    #[test]
+    fn current_formula_measurement_matrix_is_deterministic() {
+        let cases = [
+            (ScenePreset::FallingBlob, UVec3::new(32, 32, 32), 0.2, 8.0),
+            (ScenePreset::FallingBlob, UVec3::new(64, 64, 64), 0.5, 8.0),
+            (ScenePreset::FallingBlob, UVec3::new(80, 40, 80), 0.5, 1.0),
+            (ScenePreset::FallingBlob, UVec3::new(80, 40, 80), 0.5, 8.0),
+            (ScenePreset::FallingBlob, UVec3::new(80, 40, 80), 0.5, 32.0),
+            (ScenePreset::FallingBlob, UVec3::new(80, 40, 80), 0.8, 8.0),
+            (ScenePreset::DamBreak, UVec3::new(80, 40, 80), 0.5, 8.0),
+            (ScenePreset::DamBreak, UVec3::new(80, 40, 80), 1.0, 8.0),
+            (ScenePreset::DoubleSplash, UVec3::new(80, 40, 80), 0.5, 8.0),
+            (ScenePreset::FallingBlob, UVec3::new(96, 24, 96), 0.8, 8.0),
+        ];
+
+        for (preset, res, fill, density) in cases {
+            let m = measured(preset, res, fill, density);
+            println!(
+                "{},{:?},{fill:.2},{density:.1},seeded={:.6},req={},gen={},req_eff={:.4},act_eff={:.4},top_margin={:.4},empty_layers={:.2},free_frac={:.4},clamp_proxy={:.4}",
+                preset.name(),
+                res,
+                m.seeded_fraction,
+                m.requested_particles,
+                m.generated_particles,
+                m.requested_effective_density,
+                m.actual_effective_density,
+                m.top_margin_fraction,
+                m.empty_cell_layers_above,
+                m.non_seeded_interior_fraction,
+                m.uniform_density_clamp_proxy,
+            );
+            for (i, block) in m.blocks.iter().enumerate() {
+                println!(
+                    "  block {i}: vol={:.6}, req={}, gen={}, counts={}x{}x{}, spacing={:.6}, top_margin={:.4}, empty_layers={:.2}",
+                    block.normalized_volume,
+                    block.requested_particles,
+                    block.generated_particles,
+                    block.lattice_counts.x,
+                    block.lattice_counts.y,
+                    block.lattice_counts.z,
+                    block.lattice_spacing,
+                    block.top_margin_fraction,
+                    block.empty_cell_layers_above,
+                );
+            }
+
+            assert!(m.seeded_fraction > 0.0);
+            assert!(m.requested_particles >= 1_024);
+            assert!(m.generated_particles > 0);
+            assert!(m.generated_particles <= m.requested_particles);
+            assert!(m.actual_effective_density <= m.requested_effective_density);
+            assert_eq!(m.uniform_density_clamp_proxy, 0.0);
+        }
+    }
+
+    #[test]
+    fn density_changes_count_not_seed_geometry() {
+        let res = UVec3::new(80, 40, 80);
+        let low = measured(ScenePreset::FallingBlob, res, 0.5, 1.0);
+        let reference = measured(ScenePreset::FallingBlob, res, 0.5, 8.0);
+        let high = measured(ScenePreset::FallingBlob, res, 0.5, 32.0);
+
+        assert_eq!(low.seeded_fraction, reference.seeded_fraction);
+        assert_eq!(high.seeded_fraction, reference.seeded_fraction);
+        assert_eq!(low.seeded_cells, reference.seeded_cells);
+        assert_eq!(high.seeded_cells, reference.seeded_cells);
+        assert!(low.generated_particles < reference.generated_particles);
+        assert!(reference.generated_particles < high.generated_particles);
+        assert!(
+            (low.actual_effective_density - 1.0).abs() / 1.0 < 0.10,
+            "low-density actual effective density drifted: {}",
+            low.actual_effective_density
+        );
+        assert!(
+            (reference.actual_effective_density - 8.0).abs() / 8.0 < 0.05,
+            "reference-density actual effective density drifted: {}",
+            reference.actual_effective_density
+        );
+        assert!(
+            (high.actual_effective_density - 32.0).abs() / 32.0 < 0.05,
+            "high-density actual effective density drifted: {}",
+            high.actual_effective_density
+        );
+    }
+
+    #[test]
+    fn behavior_formula_supports_canonical_whole_tank_volume_fraction() {
+        let res = UVec3::new(80, 40, 80);
+        let falling = measured(ScenePreset::FallingBlob, res, 0.5, 8.0);
+        let dam = measured(ScenePreset::DamBreak, res, 0.5, 8.0);
+        let double = measured(ScenePreset::DoubleSplash, res, 0.5, 8.0);
+
+        assert!(
+            (falling.seeded_fraction - 0.5).abs() < 0.001,
+            "falling blob should target whole-tank represented volume"
+        );
+        assert!(
+            (dam.seeded_fraction - 0.5).abs() < 0.001,
+            "dam break should target whole-tank represented volume"
+        );
+        assert!(
+            (double.seeded_fraction - 0.5).abs() < 0.001,
+            "double splash should target whole-tank represented volume"
+        );
+        assert!(
+            falling.top_margin_fraction >= SUSPENDED_TOP_AIR_MARGIN - 1.0e-6,
+            "suspended default should leave documented top-air margin"
+        );
     }
 }

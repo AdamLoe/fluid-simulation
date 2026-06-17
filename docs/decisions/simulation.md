@@ -185,22 +185,24 @@ be planned later if it earns the solver risk.
 ## Anti-clump rest target tracks particle density (density is motion-neutral)
 
 **Decision** — The anti-clump divergence source's rest target tracks the scene's
-**actual** particle density by default, instead of a frozen constant. `physics.rest_density`
-is an optional manual override (`0` = Auto; nonzero pins a fixed target). The effective
-`rest` fed to `divergence.wgsl`'s `spc[0]` is
-`manual > 0 ? manual : effective_particle_density(scene)`.
+**generated-count effective** particle density by default, instead of a frozen
+constant or the requested seed target. `physics.rest_density` is an optional manual
+override (`0` = Auto; nonzero pins a fixed target). The effective `rest` fed to
+`divergence.wgsl`'s `spc[0]` is `manual > 0 ? manual :
+generated_particles / seeded_cells` where the generated lattice count is available.
 
 **Why** — The divergence anti-clump source compares raw per-cell particle count with
 a rest target, and raw occupancy scales with `particles.density`. With a frozen rest
 target, changing density also changed the pressure bias and made the water look like
-a different *volume in motion*. Coupling `rest` to the density keeps the ratio stable,
-so density changes affect fidelity and cost rather than the motion model. The
-retained GPU sweep is `app/tools/density_motion_sweep.mjs`.
+a different *volume in motion*. The deterministic lattice can also generate fewer
+particles than requested, so calibrating to requested count alone biases the ratio.
+Coupling `rest` to generated-count effective density keeps the ratio stable, so
+density changes affect fidelity and cost rather than the motion model.
 
 **Tradeoffs** — Power users can still pin a target via the override. This remains a
 pragmatic liveness/compactness correction, not physical mass conservation.
 
-**Code anchors** — `app/crates/fluid-lab/src/scene/mod.rs → effective_particle_density`;
+**Code anchors** — `app/crates/fluid-lab/src/scene/mod.rs → effective_particle_density_for_count`;
 `app/crates/fluid-lab/src/scene/mod.rs → effective_rest_density`;
 `app/crates/fluid-lab/src/gpu/fluid.rs → effective_rest_density`;
 `app/crates/fluid-lab/src/gpu/shaders/divergence.wgsl`;

@@ -48,27 +48,43 @@ substep count exceeds the cap.
 
 ### Particle density and derived count
 
+`scene.fill_level` is a Reset-class percentage over represented whole-tank volume.
+`Registry::fill_level()` maps the stored 0-100 value to
+`target_normalized_volume = clamp(fill_level / 100, 0, 1)`. Presets keep their own
+geometry, but the scene blocks target that normalized tank-volume fraction unless the
+closed-tank top-air guardrail caps a near-full case. The 0% setting produces no
+represented liquid blocks.
+
 The seeded particle count is **derived**, not a fixed absolute number. The primary
 control is `particles.density` (Reset-class `f32`, default `8`, range `1..32`): the
-particles-per-cell crowding of the seeded liquid at reset.
+target particles-per-seeded-cell crowding of the represented liquid at reset.
 
 "Per cell" means **per seeded fluid cell**, not per total grid cell. The seeded region
 is the liquid-block volume measured in cells, i.e. `seeded_volume_fraction *
 res_x*res_y*res_z`, where `seeded_volume_fraction` is the fraction of the normalized
-[0,1]^3 tank the scenario's liquid blocks occupy. The resolved count is
-`round(density * seeded_volume_fraction * total_cells)`, floored at 1024. This keeps
-the default `80×40×80` falling-blob scene near the historical particle budget (~410k
-at density 8) and scales correctly when grid resolution or scenario changes. The
+[0,1]^3 tank the scenario's liquid blocks occupy. The requested count is
+`round(density * seeded_volume_fraction * total_cells)`, floored at 1024 for nonempty
+very-small scenes. Empty represented water remains an empty seed target. This keeps
+the default `80×40×80` falling-blob scene near the historical particle budget and
+scales correctly when grid resolution, scenario, or water amount changes. The
 derivation lives in `crates/fluid-lab/src/scene/mod.rs -> resolved_particle_count`;
-`gpu` reads the resolved `SceneConfig::particle_count`, so seeding, validation, and
-the reported "requested" count all agree.
+`gpu` reads the resolved `SceneConfig::particle_count`, so validation and the reported
+"requested" count agree.
+
+The deterministic lattice can generate slightly fewer particles than requested
+because per-axis lattice counts are floored. Reset-time effective density therefore
+uses the generated particle count divided by seeded cells where available. That value
+calibrates Auto `physics.rest_density`, auto `classify.surface_dilation`, and render
+splat spacing; `stats_json` still exposes requested, estimated/generated, and actual
+particle counts so captures can show the drift.
 
 `particles.count` is a **hidden compatibility override** (Reset-class `u32`, default
 `0` = Auto, range `0..134_217_728`). Rust still accepts it from old localStorage,
 URLs, imports, and capture harness setup; `0` means derive from `particles.density`,
-while a nonzero value pins an exact absolute count and ignores density. The registry
-accessors are `particle_density()` and `particle_count_override()`; resolution happens
-in `SceneConfig::from_settings`. The web shell does not render, export, persist, or
+while a nonzero value pins an exact requested absolute count and ignores density. The
+generated lattice can still trail that requested count. The registry accessors are
+`particle_density()` and `particle_count_override()`; resolution happens in
+`SceneConfig::from_settings`. The web shell does not render, export, persist, or
 share this id.
 
 Grid resolution (`grid.res_x/y/z`) and `particles.density` live in the Scenario tab.

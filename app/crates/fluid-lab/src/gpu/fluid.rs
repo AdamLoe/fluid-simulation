@@ -268,6 +268,11 @@ impl GpuFluid {
 
         let positions = generate_particles(scene, h, origin, extent);
         let particle_count = positions.len() as u32;
+        let actual_density = crate::scene::effective_particle_density_for_count(
+            scene.grid_resolution,
+            &scene.initial_liquid.blocks,
+            particle_count,
+        );
         let particle_dispatch =
             particle_dispatch_shape(particle_count, max_compute_workgroups_per_dimension)
                 .expect("particle count must pass tiled dispatch preflight");
@@ -301,14 +306,14 @@ impl GpuFluid {
             origin: [origin[0], origin[1], origin[2], 0.0],
             grav: [0.0, settings.gravity(), 0.0, 0.0],
             spc: [
-                effective_rest_density(settings, scene),
+                effective_rest_density_for_density(settings, actual_density),
                 settings.volume_stiffness(),
                 settings.drift_clamp(),
                 0.0,
             ],
             cls: [
                 settings.liquid_threshold() as f32,
-                effective_surface_dilation(settings, scene) as f32,
+                effective_surface_dilation_for_density(settings, actual_density) as f32,
                 settings.cfl(),
                 0.0,
             ],
@@ -1761,8 +1766,6 @@ fn compute_inner(
     })
 }
 
-/// Exact particle count the deterministic lattice generator will produce for a
-/// scene, without allocating the particle vector.
 /// Effective one-ring surface dilation for the classify pass: combines the user's
 /// `classify.surface_dilation` setting with the scene's effective particle density
 /// via the host-testable [`crate::scene::effective_surface_dilation`]. Reuses the
@@ -1773,6 +1776,23 @@ pub(crate) fn effective_surface_dilation(settings: &Registry, scene: &SceneConfi
         scene.grid_resolution,
         &scene.initial_liquid.blocks,
     );
+    effective_surface_dilation_for_density(settings, density)
+}
+
+pub(crate) fn effective_surface_dilation_for_count(
+    settings: &Registry,
+    scene: &SceneConfig,
+    particle_count: u32,
+) -> u32 {
+    let density = crate::scene::effective_particle_density_for_count(
+        scene.grid_resolution,
+        &scene.initial_liquid.blocks,
+        particle_count,
+    );
+    effective_surface_dilation_for_density(settings, density)
+}
+
+fn effective_surface_dilation_for_density(settings: &Registry, density: f32) -> u32 {
     crate::scene::effective_surface_dilation(settings.surface_dilation(), density)
 }
 
@@ -1786,6 +1806,23 @@ pub(crate) fn effective_rest_density(settings: &Registry, scene: &SceneConfig) -
         scene.grid_resolution,
         &scene.initial_liquid.blocks,
     );
+    effective_rest_density_for_density(settings, density)
+}
+
+pub(crate) fn effective_rest_density_for_count(
+    settings: &Registry,
+    scene: &SceneConfig,
+    particle_count: u32,
+) -> f32 {
+    let density = crate::scene::effective_particle_density_for_count(
+        scene.grid_resolution,
+        &scene.initial_liquid.blocks,
+        particle_count,
+    );
+    effective_rest_density_for_density(settings, density)
+}
+
+fn effective_rest_density_for_density(settings: &Registry, density: f32) -> f32 {
     crate::scene::effective_rest_density(settings.rest_density(), density)
 }
 
