@@ -1072,6 +1072,15 @@ export function initPanels(app) {
     return tabMeta.has(normalized) ? normalized : activeTab;
   }
 
+  function revealActiveTab() {
+    if (!isOpen) return;
+    const selected = tabsRoot.querySelector(".tab-btn.tab-active");
+    if (!selected) return;
+    window.requestAnimationFrame(() => {
+      selected.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+  }
+
   function renderActiveTab() {
     const currentSettings = safeConfigJson(app);
     const tab = tabMeta.get(activeTab) || tabs[0] || PROFILER_TAB;
@@ -1092,6 +1101,7 @@ export function initPanels(app) {
       btn.setAttribute("aria-selected", selected ? "true" : "false");
       btn.tabIndex = selected ? 0 : -1;
     }
+    revealActiveTab();
   }
 
   function setSettingsOpen(nextOpen) {

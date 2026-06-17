@@ -759,6 +759,7 @@
         flex: 1;
         display: grid;
         grid-template-columns: var(--settings-nav-width) minmax(0, 1fr);
+        position: relative;
       }
 
       .settings-main {
@@ -1433,17 +1434,65 @@
         }
 
         .settings-tabs {
-          max-height: 112px;
+          max-height: none;
+          flex: 0 0 auto;
           flex-direction: row;
-          flex-wrap: wrap;
+          flex-wrap: nowrap;
+          gap: 4px;
+          overflow-x: auto;
+          overflow-y: hidden;
+          overscroll-behavior-x: contain;
+          padding: 6px 8px 8px;
           border-right: 0;
           border-bottom: 1px solid var(--panel-border);
+          scroll-padding-inline: 8px 36px;
+          scroll-snap-type: x proximity;
+          scrollbar-width: thin;
+          scrollbar-color: var(--panel-border) transparent;
+        }
+
+        .settings-content::after {
+          content: "";
+          position: absolute;
+          top: 0;
+          right: 0;
+          width: 34px;
+          height: 44px;
+          pointer-events: none;
+          background: linear-gradient(90deg, transparent, var(--settings-nav-bg) 70%);
+          border-right: 1px solid var(--panel-border);
+        }
+
+        .settings-tabs::-webkit-scrollbar {
+          height: 4px;
+        }
+
+        .settings-tabs::-webkit-scrollbar-track {
+          background: transparent;
+        }
+
+        .settings-tabs::-webkit-scrollbar-thumb {
+          background: var(--panel-border);
+          border-radius: 999px;
         }
 
         .tab-btn {
-          flex: 1 1 108px;
+          flex: 0 0 auto;
           width: auto;
+          min-width: 96px;
+          max-width: 148px;
+          border-left: 0;
+          border-bottom: 2px solid transparent;
+          padding: 6px 10px;
+          white-space: nowrap;
+          scroll-margin-inline: 8px 36px;
+          scroll-snap-align: start;
           text-align: center;
+        }
+
+        .tab-btn.tab-active {
+          border-left-color: transparent;
+          border-bottom-color: var(--tab-active-border);
         }
 
         .launcher-shell {

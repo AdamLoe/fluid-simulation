@@ -53,8 +53,9 @@ contains a compact header and the active scroll body. The header names the activ
 shows the setting count or shell/profiler state, and keeps the Live/Reset/Reload
 apply-class legend visible. There is no `#settings-nav-toggle`, no `nav-collapsed`
 class, and no navigator-collapse behavior. On desktop the navigator sits beside the
-body; on narrow screens the tabs wrap above the body. The toolbar settings button
-remains the open/close control.
+body; on narrow screens the tabs become a single-row horizontal scroller above the
+body with a visible right-edge affordance. Opening or selecting a tab scrolls the
+active tab into view. The toolbar settings button remains the open/close control.
 
 Tabs are derived directly from registry metadata in `app.config_json()`, sorted by
 `tab_order`, and followed by Profiler. The shell does not render registry tab groups.

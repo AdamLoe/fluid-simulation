@@ -1,8 +1,8 @@
 ---
-status: active
+status: shipped
 owner: codex-orchestrator
 last_updated: 2026-06-17
-okay_to_delete: false
+okay_to_delete: true
 long_lived: false
 owning_docs:
   - architecture/web-shell.md
@@ -28,9 +28,9 @@ implementation, and repeated review loops.
 | Screenshot audit 1 | Current app/screens/settings tabs | Complete | Captured main app and Scenario, Simulation, Camera, Surface, Color, Refraction, Reflection, Environment, Profiler, Theme via real Chrome/WebGPU | Use findings for implementation | None |
 | Code map | Web shell ownership | Complete | Edits likely belong in `app/web/index.html` CSS/layout and `app/web/panels.js` panel behavior; static shell only | Feed implementation prompt | None |
 | Implementation pass 1 | Web shell UI cleanup | Complete | Added safe-area launcher inset, compact settings header/legend, scannable rows, scroll padding, and profiler summary grouping | Feed review findings into pass 2 if requested | None |
-| Review pass 1 | Browser verification and UX review | Complete | Captured updated main, Scenario, Simulation top/bottom, Profiler, and dev Theme via real Chrome/WebGPU | Use screenshots for any follow-up polish | None |
-| Implementation pass 2 | Follow-up polish | Pending | Waiting on review | Address review findings | Review findings |
-| Final review/gates | Build/tests/capture/docs/commit | Pending | Waiting on loop | Run final verification and ship | Prior passes |
+| Review pass 1 | Browser verification and UX review | Complete | Desktop pass 1 is largely successful; 390px mobile settings tabs hide later tabs without a clear affordance | Feed narrow mobile-tab fix into pass 2 | None |
+| Implementation pass 2 | Follow-up polish | Complete | Narrow settings tabs are a single-row horizontal scroller and active tabs scroll into view on open/selection | Use final gates to ship | None |
+| Final review/gates | Build/tests/capture/docs/commit | Complete | Syntax checks, diff check, and required mobile/desktop WebGPU captures passed | Shipped | None |
 
 ## Decisions And Assumptions
 
@@ -67,6 +67,30 @@ implementation, and repeated review loops.
   `ui-pass1-tab-profiler.png`, and `ui-pass1-tab-theme-dev.png`.
 - 2026-06-17: Visual spot check found and fixed a sticky section-label ghost at the
   Simulation bottom scroll position; final captures were refreshed after the fix.
+- 2026-06-17: Independent review pass captured updated desktop settings states and a
+  390x844 mobile Scenario state. Desktop findings were resolved enough; pass 2 is
+  warranted for mobile tab navigation because later tabs are hidden without a clear
+  affordance.
+- 2026-06-17: Implementation pass 2 changed only `app/web/index.html` and
+  `app/web/panels.js` for narrow tab navigation: mobile tabs are a single horizontal
+  scroller with a right-edge affordance, and active tabs are revealed after
+  programmatic open/selection.
+- 2026-06-17: Final pass 2 gates passed: `node --check app/web/panels.js`,
+  `node --check app/web/main.js`, and `git diff --check -- app/web/index.html
+  app/web/panels.js docs/architecture/web-shell.md
+  docs/plans/orchestrator/ui-ux-screenshot-review-loop.md`.
+- 2026-06-17: Browser capture pass 2 used a no-rebuild static server on
+  `http://localhost:5185/` to avoid rewriting `app/web/pkg`. Required captures passed
+  WebGPU smoke with `gpuDeviceStatus:"ok"` and wrote:
+  `app/captures/ui-pass2-mobile-scenario.png`,
+  `app/captures/ui-pass2-mobile-profiler.png`,
+  `app/captures/ui-pass2-desktop-scenario.png`, and
+  `app/captures/ui-pass2-desktop-theme-dev.png`.
+
+## Migration Notes
+
+- Current narrow-screen settings tab behavior was migrated to
+  `docs/architecture/web-shell.md`.
 
 ## Open Questions
 
