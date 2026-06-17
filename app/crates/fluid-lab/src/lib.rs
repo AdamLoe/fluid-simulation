@@ -682,14 +682,10 @@ impl FluidApp {
                 log(&format!("[fluid-lab] live wall_friction = {value}"));
             }
             "physics.rest_density" => {
-                // Anti-clump target tracks actual particle density: 0 (Auto) resolves
+                // Anti-clump target tracks requested particle density: 0 (Auto) resolves
                 // to the scene's effective particles-per-cell so density is
                 // motion-neutral; a nonzero value pins a manual target.
-                let eff = gpu::effective_rest_density_for_count(
-                    &self.settings,
-                    &self.scene,
-                    self.gpu.particle_count(),
-                );
+                let eff = gpu::effective_rest_density(&self.settings, &self.scene);
                 self.gpu.set_rest_density(eff);
                 log(&format!(
                     "[fluid-lab] live rest_density = {value} (effective {eff})"
@@ -712,11 +708,7 @@ impl FluidApp {
                 log(&format!("[fluid-lab] live liquid_threshold = {value}"));
             }
             "classify.surface_dilation" => {
-                let eff = gpu::effective_surface_dilation_for_count(
-                    &self.settings,
-                    &self.scene,
-                    self.gpu.particle_count(),
-                );
+                let eff = gpu::effective_surface_dilation(&self.settings, &self.scene);
                 self.gpu.set_surface_dilation(eff);
                 log(&format!(
                     "[fluid-lab] live surface_dilation = {value} (effective {eff})"

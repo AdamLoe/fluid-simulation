@@ -72,11 +72,11 @@ derivation lives in `crates/fluid-lab/src/scene/mod.rs -> resolved_particle_coun
 "requested" count agree.
 
 The deterministic lattice can generate slightly fewer particles than requested
-because per-axis lattice counts are floored. Reset-time effective density therefore
-uses the generated particle count divided by seeded cells where available. That value
-calibrates Auto `physics.rest_density`, auto `classify.surface_dilation`, and render
-splat spacing; `stats_json` still exposes requested, estimated/generated, and actual
-particle counts so captures can show the drift.
+because per-axis lattice counts are floored. Runtime rest density, auto
+`classify.surface_dilation`, and render splat spacing intentionally use the requested
+effective density so the reference value `8` remains the tuned visual baseline;
+`stats_json` still exposes requested, estimated/generated, and actual particle counts
+so captures can show the drift.
 
 `particles.count` is a **hidden compatibility override** (Reset-class `u32`, default
 `0` = Auto, range `0..134_217_728`). Rust still accepts it from old localStorage,

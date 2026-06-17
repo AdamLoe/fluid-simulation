@@ -32,7 +32,7 @@ Tracked plan lifecycle. This touches user-facing settings, simulation initializa
 |---|---|---|---|---|---|
 | Plan | Simulation/settings calibration | completed | Wrote and revised `docs/plans/water-level-density-calibration.md` with explicit whole-tank volume semantics, alternatives, metrics, tolerances, and a post-measurement checkpoint. | None. | None |
 | Plan review | Experiment design/correctness | completed | Review found ambiguity in partial-footprint fill semantics, weak compression metrics, missing numeric tolerances, and no hard measurement checkpoint; the plan was revised to address those findings. | None. | None |
-| Implementation | Code + tests + captures | completed | Whole-tank represented volume was implemented, visually rejected, then corrected back to preset-authored scenario amount while preserving generated-count density calibration. | None. | None |
+| Implementation | Code + tests + captures | completed | Whole-tank represented volume was implemented, visually rejected, then corrected back to preset-authored scenario amount; generated-count runtime calibration was also reverted after visual artifacts. | None. | None |
 | Work review | Shipped behavior verification | completed | Diff inspected; durable docs updated; plan context migrated. | None. | None |
 
 ## Decisions
@@ -43,7 +43,8 @@ Tracked plan lifecycle. This touches user-facing settings, simulation initializa
   scenario amount, not a universal whole-tank volume target. Presets keep their tuned
   scale: Falling Blob grows as a suspended blob, Dam Break grows in its authored wall
   footprint, and Double Splash stretches its paired drops. `particles.density` is
-  fidelity/cost; generated lattice count calibrates effective density where known.
+  fidelity/cost; requested effective density drives runtime rest/dilation/splat
+  defaults, while generated lattice count stays diagnostic.
 
 ## Open Questions
 
@@ -105,7 +106,10 @@ Tracked plan lifecycle. This touches user-facing settings, simulation initializa
 - Regression correction on 2026-06-17:
   - User visual review rejected the whole-tank volume behavior because it made the
     fluid occupy far too much space and look worse than before.
-  - Code restored `preset_blocks` to preset-authored amount semantics while keeping
-    generated-count density calibration.
-  - Durable docs and setting help were corrected so whole-tank volume is no longer the
-    final contract.
+  - Code restored `preset_blocks` to preset-authored amount semantics.
+  - A follow-up visual regression showed generated-count runtime calibration made
+    density-8 behave like low density, degrading optical/refraction quality; runtime
+    rest density, auto surface dilation, and splat spacing now use requested effective
+    density again, while generated count stays diagnostic.
+  - Durable docs and setting help were corrected so whole-tank volume and
+    generated-count visual calibration are no longer the final contract.

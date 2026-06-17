@@ -15,8 +15,8 @@ mod timing;
 pub use timing::Readout as GpuReadout;
 pub use timing::FINE_SECTIONS;
 
-pub(crate) use fluid::effective_surface_dilation_for_count;
-pub(crate) use fluid::effective_rest_density_for_count;
+pub(crate) use fluid::effective_rest_density;
+pub(crate) use fluid::effective_surface_dilation;
 
 use crate::log;
 use crate::scene::SceneConfig;
@@ -326,8 +326,7 @@ impl GpuContext {
         // volume-neutral (see SPLAT_RADIUS_PER_SPACING). At the reference density
         // this equals the historical H*0.35; the user's render.particle_size is a
         // Live multiplier applied on top via set_radius_scale below.
-        let particle_radius = scene.seeded_spacing_for_particle_count(fluid.particle_count())
-            * SPLAT_RADIUS_PER_SPACING;
+        let particle_radius = scene.seeded_spacing(settings) * SPLAT_RADIUS_PER_SPACING;
 
         let (tank_lo, tank_hi) = fluid.tank_bounds();
         let [grid_nx_init, grid_ny_init, grid_nz_init] = fluid.grid_dims();
@@ -540,8 +539,7 @@ impl GpuContext {
         );
         // Volume-neutral splat radius (see SPLAT_RADIUS_PER_SPACING); recomputed on
         // every reset so a density/count/fill_level change updates it.
-        let particle_radius = scene.seeded_spacing_for_particle_count(fluid.particle_count())
-            * SPLAT_RADIUS_PER_SPACING;
+        let particle_radius = scene.seeded_spacing(settings) * SPLAT_RADIUS_PER_SPACING;
         let (tank_lo, tank_hi) = fluid.tank_bounds();
         let [grid_nx, grid_ny, grid_nz] = fluid.grid_dims();
         self.wireframe = renderer::WireframeRenderer::new(

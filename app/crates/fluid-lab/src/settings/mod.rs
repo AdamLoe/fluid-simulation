@@ -478,7 +478,7 @@ impl Default for Registry {
                 value: Value::F32(8.0),
                 validation: Validation::F32Range { min: 1.0, max: 32.0 },
                 tooltip: Some("Fidelity/cost at reset: how many particles to target per represented fluid cell. It changes particle count and spacing, not the amount of water."),
-                technical_tooltip: Some("Reset-class particles-per-seeded-cell target. The requested spawn count is round(density * seeded_volume_fraction * total_grid_cells); the deterministic lattice may generate slightly fewer particles, and reset-time rest density, auto dilation, splat spacing, and diagnostics use the generated count where available. Set Particle count (advanced) to a nonzero value to override the requested target."),
+                technical_tooltip: Some("Reset-class particles-per-seeded-cell target. The requested spawn count is round(density * seeded_volume_fraction * total_cells). Runtime rest density, auto dilation, and splat spacing use this requested density so the reference value 8 remains the tuned visual baseline; diagnostics still expose generated-count drift. Set Particle count (advanced) to a nonzero value to override the requested target."),
                 apply: ApplyClass::Reset,
             },
             Setting {

@@ -74,14 +74,13 @@ as a suspended blob, Dam Break grows taller inside its authored wall footprint, 
 Double Splash stretches its paired drops. `particles.density` becomes a pure fidelity/cost
 knob and is made **volume-neutral**: the visible body stays the same size as density
 drops, just blobbier. This is achieved cheaply by (a) scaling the render splat radius
-with the generated lattice's effective inter-particle spacing, (b) auto-enabling the
-existing one-ring `classify.wgsl` surface dilation below the reference density
-(8/cell) so the physics liquid region stays hole-free, and (c) coupling the
-divergence anti-clump rest target to generated-count effective density
-(`effective_rest_density`) so the *dynamics* are density-invariant too. Without that,
-the occupancy-driven outward push scaled with density and the water moved like a
-different volume (see `decisions/simulation.md`). The **SDF / marching-cubes surface
-rewrite — the "proper" coverage fix — is deliberately deferred** to a future plan.
+with the requested effective inter-particle spacing, (b) auto-enabling the existing
+one-ring `classify.wgsl` surface dilation below the reference density (8/cell) so the
+physics liquid region stays hole-free at genuinely low densities, and (c) coupling the
+divergence anti-clump rest target to requested effective density
+(`effective_rest_density`) so the *dynamics* are density-aware while density `8`
+remains the tuned visual baseline. The **SDF / marching-cubes surface rewrite — the
+"proper" coverage fix — is deliberately deferred** to a future plan.
 
 **Why** — The visible water is built from particle splats, not liquid cells, so a
 fixed-radius splat made lowering density *look like less water* even though the
@@ -100,8 +99,7 @@ The fast `filled_volume` proxy (`liquid_cells × H³`) and browser captures back
 invariant; the screenshots are the real acceptance.
 
 **Code anchors** — `app/crates/fluid-lab/src/scene/mod.rs → preset_blocks /
-effective_particle_density_for_count / effective_surface_dilation /
-seeded_spacing_for_particle_count`;
+effective_particle_density / effective_surface_dilation / seeded_spacing`;
 `app/crates/fluid-lab/src/gpu/mod.rs → SPLAT_RADIUS_PER_SPACING`;
 `app/crates/fluid-lab/src/gpu/fluid.rs → effective_surface_dilation`.
 

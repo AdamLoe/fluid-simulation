@@ -124,16 +124,6 @@ impl SceneConfig {
         self.seeded_spacing_for_density(density)
     }
 
-    pub fn seeded_spacing_for_particle_count(&self, particle_count: u32) -> f32 {
-        let density = effective_particle_density_for_count(
-            self.grid_resolution,
-            &self.initial_liquid.blocks,
-            particle_count,
-        )
-        .max(1.0e-3);
-        self.seeded_spacing_for_density(density)
-    }
-
     fn seeded_spacing_for_density(&self, density: f32) -> f32 {
         crate::sim::H * density.powf(-1.0 / 3.0)
     }

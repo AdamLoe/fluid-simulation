@@ -418,8 +418,10 @@ restores the water amount semantics to preset-authored scale:
 - Double Splash stretches its two authored suspended drops.
 - `particles.density` remains volume-neutral: it changes requested/generated count and
   spacing, not seeded geometry.
-- Generated lattice count remains the calibration source for effective density, Auto
-  rest density, auto surface dilation, splat spacing, and diagnostics where available.
+- Runtime rest density, auto surface dilation, and splat spacing use requested
+  effective density so the reference value `8` remains the tuned visual baseline.
+  Generated lattice count remains diagnostic/measurement evidence rather than a
+  render/runtime calibration input.
 
 Corrective tests pin preset-authored scale (`Dam Break` 50% at roughly `0.163` seeded
 fraction, live-default `Falling Blob` 50% at roughly `0.434`) while keeping the

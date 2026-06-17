@@ -130,12 +130,12 @@ rather than an entirely empty particle dispatch.
 particles per represented seeded cell and does not change the target water volume.
 `particles.count` remains a hidden absolute compatibility override where `0` means
 Auto. The deterministic lattice can generate slightly fewer particles than requested;
-reset-time rest density, auto surface dilation, render splat spacing, and diagnostics
-therefore use the generated count divided by seeded cells where the generated count
-is known. The current scene block geometry is in
+runtime rest density, auto surface dilation, and render splat spacing use the
+requested effective density so density `8` remains the tuned visual baseline.
+Diagnostics still expose requested/generated drift. The current scene block geometry is in
 `app/crates/fluid-lab/src/scene/mod.rs → preset_blocks`; host tests in the same file
 cover preset-authored fill scale, density-invariant geometry, and generated-count
-effective density.
+measurement.
 
 Low-density cells can leave holes in the pressure active set. The effective surface
 dilation is resolved by `app/crates/fluid-lab/src/scene/mod.rs →
@@ -147,9 +147,8 @@ density.
 The occupancy-driven volume correction is the trio
 `physics.rest_density`, `physics.volume_stiffness`, and `physics.drift_clamp`.
 `app/crates/fluid-lab/src/scene/mod.rs → effective_rest_density` makes the Auto rest
-target track effective particle density; `app/crates/fluid-lab/src/gpu/fluid.rs →
-effective_rest_density` covers pre-generation estimates and the reset path uses the
-generated-count density before writing `Params.spc`. `divergence.wgsl` applies the
+target track requested effective particle density; `app/crates/fluid-lab/src/gpu/fluid.rs →
+effective_rest_density` covers reset/live writes to `Params.spc`. `divergence.wgsl` applies the
 clamped occupancy bias before projection. This is a liveness/compactness correction,
 not physical mass conservation.
 
