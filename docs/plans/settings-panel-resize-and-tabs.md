@@ -1,8 +1,8 @@
 ---
-status:        active
+status:        shipped
 owner:         codex
 last_updated:  2026-06-17
-okay_to_delete: false
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/web-shell.md
@@ -118,6 +118,15 @@ Out of scope:
 - Review CSS carefully after adding the splitter. The panel already affects canvas
   client width, so the implementation should rely on the existing resize path rather
   than manually scaling the WebGPU canvas.
+
+## Migration notes
+
+- `architecture/web-shell.md` owns the desktop splitter, narrow overlay behavior,
+  settings panel header, and hidden/exported settings surface.
+- `architecture/settings.md` owns the Scenario, Smoothing, Whitewater, Auto Roll, and
+  Wave registry metadata plus hidden `particles.count` compatibility.
+- `architecture/rendering.md` owns smoothing iteration `0` as the render bypass.
+- `architecture/simulation.md` owns density-derived particle count semantics.
 
 ## See also
 

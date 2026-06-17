@@ -46,7 +46,10 @@ Open `http://localhost:5184/`.
 
 `web/panels.js -> initPanels` drives one right-side settings panel. It starts closed
 and opens from the toolbar settings icon. On desktop it is a layout column beside the
-canvas; on narrow screens it overlays to preserve viewport space.
+canvas with a visible splitter grip between canvas and panel; dragging the grip updates
+`--panel-width`, persists the width in localStorage, and lets the existing canvas
+`ResizeObserver` drive `FluidApp::resize`. On narrow screens the panel still overlays
+to preserve viewport space and the splitter is hidden.
 
 The panel uses `.settings-content` with a tab navigator plus `.settings-main`, which
 contains a compact header and the active scroll body. The header names the active tab,
@@ -58,7 +61,8 @@ body with a visible right-edge affordance. Opening or selecting a tab scrolls th
 active tab into view. The toolbar settings button remains the open/close control.
 
 Tabs are derived directly from registry metadata in `app.config_json()`, sorted by
-`tab_order`, and followed by Profiler. The shell does not render registry tab groups.
+`tab_order`, and followed by Profiler. Whitewater and Smoothing are ordinary
+registry-owned tabs. The shell does not render registry tab groups.
 `Environment` is hidden unless `?dev=true`; `Theme` is a shell-owned dev-only tab
 that also appears only with `?dev=true`. Rows support slider+number controls,
 dropdowns, color pickers, log2 sliders, color swatches, and per-setting reset buttons;
@@ -72,10 +76,11 @@ acceptance, clamping, stored value, apply class, and whether reset/reload is nee
 so sliders and number boxes reflect clamped stored values instead of assuming the
 requested value stuck.
 
-Hidden scheduler booleans are not rendered or persisted. Removed render ids are sent
-to the bridge during restore/import; Rust owns legacy mapping/ignoring/rejection and
-reports structured outcomes. Future saves walk visible non-default rows only, so
-removed ids disappear on the next save.
+Hidden scheduler booleans and the compatibility-only `particles.count` override are
+not rendered or persisted. Removed render ids are sent to the bridge during
+restore/import; Rust owns legacy mapping/ignoring/rejection and reports structured
+outcomes. Future saves walk visible non-default rows only, so removed ids and hidden
+compatibility overrides disappear on the next save.
 
 Portable config actions are no longer visible buttons in the panel. The capture/API
 helpers remain: `exportConfig()` emits `{schema:"fluidlab.config.v1",
@@ -91,8 +96,12 @@ Shareable registry settings use repeated `set` URL params:
 
 The shell parses all `set` entries once at boot, appends legacy `?flip=N` as
 `physics.flip_blend`, applies the batch after default product-mode initialization,
-and triggers one `app.reset()` if any accepted entry reports `needs_reset`. Reload
-class entries are stored and warned about; the shell does not auto-reload the page.
+and triggers one `app.reset()` if any accepted entry reports `needs_reset`. LocalStorage
+restore happens inside `initPanels` before product-mode and URL settings, and the rAF
+loop starts only after those synchronous reset-class batches finish, so the first
+meaningful rendered frame uses the restored scenario, fill, density, grid, and derived
+particle count. Reload-class entries are stored and warned about; the shell does not
+auto-reload the page.
 The old `pressure`, `paused`, `slice`, and `slicemode` params remain ad hoc shell
 controls for this stage.
 
@@ -178,7 +187,7 @@ provided stats and exits before launching Chrome.
 - `window.__fluid` is the Rust control surface; `window.__fluidShell` is the shell
   control surface.
 - Resizing the settings panel changes the canvas client width and triggers
-  `app.resize(...)`.
+  `app.resize(...)`; the splitter itself is a desktop-only affordance.
 - The old Vite/TS path is not valid panel evidence.
 
 ## Update when

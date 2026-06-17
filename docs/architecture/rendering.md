@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-16
+last_updated:  2026-06-17
 okay_to_delete: false
 long_lived:    true
 ---
@@ -87,9 +87,11 @@ There is no wet-wall material path. The environment shader has one bind group: t
 camera/material uniform. The right and front tank faces remain open viewing faces.
 
 The composite no longer owns flat-water wall-contact correction or micronormal detail.
-It reconstructs its normal from the smoothed nearest-depth target and uses the retained
-speed-weighted whitewater target as a soft tint and roughness signal. There is no
-persistent foam-particle overlay.
+It reconstructs its normal from the smoothed nearest-depth target when smoothing is
+enabled; when `render.hero.smooth_iterations = 0`, smoothing passes are skipped and
+the composite samples the raw nearest-depth target as the explicit off state. The
+retained speed-weighted whitewater target remains a soft tint and roughness signal.
+There is no persistent foam-particle overlay.
 
 `render.hero.debug_view` routes retained intermediate views only: scene color/depth,
 thickness, refraction offset, Fresnel, absorption, final water, reflection, environment,
@@ -105,8 +107,9 @@ base splat radius tracks the seeded inter-particle spacing through
 `crates/fluid-lab/src/gpu/mod.rs -> SPLAT_RADIUS_PER_SPACING` and
 `crates/fluid-lab/src/scene/mod.rs -> SceneConfig::seeded_spacing`. Lowering density
 coarsens the lattice and the splats grow to keep coverage approximately constant: the
-body stays the same size, just blobbier. An advanced `particles.count` override
-changes the effective spacing too, so the splat follows with no silent volume change.
+body stays the same size, just blobbier. The hidden compatibility `particles.count`
+override changes the effective spacing too, so the splat follows with no silent volume
+change.
 The radius is recomputed on every Reset at both `GpuContext::new` and
 `GpuContext::recreate_fluid`. `render.particle_size` remains the **Live** user
 multiplier applied on top via `ParticleRenderer::set_radius_scale`;

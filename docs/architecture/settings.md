@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-16
+last_updated:  2026-06-17
 okay_to_delete: false
 long_lived:    true
 ---
@@ -63,11 +63,13 @@ derivation lives in `crates/fluid-lab/src/scene/mod.rs -> resolved_particle_coun
 `gpu` reads the resolved `SceneConfig::particle_count`, so seeding, validation, and
 the reported "requested" count all agree.
 
-`particles.count` is now an **advanced manual override** (Reset-class `u32`, default
-`0` = Auto, range `0..134_217_728`). `0` means derive from `particles.density`; a
-nonzero value pins an exact absolute count and ignores density. The registry accessors
-are `particle_density()` and `particle_count_override()`; resolution happens in
-`SceneConfig::from_settings`. The override no longer uses a log2 slider.
+`particles.count` is a **hidden compatibility override** (Reset-class `u32`, default
+`0` = Auto, range `0..134_217_728`). Rust still accepts it from old localStorage,
+URLs, imports, and capture harness setup; `0` means derive from `particles.density`,
+while a nonzero value pins an exact absolute count and ignores density. The registry
+accessors are `particle_density()` and `particle_count_override()`; resolution happens
+in `SceneConfig::from_settings`. The web shell does not render, export, persist, or
+share this id.
 
 Grid resolution (`grid.res_x/y/z`) and `particles.density` live in the Scenario tab.
 The resolved effective particle count remains in `stats_json` and the Profiler, but
@@ -97,11 +99,16 @@ Enum settings currently serialize as their numeric registry values, not stable s
 
 The visible config-tab routing lives in
 `crates/fluid-lab/src/settings/mod.rs -> settings_tab`. Registry-owned tabs are:
-Scenario, Simulation, Camera, Surface, Color, Environment, Refraction, and Reflection.
+Scenario, Simulation, Camera, Surface, Smoothing, Whitewater, Color, Environment,
+Refraction, and Reflection.
 The web shell appends Profiler as a non-config tab and appends a shell-owned Theme tab
 only when `?dev=true`. Environment is also hidden outside dev mode. Removed
 render-feature tabs are not visible; `rendering.md` owns the removed-feature set,
 while this doc owns registry and legacy-id behavior.
+
+Scenario contains the scene, grid, particle-density, Auto Roll, and Wave sections.
+The product-mode launcher owns the hidden scheduler enable toggles; the panel exposes
+only the strength/cadence/frequency rows users can tune.
 
 The Camera tab default pitch is `camera.rot_x = -0.3` so the initial view sees more of
 the floor and water surface. The old tab ids `modes`, `camera-view`, `water-surface`,
@@ -116,17 +123,20 @@ Most `render.hero.*` controls share one Live snapshot path:
 are declared with the rest of the hero controls in
 `crates/fluid-lab/src/settings/mod.rs -> Registry`.
 
-Screen-space surface quality is tuned by the `render.hero.smooth_*`,
-`render.hero.normal_*`, and `render.hero.feature_preservation` Live controls. The last
-drives the curvature-adaptive feature-preserving filter (smooth faces + sharp crests; 0
-= legacy isotropic behaviour) — see [`rendering.md`](rendering.md).
+Screen-space surface quality lives in the Smoothing tab and is tuned by the
+`render.hero.smooth_*`, `render.hero.normal_*`, and
+`render.hero.feature_preservation` Live controls. `render.hero.smooth_iterations = 0`
+is the explicit off state; nonzero values run the smoothing passes. Feature
+preservation still drives the curvature-adaptive filter (smooth faces + sharp crests;
+0 = legacy isotropic behaviour) — see [`rendering.md`](rendering.md).
 
 Persistent surface foam, flat-water wall-contact correction, and micronormal controls
 are not settings anymore. `render.diffuse.*`,
 `render.hero.wall_contact_enabled`, `render.hero.micro_normal_*`, and
 `render.hero.flat_water.*` are removed ids and current imports reject them as unknown.
-The retained whitewater controls are the Water composite tint/threshold/smoothing rows,
-which continue to use the speed-weighted whitewater accumulation target.
+The Whitewater tab owns `render.whitewater_strength`,
+`render.whitewater_threshold`, and `render.whitewater_softness`, which continue to use
+the speed-weighted whitewater accumulation target in the Water composite.
 
 ## Legacy replay
 
@@ -154,7 +164,8 @@ payloads that used to be skipped before Rust saw them.
   legacy bool wrapper.
 - U32 settings round incoming f64s before storage; F32 settings cast to f32.
 - Hidden scheduler booleans (`interaction.auto_roll_enabled`,
-  `interaction.wave_enabled`) are real settings but not visible durable preferences.
+  `interaction.wave_enabled`) and `particles.count` are real settings but not visible
+  durable preferences.
 - There is no `solver.density` setting.
 - `technical_tooltip` metadata may still be emitted by Rust for docs/debug consumers,
   but the web shell renders only functional help affordances.

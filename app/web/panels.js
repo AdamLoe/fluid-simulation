@@ -10,9 +10,14 @@
 
 const LS_KEY = "fluidlab.config.v1";
 const THEME_STORAGE_KEY = "fluidlab.theme.v1";
+const PANEL_WIDTH_STORAGE_KEY = "fluidlab.settings.width.v1";
+const DESKTOP_PANEL_QUERY = "(min-width: 821px)";
+const PANEL_MIN_WIDTH = 320;
+const PANEL_MAX_FRACTION = 0.56;
 const HIDDEN_SETTING_IDS = new Set([
   "interaction.auto_roll_enabled",
   "interaction.wave_enabled",
+  "particles.count",
 ]);
 const DEV_ONLY_TABS = new Set(["environment", "theme"]);
 const DEFAULT_TAB = "scenario";
@@ -145,6 +150,8 @@ const TAB_ALIASES = {
   "camera-view": "camera",
   water: "surface",
   "water-surface": "surface",
+  "water-smoothing": "smoothing",
+  foam: "whitewater",
   "water-color": "color",
   "sun-reflection": "reflection",
   physics: "simulation",
@@ -180,6 +187,38 @@ function loadStoredTheme() {
   } catch {
     return "default";
   }
+}
+
+function loadStoredPanelWidth() {
+  try {
+    const raw = Number(localStorage.getItem(PANEL_WIDTH_STORAGE_KEY));
+    return Number.isFinite(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredPanelWidth(width) {
+  try {
+    localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(Math.round(width)));
+  } catch (e) {
+    console.warn("[panels] panel width localStorage write failed:", e);
+  }
+}
+
+function panelWidthMax() {
+  return Math.max(PANEL_MIN_WIDTH, Math.min(640, Math.floor(window.innerWidth * PANEL_MAX_FRACTION)));
+}
+
+function clampPanelWidth(width) {
+  return clamp(width, PANEL_MIN_WIDTH, panelWidthMax());
+}
+
+function applyPanelWidth(width, persist = true) {
+  const next = clampPanelWidth(width);
+  document.documentElement.style.setProperty("--panel-width", `${Math.round(next)}px`);
+  if (persist) saveStoredPanelWidth(next);
+  return next;
 }
 
 function activeThemeId() {
@@ -1048,6 +1087,7 @@ export function initPanels(app) {
   const settingsBody = document.getElementById("settings-body");
   const settingsHeader = document.getElementById("settings-header");
   const tabsRoot = document.getElementById("settings-tabs");
+  const settingsResizer = document.getElementById("settings-resizer");
   const btnConfig = document.getElementById("btn-config");
   const toolbarReset = document.getElementById("btn-reset");
 
@@ -1058,6 +1098,8 @@ export function initPanels(app) {
 
   const stored = loadStoredConfig();
   applyTheme(loadStoredTheme(), false);
+  const storedPanelWidth = loadStoredPanelWidth();
+  if (storedPanelWidth != null) applyPanelWidth(storedPanelWidth, false);
   if (Object.keys(stored).length > 0) {
     applySettingEntries(app, Object.entries(stored), "localStorage");
   }
@@ -1107,6 +1149,7 @@ export function initPanels(app) {
   function setSettingsOpen(nextOpen) {
     isOpen = nextOpen;
     settingsPanel.hidden = !isOpen;
+    if (settingsResizer) settingsResizer.hidden = !isOpen;
     btnConfig.classList.toggle("btn-active", isOpen);
     btnConfig.setAttribute("aria-expanded", isOpen ? "true" : "false");
     if (isOpen) renderActiveTab();
@@ -1149,6 +1192,67 @@ export function initPanels(app) {
   }
 
   btnConfig.addEventListener("click", toggleSettings);
+
+  if (settingsResizer) {
+    const desktopQuery = window.matchMedia(DESKTOP_PANEL_QUERY);
+    let resizing = false;
+
+    function widthFromClientX(clientX) {
+      const stage = document.getElementById("stage");
+      const rect = stage ? stage.getBoundingClientRect() : document.body.getBoundingClientRect();
+      return rect.right - clientX;
+    }
+
+    function finishResize() {
+      resizing = false;
+      settingsResizer.classList.remove("resizing");
+      document.body.classList.remove("settings-resizing");
+    }
+
+    settingsResizer.addEventListener("pointerdown", (event) => {
+      if (!desktopQuery.matches || !isOpen) return;
+      event.preventDefault();
+      resizing = true;
+      settingsResizer.classList.add("resizing");
+      document.body.classList.add("settings-resizing");
+      settingsResizer.setPointerCapture(event.pointerId);
+      applyPanelWidth(widthFromClientX(event.clientX));
+    });
+    settingsResizer.addEventListener("pointermove", (event) => {
+      if (!resizing) return;
+      event.preventDefault();
+      applyPanelWidth(widthFromClientX(event.clientX));
+    });
+    settingsResizer.addEventListener("pointerup", finishResize);
+    settingsResizer.addEventListener("pointercancel", finishResize);
+    settingsResizer.addEventListener("dblclick", () => {
+      document.documentElement.style.removeProperty("--panel-width");
+      try {
+        localStorage.removeItem(PANEL_WIDTH_STORAGE_KEY);
+      } catch {}
+    });
+    settingsResizer.addEventListener("keydown", (event) => {
+      if (!desktopQuery.matches) return;
+      const current = settingsPanel.getBoundingClientRect().width;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        applyPanelWidth(current + (event.shiftKey ? 40 : 16));
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        applyPanelWidth(current - (event.shiftKey ? 40 : 16));
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        applyPanelWidth(PANEL_MAX_FRACTION * window.innerWidth);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        applyPanelWidth(PANEL_MIN_WIDTH);
+      }
+    });
+    window.addEventListener("resize", () => {
+      const current = settingsPanel.getBoundingClientRect().width;
+      if (current > panelWidthMax()) applyPanelWidth(current, false);
+    });
+  }
 
   if (toolbarReset) {
     toolbarReset.addEventListener("click", () => {

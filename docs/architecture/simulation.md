@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-15
+last_updated:  2026-06-17
 okay_to_delete: false
 long_lived:    true
 ---
@@ -118,11 +118,15 @@ valid for both pipelines.
 ## Volume And Density
 
 `scene.fill_level` is the Reset-class tank-fill percentage and controls how much
-water is seeded. `particles.density` controls particles per seeded cell and is meant
-to be a fidelity/cost knob, not a volume knob. `particles.count` is an advanced
-absolute override where `0` means Auto. The current scene block geometry is in
+water is seeded. Each preset maps that fraction into its own normalized block
+geometry: Falling Blob is a suspended central blob, Dam Break is a floor-anchored wall
+slab, and Double Splash is a pair of suspended drops. `particles.density` controls
+particles per seeded cell and is meant to be a fidelity/cost knob, not a volume knob.
+`particles.count` remains a hidden absolute compatibility override where `0` means
+Auto. The current scene block geometry is in
 `app/crates/fluid-lab/src/scene/mod.rs → preset_blocks`; host tests in the same file
-cover fill-level monotonicity and density scaling.
+cover fill-level monotonicity, density scaling, and the Falling Blob suspended-block
+shape.
 
 Low-density cells can leave holes in the pressure active set. The effective surface
 dilation is resolved by `app/crates/fluid-lab/src/scene/mod.rs →

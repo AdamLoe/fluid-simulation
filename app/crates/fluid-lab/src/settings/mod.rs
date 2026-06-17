@@ -147,6 +147,8 @@ pub enum Category {
     Camera,
     Render,
     Water,
+    AutoRoll,
+    Wave,
     Diagnostics,
 }
 
@@ -162,6 +164,8 @@ impl Category {
             Category::Camera => "Camera",
             Category::Render => "Render",
             Category::Water => "Water",
+            Category::AutoRoll => "Auto Roll",
+            Category::Wave => "Wave",
             Category::Diagnostics => "Diagnostics",
         }
     }
@@ -175,6 +179,8 @@ pub enum SettingsTab {
     Simulation,
     Camera,
     Surface,
+    Smoothing,
+    Whitewater,
     Color,
     Environment,
     Refraction,
@@ -188,6 +194,8 @@ impl SettingsTab {
             SettingsTab::Simulation => "simulation",
             SettingsTab::Camera => "camera",
             SettingsTab::Surface => "surface",
+            SettingsTab::Smoothing => "smoothing",
+            SettingsTab::Whitewater => "whitewater",
             SettingsTab::Color => "color",
             SettingsTab::Environment => "environment",
             SettingsTab::Refraction => "refraction",
@@ -201,6 +209,8 @@ impl SettingsTab {
             SettingsTab::Simulation => "Simulation",
             SettingsTab::Camera => "Camera",
             SettingsTab::Surface => "Surface",
+            SettingsTab::Smoothing => "Smoothing",
+            SettingsTab::Whitewater => "Whitewater",
             SettingsTab::Color => "Color",
             SettingsTab::Environment => "Environment",
             SettingsTab::Refraction => "Refraction",
@@ -214,10 +224,12 @@ impl SettingsTab {
             SettingsTab::Simulation => 20,
             SettingsTab::Camera => 30,
             SettingsTab::Surface => 40,
-            SettingsTab::Color => 50,
-            SettingsTab::Refraction => 60,
-            SettingsTab::Reflection => 70,
-            SettingsTab::Environment => 80,
+            SettingsTab::Smoothing => 50,
+            SettingsTab::Whitewater => 60,
+            SettingsTab::Color => 70,
+            SettingsTab::Refraction => 80,
+            SettingsTab::Reflection => 90,
+            SettingsTab::Environment => 100,
         }
     }
 
@@ -479,8 +491,8 @@ impl Default for Registry {
                     min: 0,
                     max: 134_217_728,
                 },
-                tooltip: Some("Advanced: pin an exact particle count, ignoring Particle density. 0 means Auto — derive the count from density and grid resolution (recommended)."),
-                technical_tooltip: Some("Reset-class manual override. 0 = Auto (count derived from particles.density). A nonzero value pins the absolute seed target across grid-resolution changes; the slider steps by powers of two and large requests may hit device limits."),
+                tooltip: Some("Advanced: pin an exact particle count, ignoring Particle density. 0 means Auto — derive the count from density and grid resolution."),
+                technical_tooltip: Some("Reset-class hidden compatibility override. 0 = Auto (count derived from particles.density). A nonzero value pins the absolute seed target across grid-resolution changes; visible UI/export/share surfaces omit this id."),
                 apply: ApplyClass::Reset,
             },
             Setting {
@@ -591,7 +603,7 @@ impl Default for Registry {
             Setting {
                 id: "interaction.auto_roll_enabled",
                 label: "Auto-roll enabled",
-                category: Category::Interaction,
+                category: Category::AutoRoll,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -602,7 +614,7 @@ impl Default for Registry {
             Setting {
                 id: "interaction.auto_roll_strength",
                 label: "Auto-roll strength",
-                category: Category::Interaction,
+                category: Category::AutoRoll,
                 default: Value::F32(0.222),
                 value: Value::F32(0.222),
                 validation: Validation::F32Range { min: 0.0, max: 1.2 },
@@ -613,7 +625,7 @@ impl Default for Registry {
             Setting {
                 id: "interaction.auto_roll_cadence",
                 label: "Auto-roll cadence",
-                category: Category::Interaction,
+                category: Category::AutoRoll,
                 default: Value::F32(0.8375),
                 value: Value::F32(0.8375),
                 validation: Validation::F32Range { min: 0.5, max: 8.0 },
@@ -624,7 +636,7 @@ impl Default for Registry {
             Setting {
                 id: "interaction.wave_enabled",
                 label: "Wave maker enabled",
-                category: Category::Interaction,
+                category: Category::Wave,
                 default: Value::U32(0),
                 value: Value::U32(0),
                 validation: Validation::U32Range { min: 0, max: 1 },
@@ -635,7 +647,7 @@ impl Default for Registry {
             Setting {
                 id: "interaction.wave_strength",
                 label: "Wave strength",
-                category: Category::Interaction,
+                category: Category::Wave,
                 default: Value::F32(2.145),
                 value: Value::F32(2.145),
                 validation: Validation::F32Range { min: 0.0, max: 3.0 },
@@ -646,7 +658,7 @@ impl Default for Registry {
             Setting {
                 id: "interaction.wave_frequency",
                 label: "Wave frequency",
-                category: Category::Interaction,
+                category: Category::Wave,
                 default: Value::F32(0.22775),
                 value: Value::F32(0.22775),
                 validation: Validation::F32Range { min: 0.05, max: 4.0 },
@@ -1263,9 +1275,9 @@ impl Default for Registry {
                 category: Category::Water,
                 default: Value::U32(1),
                 value: Value::U32(1),
-                validation: Validation::U32Range { min: 1, max: 4 },
-                tooltip: Some("How many bilateral smoothing passes to run on the water depth each frame. More passes reduce the sphere look by fusing adjacent particle splats."),
-                technical_tooltip: Some("Live. Each iteration runs one X+Y bilateral pass (ping-pong). sigma_spatial scales with the radius setting; the depth-range Gaussian keeps silhouettes intact."),
+                validation: Validation::U32Range { min: 0, max: 4 },
+                tooltip: Some("How many smoothing passes to run on the water surface each frame. 0 turns smoothing off; higher values fuse adjacent particle splats."),
+                technical_tooltip: Some("Live. 0 bypasses thickness, whitewater, and depth smoothing so the composite samples the raw nearest-depth target. Each nonzero iteration runs one X+Y pass (ping-pong)."),
                 apply: ApplyClass::Live,
             },
             Setting {
@@ -1917,13 +1929,27 @@ fn settings_tab(setting: &Setting) -> SettingsTab {
     }
     if matches!(
         id,
+        "render.whitewater_strength" | "render.whitewater_threshold" | "render.whitewater_softness"
+    ) {
+        return SettingsTab::Whitewater;
+    }
+    if matches!(
+        id,
+        "render.hero.smooth_iterations"
+            | "render.hero.smooth_radius"
+            | "render.hero.smooth_thickness_splat_scale"
+            | "render.hero.normal_stencil"
+            | "render.hero.normal_smooth_strength"
+            | "render.hero.feature_preservation"
+    ) {
+        return SettingsTab::Smoothing;
+    }
+    if matches!(
+        id,
         "render.speed_scale"
             | "render.particle_slow_color"
             | "render.particle_fast_color"
             | "render.water_optical_density"
-            | "render.whitewater_strength"
-            | "render.whitewater_threshold"
-            | "render.whitewater_softness"
             | "render.hero.body_color_enabled"
             | "render.hero.absorption_color"
             | "render.hero.absorption_strength"
@@ -2296,7 +2322,12 @@ mod tests {
 
         for id in ids {
             let setting = registry.get(id).expect("missing interaction setting");
-            assert_eq!(setting.category, Category::Interaction);
+            let expected_category = if id.starts_with("interaction.auto_roll") {
+                Category::AutoRoll
+            } else {
+                Category::Wave
+            };
+            assert_eq!(setting.category, expected_category);
             assert_eq!(setting.apply, ApplyClass::Live);
             assert!(json.contains(&format!(r#""id":"{id}""#)));
         }

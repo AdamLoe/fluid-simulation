@@ -754,6 +754,52 @@
         display: none;
       }
 
+      .settings-resizer {
+        flex: 0 0 10px;
+        position: relative;
+        display: grid;
+        place-items: center;
+        cursor: col-resize;
+        touch-action: none;
+        z-index: 21;
+      }
+
+      .settings-resizer[hidden] {
+        display: none;
+      }
+
+      .settings-resizer::before {
+        content: "";
+        width: 5px;
+        height: 54px;
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-sm);
+        background:
+          linear-gradient(
+            90deg,
+            transparent 0 1px,
+            var(--text-faint) 1px 2px,
+            transparent 2px 3px,
+            var(--text-faint) 3px 4px,
+            transparent 4px 5px
+          ),
+          var(--control-bg);
+        opacity: 0.82;
+        box-shadow: var(--shadow-panel);
+      }
+
+      .settings-resizer:hover::before,
+      .settings-resizer:focus-visible::before,
+      .settings-resizer.resizing::before {
+        border-color: var(--chrome-active-border);
+        opacity: 1;
+      }
+
+      .settings-resizing {
+        cursor: col-resize;
+        user-select: none;
+      }
+
       .settings-content {
         min-height: 0;
         flex: 1;
@@ -1399,6 +1445,10 @@
           width: min(500px, calc(100vw - 12px));
           margin: 0;
         }
+
+        .settings-resizer {
+          display: none;
+        }
       }
 
       @media (max-width: 560px) {
@@ -1562,6 +1612,16 @@
             </div>
           </div>
         </main>
+
+        <div
+          id="settings-resizer"
+          class="settings-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize settings panel"
+          tabindex="0"
+          hidden
+        ></div>
 
         <aside id="settings-panel" class="settings-panel" aria-label="Settings" hidden>
           <div class="settings-content">

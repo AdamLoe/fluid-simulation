@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-16
+last_updated:  2026-06-17
 okay_to_delete: false
 long_lived:    true
 ---
@@ -61,8 +61,9 @@ scripts, but the current bottom Control UI does not bind it.
 
 `scene.drop_height` is a Reset-class scene parameter consumed by `SceneConfig::from_settings`.
 For suspended presets, the authored liquid blocks are shifted vertically by the height
-delta and clamped inside `[0,1]` while preserving block size. Dam Break remains
-floor-anchored, so the setting has limited effect there.
+delta and clamped inside `[0,1]` while preserving block size. Falling Blob is a
+suspended central blob whose default normalized volume tracks the 20% fill default;
+Dam Break remains floor-anchored, so the setting has limited effect there.
 
 `SceneConfig.grid_resolution` is a `UVec3` built from the `grid.res_x/res_y/res_z` registry settings (all Reset-class), feeding the per-axis cell counts.
 
@@ -89,6 +90,11 @@ is owned by `simulation.md`; the app shell owns only the handoff between
 Particle placement within each block uses deterministic seeded jitter
 (`app/crates/fluid-lab/src/gpu/fluid.rs → generate_particles`), so `reset()` is
 bit-reproducible.
+
+The web shell applies localStorage and URL `set` batches before starting the rAF
+frame loop. Reset-class changes in those batches call `FluidApp::reset` synchronously,
+so the first meaningful rendered frame uses the selected preset, fill level, density,
+grid resolution, and derived particle count rather than a default-scene intermediate.
 
 ## Non-obvious invariants and gotchas
 

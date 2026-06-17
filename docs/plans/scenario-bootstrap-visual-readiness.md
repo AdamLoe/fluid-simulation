@@ -1,8 +1,8 @@
 ---
-status:        active
+status:        shipped
 owner:         codex
 last_updated:  2026-06-17
-okay_to_delete: false
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/app-shell.md
@@ -112,6 +112,15 @@ Out of scope:
   regression from making water level and particle density auto-update physics.
 - Coordinate with `settings-panel-resize-and-tabs.md` before editing particle-count
   semantics. Both streams should converge on density/fill/scene-derived counts.
+
+## Migration notes
+
+- `architecture/app-shell.md` owns the startup/reset readiness contract and Falling
+  Blob handoff through `SceneConfig::from_settings`.
+- `architecture/simulation.md` owns seeded preset geometry, density-derived counts,
+  and hidden count-override compatibility.
+- `architecture/settings.md` owns visible density/count semantics.
+- `architecture/web-shell.md` owns localStorage/URL restore ordering before rAF.
 
 ## See also
 

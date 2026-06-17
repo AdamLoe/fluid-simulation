@@ -747,11 +747,16 @@ impl GpuContext {
         self.smooth_z_view = create_r16_target(&self.device, width, height, "water smooth z");
         self.scene_color_view = create_scene_color_target(&self.device, width, height);
         self.scene_depth_view = create_r16_target(&self.device, width, height, "hero scene depth");
+        let depth_view = if self.hero.smooth_iterations == 0 {
+            &self.nearest_z_view
+        } else {
+            &self.smooth_z_view
+        };
         self.composite.set_views(
             &self.device,
             &self.thickness_view,
             &self.whitewater_view,
-            &self.smooth_z_view,
+            depth_view,
             &self.scene_color_view,
             &self.scene_depth_view,
         );
@@ -862,6 +867,19 @@ impl GpuContext {
     pub fn set_hero_params(&mut self, hero: settings::HeroParams) {
         self.hero = hero;
         self.composite.set_hero_params(&self.queue, &hero);
+        let depth_view = if self.hero.smooth_iterations == 0 {
+            &self.nearest_z_view
+        } else {
+            &self.smooth_z_view
+        };
+        self.composite.set_views(
+            &self.device,
+            &self.thickness_view,
+            &self.whitewater_view,
+            depth_view,
+            &self.scene_color_view,
+            &self.scene_depth_view,
+        );
         self.environment.set_params(&self.queue, &hero);
         self.skybox.set_params(&self.queue, &hero);
         self.smoothing
@@ -1242,11 +1260,16 @@ impl GpuContext {
                     self.config.height,
                     "hero scene depth",
                 );
+                let depth_view = if self.hero.smooth_iterations == 0 {
+                    &self.nearest_z_view
+                } else {
+                    &self.smooth_z_view
+                };
                 self.composite.set_views(
                     &self.device,
                     &self.thickness_view,
                     &self.whitewater_view,
-                    &self.smooth_z_view,
+                    depth_view,
                     &self.scene_color_view,
                     &self.scene_depth_view,
                 );
@@ -1431,7 +1454,7 @@ impl GpuContext {
                 // the speckled "sandy" body and the see-through gap where dark wall
                 // showed between splats near the glass. Each iteration blurs in place:
                 // X reads thickness -> writes ping; Y reads ping -> writes thickness.
-                let smooth_iters = self.hero.smooth_iterations.max(1);
+                let smooth_iters = self.hero.smooth_iterations;
                 for _ in 0..smooth_iters {
                     {
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
