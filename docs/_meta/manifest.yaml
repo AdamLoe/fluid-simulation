@@ -1,0 +1,28 @@
+schema_version: 2
+
+repo:
+  name: fluid-lab
+  title: browser-native Rust/WASM/WebGPU 3D fluid simulation lab
+  agent_docs_version: v2
+  code_root: app/
+
+metadata:
+  ownership: docs/_meta/ownership.json
+  generated_context:
+    root: docs/.generated
+    log: docs/.generated/generations.yaml
+    committed: false
+
+agent_context:
+  index: docs/agent-context/index.md
+  orchestrating: docs/agent-context/orchestrating.md
+
+decisions:
+  domains:
+    - simulation
+    - pressure
+    - rendering
+    - performance
+    - observability
+    - platform
+    - scope
