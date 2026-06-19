@@ -8,9 +8,8 @@ repo:
 
 metadata:
   ownership: docs/_meta/ownership.json
-  generated_context:
-    root: docs/.generated
-    log: docs/.generated/generations.yaml
+  agent_workspace:
+    root: .agent-docs/agents
     committed: false
 
 agent_context:
