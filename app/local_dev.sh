@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild the WASM and serve the static web shell on the canonical port 5184.
+# Rebuild the dev WASM package and serve the static web shell on port 5184.
 # Foreground: Ctrl-C stops the server. Re-run to rebuild + reserve.
 #
 # Always does all three: rebuild WASM, kill any running server, serve.
@@ -22,24 +22,32 @@ free_port() {
   sleep 0.5
 }
 
-echo "==> Building WASM (wasm-pack, dev)…"
+echo "==> Building WASM (wasm-pack, dev → web/pkg-dev)…"
 if [[ "${1:-}" == "--clean" ]]; then
   echo "    (cargo clean first)"
   (cd "$APP_DIR" && cargo clean)
 fi
-(cd "$APP_DIR" && wasm-pack build crates/fluid-lab --target web --out-dir ../../web/pkg --dev)
+(cd "$APP_DIR" && wasm-pack build crates/fluid-lab --target web --out-dir ../../web/pkg-dev --dev)
 
 free_port
 
 echo "==> Serving on http://localhost:${PORT}/  (Ctrl-C to stop)"
-# The canonical shell is web/index.html, so the bare "/" serves it under any
-# server (http.server's default directory index) — no path remap needed. We wrap
-# http.server only to add no-cache headers, so an ordinary browser reload always
-# picks up the freshly built .wasm (plain http.server caches it, requiring
-# Ctrl-Shift-R).
+# The canonical shell imports ./pkg/fluid_lab.js. In local dev, /pkg/* is served
+# from ignored web/pkg-dev so dev builds do not overwrite the tracked release pkg.
+# The wrapper also adds no-cache headers, so an ordinary browser reload picks up
+# the freshly built .wasm.
 cd "$APP_DIR/web" && exec python3 -c '
-import sys, http.server
+import os, posixpath, sys, urllib.parse, http.server
+PKG_DEV = os.path.join(os.getcwd(), "pkg-dev")
 class Handler(http.server.SimpleHTTPRequestHandler):
+    def translate_path(self, path):
+        url_path = urllib.parse.urlparse(path).path
+        if url_path == "/pkg" or url_path.startswith("/pkg/"):
+            rel = posixpath.normpath(urllib.parse.unquote(url_path[len("/pkg"):]).lstrip("/"))
+            parts = [part for part in rel.split("/") if part and part not in (os.curdir, os.pardir)]
+            return os.path.join(PKG_DEV, *parts)
+        return super().translate_path(path)
+
     def end_headers(self):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")

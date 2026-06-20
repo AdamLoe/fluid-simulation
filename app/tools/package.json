@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "description": "Windows-side browser capture harness (real-GPU Chrome via puppeteer-core).",
+  "scripts": {
+    "verify:assertions": "FLUID_ASSERT_TEST_STATS='{\"timing\":\"gpu-timestamp\",\"frame_avg_ms\":8,\"p95\":12,\"scale_status\":\"ok\",\"gpu\":{\"sim_ms\":2,\"render_ms\":3}}' FLUID_ASSERT_MIN_TIMING_SOURCE=coarse-fence FLUID_ASSERT_MAX_FRAME_AVG_MS=16 FLUID_ASSERT_MAX_P95_MS=24 FLUID_ASSERT_SCALE_STATUS_OK=1 FLUID_ASSERT_REQUIRE_GPU_STATS=1 FLUID_ASSERT_MAX_GPU_SIM_MS=8 FLUID_ASSERT_MAX_GPU_RENDER_MS=8 node capture.mjs",
+    "verify:boot": "node capture.mjs http://localhost:5184/ boot.png 3500"
+  },
   "dependencies": {
     "puppeteer-core": "^23.0.0"
   }

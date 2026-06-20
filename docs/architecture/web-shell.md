@@ -39,8 +39,10 @@ index.html -> main.js -> panels.js
 ## Canonical shell
 
 The live shell is `web/index.html -> web/main.js -> web/panels.js`. `app/local_dev.sh`
-rebuilds the wasm package, frees port 5184, and serves `web/` with no-cache headers.
-Open `http://localhost:5184/`.
+rebuilds the dev wasm package into ignored `web/pkg-dev/`, frees port 5184, and serves
+`web/` with no-cache headers. The shell import remains `./pkg/fluid_lab.js`; the local
+server maps browser `/pkg/*` requests to `web/pkg-dev/*`. Open `http://localhost:5184/`.
+Release packaging uses the tracked `web/pkg/{fluid_lab.js,fluid_lab_bg.wasm}` pair.
 
 ## Settings panel
 
@@ -183,7 +185,8 @@ provided stats and exits before launching Chrome.
 
 ## Gotchas
 
-- Static serving depends on fresh `web/pkg/fluid_lab.js` and `fluid_lab_bg.wasm`.
+- Static release serving depends on fresh `web/pkg/fluid_lab.js` and
+  `fluid_lab_bg.wasm`; local dev serves the same `/pkg/*` URL space from `web/pkg-dev/`.
 - `window.__fluid` is the Rust control surface; `window.__fluidShell` is the shell
   control surface.
 - Resizing the settings panel changes the canvas client width and triggers

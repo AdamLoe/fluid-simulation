@@ -16,8 +16,9 @@ built locally and committed, and CF just assembles and serves the static bundle.
     release package to already be present.
   - no flag release-compiles the WASM from source. Use this locally when refreshing the
     committed package.
-- The committed artifacts are `app/web/pkg/{fluid_lab.js,fluid_lab_bg.wasm}`. The rest
-  of `pkg/` stays gitignored. `app/web/dist` is regenerated on each deploy build.
+- The committed release artifacts are `app/web/pkg/{fluid_lab.js,fluid_lab_bg.wasm}`.
+  The rest of `pkg/` stays gitignored. Dev builds go to ignored `app/web/pkg-dev/`
+  and are never used by `--prebuilt`. `app/web/dist` is regenerated on each deploy build.
 - `app/web/_headers` carries the deploy-time HTTP headers, including the iframe
   allowance for `adamloe.com` and the cache policy for the static bundle.
 - `app/rust-toolchain.toml` pins the release compile toolchain and wasm target.
@@ -54,8 +55,9 @@ Then browser-verify at the bare `http://localhost:5184/`.
 
 ## What not to do
 
-- Don't expect `local_dev.sh` to prepare a deployable package. It is for the inner loop and
-  writes a dev build into `web/pkg`.
+- Don't expect `local_dev.sh` to prepare a deployable package. It is for the inner loop,
+  writes a dev build into ignored `web/pkg-dev`, and serves browser `/pkg/*` from that
+  directory only for the local dev session.
 - Don't hand-edit the generated `app/web/dist` contents.
 
 ## See also

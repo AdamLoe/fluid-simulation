@@ -34,8 +34,9 @@ the capture harness is `app/tools/`. Build commands run from `app/`.
 
 ## Run the app (the canonical loop)
 
-**`app/local_dev.sh` is the one command.** It always does all three steps — rebuild the WASM,
-free port 5184, serve the shell — so "restart the app" / "rebuild and run" is just:
+**`app/local_dev.sh` is the one command.** It always does all three steps — rebuild the
+dev WASM package, free port 5184, serve the shell — so "restart the app" /
+"rebuild and run" is just:
 
 ```
 cd /home/adamg/fluid-simulation/app && ./local_dev.sh           # rebuild + free port + serve
@@ -47,13 +48,14 @@ and reserve. Then open the **bare** URL:
 
 > **http://localhost:5184/**
 
-The canonical shell is **`web/index.html`**, so the bare `/` serves it under any server
-(it is the default directory index — no path remap). `local_dev.sh` wraps `http.server` only to
-add **no-cache headers**, so an ordinary browser reload always picks up the freshly built
-`.wasm` — no Ctrl-Shift-R, and you never put a filename in the URL or start a server by
-hand. Port **5184 is the one fixed web port**; `local_dev.sh` frees only listeners on that
-port before serving, so there is never a second instance to manage without killing
-unrelated development servers.
+The canonical shell is **`web/index.html`**, so the bare `/` serves it as the default
+directory index. `local_dev.sh` wraps `http.server` to add **no-cache headers** and
+remap `/pkg/*` to `web/pkg-dev/`, so an ordinary browser reload always picks up the
+freshly built dev `.wasm` without touching the tracked release package in `web/pkg/` —
+no Ctrl-Shift-R, and you never put a filename in the URL or start a server by hand.
+Port **5184 is the one fixed web port**; `local_dev.sh` frees only listeners on that port
+before serving, so there is never a second instance to manage without killing unrelated
+development servers.
 
 Do **not** hand-run `python3 -m http.server` — that skips the rebuild, the port-free, and
 the no-cache headers (it serves the right `index.html` at `/`, but caches the `.wasm`),
@@ -67,12 +69,13 @@ You only need these when debugging the loop or running a single piece in isolati
 1. **Rebuild the WASM:**
 
    ```
-   cd /home/adamg/fluid-simulation/app && wasm-pack build crates/fluid-lab --target web --out-dir ../../web/pkg --dev
+   cd /home/adamg/fluid-simulation/app && wasm-pack build crates/fluid-lab --target web --out-dir ../../web/pkg-dev --dev
    ```
 
-   `--out-dir` is relative to the crate dir, so `../../web/pkg` resolves to
-   `app/web/pkg/`; `wasm-pack` writes the glue + `fluid_lab_bg.wasm` there, which
-   `web/main.js` imports as a normal ES module. A clean build is ~35s. Quick
+   `--out-dir` is relative to the crate dir, so `../../web/pkg-dev` resolves to
+   `app/web/pkg-dev/`; `wasm-pack` writes the glue + `fluid_lab_bg.wasm` there.
+   `web/main.js` still imports `./pkg/fluid_lab.js`; the local dev server maps
+   browser `/pkg/*` requests to `web/pkg-dev/`. A clean build is ~35s. Quick
    compile-only check (no bindgen):
 
    ```
@@ -83,7 +86,8 @@ You only need these when debugging the loop or running a single piece in isolati
 
 3. **Serve `app/web/`** via the no-cache `python3 -c` handler (not a bare
    `python3 -m http.server`, which caches the `.wasm`). The bare `/` resolves to
-   `web/index.html`, the canonical shell.
+   `web/index.html`, the canonical shell, and `/pkg/*` resolves to `web/pkg-dev/*`
+   for the dev session.
 
 The stale path is now just the orphaned `web/src/main.ts` (the old Vite/TS entry): it
 lacks the panels and nothing loads it — `index.html` imports `./main.js`, not
@@ -151,6 +155,13 @@ fails honestly instead of applying those budgets to CPU fallback timing.
 To test assertion failure behavior without launching Chrome, set
 `FLUID_ASSERT_TEST_STATS='<stats-json>'` with the assertion env vars; the script exits
 after checking the supplied object.
+
+Canonical npm entry points in `app/tools/`:
+
+```
+npm run verify:assertions   # cheap assertion self-test, no browser/GPU launch
+npm run verify:boot         # real-GPU boot capture; requires local_dev.sh + Windows Chrome
+```
 
 ## Toolchain (pinned)
 
