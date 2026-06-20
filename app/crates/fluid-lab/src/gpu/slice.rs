@@ -1,4 +1,4 @@
-//! Grid-slice debug renderer (Phase 1.0.3+). Draws a flat XY cross-section at
+//! Grid-slice debug renderer. Draws a flat XY cross-section at
 //! k = nz/2 of the MAC-grid. Supports three inspection modes:
 //!   0 = cell-type  (solid gray / liquid blue / air hidden)
 //!   1 = pressure   (liquid only; diverging blue→white→red)

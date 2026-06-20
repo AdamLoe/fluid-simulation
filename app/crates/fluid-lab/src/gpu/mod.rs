@@ -45,24 +45,21 @@ const SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float
 /// just blobbier.
 ///
 /// Calibration: at the reference density (8/cell) the spacing is `H * 8^(-1/3) =
-/// H * 0.5`, so `0.5 * SPLAT_RADIUS_PER_SPACING` must equal the historical
-/// `H * 0.35` → `SPLAT_RADIUS_PER_SPACING = 0.7`. Tune this single constant if the
-/// coverage sweep shows low density under- or over-covering. (Equivalent to the
-/// plan's `k_radius` expressed as a ratio to spacing rather than to `H`.)
+/// H * 0.5`, so `SPLAT_RADIUS_PER_SPACING = 0.7` makes the base splat radius
+/// `H * 0.35`. Tune this single constant if the coverage sweep shows low density
+/// under- or over-covering.
 const SPLAT_RADIUS_PER_SPACING: f32 = 0.7;
 
-/// How the fluid is drawn. Replaces the bare `u32 particle_view` dispatch
-/// (`render.particle_view` still maps 0/1/2 to these for compatibility). The
-/// optical/simple particle views are the explicit fallbacks the hero-water
-/// series must never break; hero features are Live sub-features of `Water`, not
-/// new modes here.
+/// How the fluid is drawn. `render.particle_view` still maps 0/1/2 to these for
+/// compatibility. The optical/simple particle views are explicit fallbacks;
+/// hero features are Live sub-features of `Water`, not new modes here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RenderMode {
     /// Screen-space water composite — the hero path (refraction, environment, …).
     Water,
-    /// v1.10 optical-depth particle billboards.
+    /// Optical-depth particle billboards.
     OpticalParticles,
-    /// pre-v1.10 simple alpha billboards.
+    /// Simple alpha particle billboards.
     SimpleParticles,
 }
 
@@ -78,7 +75,7 @@ impl RenderMode {
     }
 }
 
-/// Boot facts probed once at startup and used by later phases.
+/// Boot facts probed once at startup and reused by GPU setup and diagnostics.
 #[derive(Clone)]
 pub struct GpuCaps {
     pub adapter_name: String,
@@ -324,8 +321,8 @@ impl GpuContext {
         );
         // Splat radius tracks the seeded inter-particle spacing so density is
         // volume-neutral (see SPLAT_RADIUS_PER_SPACING). At the reference density
-        // this equals the historical H*0.35; the user's render.particle_size is a
-        // Live multiplier applied on top via set_radius_scale below.
+        // this equals H*0.35; the user's render.particle_size is a Live multiplier
+        // applied on top via set_radius_scale below.
         let particle_radius = scene.seeded_spacing(settings) * SPLAT_RADIUS_PER_SPACING;
 
         let (tank_lo, tank_hi) = fluid.tank_bounds();
@@ -1495,9 +1492,9 @@ impl GpuContext {
                     self.particles
                         .draw_thickness(&mut pass, self.fluid.particle_count());
                 }
-                // v1.22 Thickness smoothing: a plain separable Gaussian over the
-                // thickness target, run AFTER particle thickness writes
-                // and BEFORE depth smoothing (so it can reuse the depth pass's
+                // Thickness smoothing uses a plain separable Gaussian over the
+                // thickness target, run AFTER particle thickness writes and
+                // BEFORE depth smoothing (so it can reuse the depth pass's
                 // smooth_z_ping scratch). Raw thickness drives Beer-Lambert opacity
                 // in the composite, so its per-particle splat noise was the source of
                 // the speckled "sandy" body and the see-through gap where dark wall

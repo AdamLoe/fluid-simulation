@@ -7,10 +7,10 @@
 //! into the single Rust entry point [`FluidApp::frame`]. Rust owns all app state
 //! and scheduling. JavaScript never drives simulation frames independently.
 //!
-//! NOTE: `#![allow(dead_code)]` is intentional for the 0.1–0.2 skeleton. Many
-//! config-registry / scene / profiler fields belong to the forward-looking data
-//! model and are not read until later phases. (It also sidesteps a rustc 1.95 ICE
-//! in the dead-code-lint diagnostic renderer on multi-line struct field spans.)
+//! NOTE: `#![allow(dead_code)]` is intentional: some config-registry, scene,
+//! and profiler fields are part of the typed runtime model even when a given
+//! build path does not read them. It also sidesteps a rustc 1.95 ICE in the
+//! dead-code-lint diagnostic renderer on multi-line struct field spans.
 #![allow(dead_code)]
 
 // Pure modules — always compiled, unit-tested natively via `cargo test`.
