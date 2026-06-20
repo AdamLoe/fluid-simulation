@@ -69,7 +69,9 @@ relative to it. (The Rust crate manifest is `app/Cargo.toml`; its source is `app
   (Windows)**.
 - Tank is a **rectangular box** of independent per-axis cell counts (`grid.res_x/y/z`,
   default **80×40×80**) at a **uniform** cell size `h = 2/64`; all-equal counts give
-  a cube, unequal counts give a rectangular box (~410k particles at the default).
+  a cube, unequal counts give a rectangular box. The default scene derives its particle
+  count from density 10 over the seeded falling-blob volume, about **512k requested
+  particles**.
   Default pressure solve: **CG, 30 iters, warm-start on**. Default G2P blend is
   high-FLIP (~0.9) for lively splash.
 - **No float atomics in WebGPU** → P2G is fixed-point `i32` atomics at `FIXED_SCALE =

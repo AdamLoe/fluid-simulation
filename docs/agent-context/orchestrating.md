@@ -4,7 +4,8 @@
 
 You're driving multi-step fluid-lab work, especially across sub-agents. The generic
 orchestration discipline is in the global kit
-([`~/agent-docs/v1/rules/orchestrating.md`](~/agent-docs/v1/rules/orchestrating.md));
+([`~/agent-docs/v1/rules/orchestrator/lifecycle.md`](~/agent-docs/v1/rules/orchestrator/lifecycle.md)
+and [`~/agent-docs/v1/rules/orchestrator/dispatch.md`](~/agent-docs/v1/rules/orchestrator/dispatch.md));
 this doc holds what's specific to this app.
 
 ## Canonical truth
@@ -16,18 +17,16 @@ named in [`../_meta/ownership.json`](../_meta/ownership.json) wins. (The pre-v1
 `simulation_contract.md` / `decisions.md` planning docs have been migrated into these
 trees and removed.)
 
-## Model selection
+## Role tiers
 
-Prefer **Sonnet** for implementation, documentation, validation, and routine tasks.
-Reserve **Opus** for work where it earns its cost:
+Follow the global role-tier vocabulary: `cheap`, `mid-tier`, `strong`, and
+`strongest`. Implementation, documentation, validation, and routine tasks default to
+`mid-tier`; use `strong` for ambiguous architecture/simulation-invariant decisions,
+high-risk GPU/WGSL or pressure-solver review, failures a routine pass could not
+isolate, and gate calls where evidence is mixed or risky.
 
-- resolving ambiguous architecture / simulation-invariant decisions,
-- reviewing high-risk GPU/WGSL, pressure-solver, P2G, G2P, or particle-scale work,
-- debugging failures multiple Sonnet attempts couldn't isolate,
-- gate calls where the evidence is mixed or risky.
-
-Do not default to Opus for ordinary scaffolding, straightforward tickets, or docs
-bookkeeping.
+Do not spend above `mid-tier` for ordinary scaffolding, straightforward tickets, or
+docs bookkeeping.
 
 ## Non-negotiables (these protect the next agent, not bookkeeping)
 
@@ -50,6 +49,7 @@ bookkeeping.
 
 ## See also
 
-- [`~/agent-docs/v1/rules/orchestrating.md`](~/agent-docs/v1/rules/orchestrating.md) — the generic rule.
+- [`~/agent-docs/v1/rules/orchestrator/lifecycle.md`](~/agent-docs/v1/rules/orchestrator/lifecycle.md) and
+  [`~/agent-docs/v1/rules/orchestrator/dispatch.md`](~/agent-docs/v1/rules/orchestrator/dispatch.md) — the generic rules.
 - [`../decisions/index.md`](../decisions/index.md) · [`../architecture/index.md`](../architecture/index.md)
 - [`../plans/index.md`](../plans/index.md) — staging in-flight work.

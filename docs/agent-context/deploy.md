@@ -19,8 +19,8 @@ built locally and committed, and CF just assembles and serves the static bundle.
 - The committed release artifacts are `app/web/pkg/{fluid_lab.js,fluid_lab_bg.wasm}`.
   The rest of `pkg/` stays gitignored. Dev builds go to ignored `app/web/pkg-dev/`
   and are never used by `--prebuilt`. `app/web/dist` is regenerated on each deploy build.
-- `app/web/_headers` carries the deploy-time HTTP headers, including the iframe
-  allowance for `adamloe.com` and the cache policy for the static bundle.
+- `app/web/_headers` carries the deploy-time HTTP headers, including COOP/COEP,
+  the iframe allowance for `adamloe.com`, and the cache policy for the static bundle.
 - `app/rust-toolchain.toml` pins the release compile toolchain and wasm target.
 
 ## Cloudflare settings
@@ -31,7 +31,9 @@ built locally and committed, and CF just assembles and serves the static bundle.
 | Build command | `bash app/cf-build.sh --prebuilt` |
 | Build output directory | `app/web/dist` |
 
-No COOP/COEP cross-origin-isolation headers are needed. Cloudflare serves `.wasm` as
+`app/web/_headers` sets `Cross-Origin-Opener-Policy: same-origin`,
+`Cross-Origin-Embedder-Policy: require-corp`, and
+`Cross-Origin-Resource-Policy: cross-origin`. Cloudflare serves `.wasm` as
 `application/wasm`, which the wasm-bindgen `--target web` streaming init requires.
 
 ## Shipping a Rust change

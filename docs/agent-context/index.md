@@ -18,7 +18,7 @@ specific to **this** app and link up to the matching global rule.
 | Packaging a release build and deploying through Cloudflare Pages | [`deploy.md`](deploy.md) | — (app-specific) |
 | Running the host test suite, deciding what is host-testable | [`testing.md`](testing.md) | — (app-specific) |
 | Updating docs after a code change | [`maintaining-docs.md`](maintaining-docs.md) | `rules/authoring-rules.md` |
-| Orchestrating multi-step work via sub-agents | [`orchestrating.md`](orchestrating.md) | `rules/orchestrating.md` |
+| Orchestrating multi-step work via sub-agents | [`orchestrating.md`](orchestrating.md) | `rules/orchestrator/lifecycle.md` + `rules/orchestrator/dispatch.md` |
 | Creating / shipping a plan | [`../plans/index.md`](../plans/index.md) (landing); [`~/agent-docs/v1/plan-lifecycle.md`](~/agent-docs/v1/plan-lifecycle.md) + [`plan-template.md`](~/agent-docs/v1/plan-template.md) | `rules/authoring-rules.md` §workflow |
 
 ## See also

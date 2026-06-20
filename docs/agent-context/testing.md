@@ -51,6 +51,9 @@ CG-vs-Jacobi convergence
   over ~10 s — a single throttled counter, not a readback-heavy diagnostic or
   physical volume measurement. Capture writes the proxy into `<out>.stats.json` and
   sampled rows into `<out>.trace.ndjson`.
+- The full GPU numeric golden harness is still future work. Today, host tests cover
+  CPU-reference math and browser captures cover runtime/GPU acceptance; they do not
+  provide a durable bit-for-bit GPU numeric regression oracle.
 
 ## See also
 

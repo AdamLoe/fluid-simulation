@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-15
+last_updated:  2026-06-20
 ---
 
 # Decisions — Performance
@@ -9,7 +9,8 @@ last_updated:  2026-06-15
 ## Dense wall fill is removed until profiler data justifies a new implementation
 
 **Decision** — Dense wall fill no longer ships as a runtime feature. The cheaper
-wall-contact normal/depth snap remains the default near-wall aid.
+render-side wall-contact normal/depth snap is also removed; the active product path is
+screen-space depth smoothing plus ordinary tank-boundary simulation contact.
 
 **Why** — Wall fill owns a large supersampled occupancy atlas and per-frame splat +
 injection work. Without capture/profiler evidence that it improves the startup view more
@@ -17,7 +18,8 @@ than it costs, it should not be in the normal frame path.
 
 **Tradeoffs** — Reintroducing dense wall fill requires a fresh measured cost case,
 new settings, new resource ownership, and captures. There is no occupancy buffer,
-wall-fill injection pass, or `wallfill_mask` target in the current runtime.
+wall-fill injection pass, `wallfill_mask` target, or render-side wall-contact snap in
+the current runtime.
 
 **Code anchors** — `crates/fluid-lab/src/settings/mod.rs → Registry`;
 `crates/fluid-lab/src/gpu/mod.rs → GpuContext::render`.
@@ -28,19 +30,22 @@ quality and profiler samples show acceptable median `gpu.render_ms`.
 **Applies to** — `architecture/rendering.md`, `architecture/gpu-resources.md`,
 `architecture/settings.md`.
 
-## Resolution targets: 32³ baseline, 64³ first serious target, 128³ aspirational
+## Resolution targets: 32³ baseline, 80×40×80 default, 128³ aspirational
 
-**Decision** — A stable/interactable 32³ is the required floor; 64³ is the first
-serious measured target and the current default; 128³ is aspirational and must not
-drive the architecture. A smaller stable preset with measured justification is an
-acceptable ship.
+**Decision** — A stable/interactable 32³ is the required floor; the current default is
+the rectangular 80×40×80 tank with density-derived particles; 128³ is aspirational and
+must not drive the architecture. A smaller stable preset with measured justification is
+an acceptable ship.
 
-**Why** — 128³ is 2M+ cells before particles and solver workspace.
-Starting there builds an impressive target instead of a working app. Correct 32³
-beats broken or unmeasured 64³.
+**Why** — 128³ is 2M+ cells before particles and solver workspace. Starting there
+builds an impressive target instead of a working app. Correct 32³ beats broken or
+unmeasured larger scales; the default 80×40×80 rectangular tank is the current product
+baseline.
 
-**Tradeoffs** — 64³ looks modest until surface rendering and scenarios arrive, in
-exchange for developing against real GPU constraints sooner.
+**Tradeoffs** — The default rectangular tank is larger than 32³ while still below the
+128³ aspirational cube. Its default falling-blob scene derives roughly 512k requested
+particles from density 10 over about 20% seeded volume, so performance claims need the
+active particle count and profiler output rather than a cube-resolution shorthand.
 
 **Applies to** — `architecture/simulation.md`, `architecture/gpu-resources.md`.
 
@@ -220,12 +225,10 @@ residual on GPU, but it also keeps the same fixed CG dispatch count.
 name pressure iteration costs before/after residual gating or warm-start changes.
 
 **Current evidence** — Real Chrome/WebGPU smoke captures on 2026-06-12 validated the
-runtime paths: zero-start (`captures/llm-overhaul-final-default-detailed.png`),
-warm-start via `?set=solver.pressure_warm_start:1`
-(`captures/llm-overhaul-final-warm-start.png`), and warm-start plus residual gating
-(`captures/llm-overhaul-final-warm-residual.png`). All reported
-`gpuDeviceStatus:"ok"` and real GPU timestamps. Treat these as correctness/smoke
-evidence, not a controlled performance benchmark.
+runtime paths for zero-start, warm-start, and warm-start plus residual gating. The raw
+PNGs are ignored capture artifacts, so durable documentation keeps only the summary:
+the runs reported `gpuDeviceStatus:"ok"` and real GPU timestamps. Treat this as
+correctness/smoke evidence, not a controlled performance benchmark.
 
 **Applies to** — `architecture/pressure-solver.md`, `architecture/profiler.md`.
 

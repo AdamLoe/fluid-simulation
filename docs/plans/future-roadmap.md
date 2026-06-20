@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-13
+last_updated:  2026-06-20
 okay_to_delete: false
 long_lived:    true
 owning_docs:
@@ -50,6 +50,10 @@ fresh measurement/design evidence makes it the next practical move.
   tunable rather than hardcoded into one cinematic preset.
 - **Unsupported-WebGPU presentation.** Before public sharing, verify the unsupported
   overlay and any static poster/caveat copy.
+- **Full GPU numeric golden harness.** Add a durable GPU-side numeric regression
+  oracle when the extra readback/test infrastructure is worth the cost. Until then,
+  host tests cover CPU-reference math and browser captures prove runtime acceptance,
+  not bit-for-bit GPU numerics.
 
 ## Promotion rule
 
