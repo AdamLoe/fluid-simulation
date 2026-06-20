@@ -1,8 +1,8 @@
 import { defineConfig } from "vite";
 
 // Thin dev/build config. The wasm-bindgen `--target web` glue in ./pkg is loaded
-// as a normal ES module; Vite serves fluid_lab_bg.wasm as an asset. No COOP/COEP
-// headers needed yet (no wasm threads until/unless a later phase requires them).
+// as a normal ES module; Vite serves fluid_lab_bg.wasm as an asset. Deploy-time
+// COOP/COEP headers live in _headers.
 export default defineConfig({
   server: {
     host: true,
