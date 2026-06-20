@@ -1,14 +1,13 @@
-//! Simulation math reference — Phase 0.2.
+//! Simulation math reference.
 //!
 //! This module is the *spec-as-code* for the MAC grid: indexing, buffer sizing,
 //! world↔grid mapping, cell typing, divergence, and a Jacobi pressure solve. These
-//! are the functions the WGSL port in 0.3 mirrors, so they are unit-tested here on
-//! the host. Per `phases/0.2-cpu-physics-proof.md` this is a *reference + tests*
-//! phase: there is intentionally **no** time-stepped CPU sim loop (no gravity,
-//! advection, P2G, or G2P here). See `simulation_contract.md` for the prose
-//! contract these functions implement.
+//! are the functions the WGSL path mirrors, so they are unit-tested here on the
+//! host. There is intentionally **no** time-stepped CPU sim loop (no gravity,
+//! advection, P2G, or G2P here); the current runtime map lives in
+//! `docs/architecture/simulation.md`.
 //!
-//! Conventions (must match `simulation_contract.md`):
+//! Conventions:
 //! - Staggered MAC grid, `nx*ny*nz` cells. Cell index `i + nx*(j + ny*k)`.
 //! - Face counts: u=(nx+1)*ny*nz, v=nx*(ny+1)*nz, w=nx*ny*(nz+1).
 //! - `u[i,j,k]` is the x-velocity on the face at the low-x side of cell (i,j,k),

@@ -1,6 +1,7 @@
-//! GPU fluid state and compute passes (Phase 0.3).
+//! GPU fluid state and compute passes.
 //!
-//! Implements the MAC particle-grid loop from `simulation_contract.md` on WebGPU:
+//! Implements the MAC particle-grid loop documented in `docs/architecture/simulation.md`
+//! on WebGPU:
 //! mark/classify → P2G (fixed-point i32 atomics) → gravity → enforce boundaries →
 //! divergence → CG pressure solve → subtract gradient → enforce → G2P/advect/recover.
 //!
@@ -9,9 +10,10 @@
 //! replaced 120-iter Jacobi in the 1.5 solver upgrade — it converges in ~15 iters
 //! (vs thousands for Jacobi on a 64-deep column), fixing settle-transient compaction.
 //!
-//! Structure-of-arrays buffers. No single compute pass binds more than 6 storage
-//! buffers (`implementation_risks.md §5`). Buffers are created once; reset only
-//! rewrites particle contents. Grid buffers are cleared each step. No readbacks.
+//! Structure-of-arrays buffers. Compute passes stay split around WebGPU storage-buffer
+//! limits, as documented in `docs/decisions/performance.md`. Buffers are created
+//! once; reset only rewrites particle contents. Grid buffers are cleared each step.
+//! No readbacks.
 
 use crate::log;
 use bytemuck::{Pod, Zeroable};
@@ -1832,7 +1834,7 @@ pub(crate) fn estimated_particle_count(settings: &Registry, scene: &SceneConfig)
 /// jitter, clamped inside the walls). Each scene preset supplies one or more
 /// liquid blocks; the requested particle count is distributed across them in
 /// proportion to volume so denser/larger blocks get proportionally more
-/// particles. See `simulation_contract.md`.
+/// particles. See `docs/architecture/simulation.md`.
 fn generate_particles(
     scene: &SceneConfig,
     h: f32,

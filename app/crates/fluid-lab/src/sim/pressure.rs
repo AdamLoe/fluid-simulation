@@ -1,6 +1,6 @@
-//! Divergence + Jacobi pressure projection — Phase 0.2 reference math.
+//! Divergence + pressure projection reference math.
 //!
-//! Implements the pressure rules in `simulation_contract.md`:
+//! Implements the pressure rules documented in `docs/architecture/pressure-solver.md`:
 //! - Divergence at liquid cell centers from staggered face velocities.
 //! - Pressure Poisson `∇²p = (ρ/dt) ∇·u*` solved with Jacobi.
 //! - Boundary handling: solid neighbours are Neumann (excluded from the stencil);
@@ -9,9 +9,8 @@
 //! - Velocity correction `u ← u − (dt/ρ) ∇p`, applied only to faces between two
 //!   non-solid cells; solid faces are forced to zero.
 //!
-//! These are standalone, testable functions — NOT a running sim loop. The WGSL
-//! pressure passes in 0.3 mirror this stencil exactly (Jacobi is chosen because it
-//! is embarrassingly parallel and ping-pongs cleanly on GPU).
+//! These are standalone, testable functions, not a running sim loop. The WGSL
+//! pressure passes mirror this stencil.
 
 use super::{CellType, GridDims};
 

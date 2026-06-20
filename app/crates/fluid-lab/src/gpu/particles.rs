@@ -1,5 +1,5 @@
-//! Particle billboard renderer (Phase 0.3). Draws the simulation's particle
-//! position buffer directly as instanced camera-facing quads — no readback.
+//! Particle billboard renderer. Draws the simulation's particle position buffer
+//! directly as instanced camera-facing quads — no readback.
 
 use glam::{Mat4, Vec3};
 
