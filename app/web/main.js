@@ -27,13 +27,40 @@ const CONTROL_TARGET_CURSOR = {
   camera: "grab",
   cube: "move",
 };
+const READY_CONTROL_SELECTOR = "#toolbar button, #launcher button";
+const CAMERA_STORAGE_KEY = "fluidlab.config.v1";
+const KEYBOARD_DRAG_STEP = 28;
+const KEYBOARD_ZOOM_STEP = 160;
+
+function setShellReady(ready, canvas = null) {
+  const appRoot = document.getElementById("app");
+  if (appRoot) {
+    appRoot.dataset.shellReady = ready ? "true" : "false";
+    appRoot.setAttribute("aria-busy", ready ? "false" : "true");
+  }
+  for (const control of document.querySelectorAll(READY_CONTROL_SELECTOR)) {
+    control.disabled = !ready;
+  }
+  if (canvas) {
+    canvas.tabIndex = ready ? 0 : -1;
+    if (!ready && document.activeElement === canvas) canvas.blur();
+  }
+}
 
 function showUnsupported(detail, title = "WebGPU is not available") {
   const el = document.getElementById("unsupported");
-  el.style.display = "grid";
+  const appRoot = document.getElementById("app");
+  setShellReady(false, document.getElementById("gpu-canvas"));
+  if (appRoot) {
+    appRoot.inert = true;
+    appRoot.setAttribute("aria-hidden", "true");
+    appRoot.setAttribute("aria-busy", "false");
+  }
+  el.hidden = false;
   const titleEl = document.getElementById("unsupported-title");
   if (titleEl) titleEl.textContent = title;
   document.getElementById("unsupported-detail").textContent = detail;
+  window.requestAnimationFrame(() => el.focus({ preventScroll: true }));
   console.error("[fluid-lab] " + detail);
 }
 
@@ -86,6 +113,29 @@ function parseRegistryUrlSettings(params) {
   return entries;
 }
 
+function storedCameraDistancePresent() {
+  try {
+    const raw = localStorage.getItem(CAMERA_STORAGE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && (
+      "camera.distance" in parsed ||
+      (parsed.settings && typeof parsed.settings === "object" && "camera.distance" in parsed.settings)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function urlCameraDistancePresent(entries) {
+  return entries.some(([id]) => id === "camera.distance");
+}
+
+function shouldApplyMobileInitialFit(urlSettings) {
+  if (urlCameraDistancePresent(urlSettings) || storedCameraDistancePresent()) return false;
+  return window.matchMedia("(max-width: 560px), (max-width: 820px) and (orientation: portrait)").matches;
+}
+
 function setPauseButtonState(button, paused) {
   button.setAttribute("aria-label", paused ? "Resume simulation" : "Pause simulation");
   button.title = paused ? "Resume simulation" : "Pause simulation";
@@ -106,6 +156,7 @@ async function main() {
   const pauseBtn = document.getElementById("btn-pause");
   const resetBtn = document.getElementById("btn-reset");
   const versionEl = document.getElementById("app-version");
+  setShellReady(false, canvas);
 
   if (!("gpu" in navigator)) {
     showUnsupported("navigator.gpu is missing - WebGPU is not supported in this browser.");
@@ -130,9 +181,13 @@ async function main() {
   const panelApi = initPanels(app);
   const params = new URLSearchParams(location.search);
   if (params.get("pressure") === "off") app.set_pressure_enabled(false);
-  const urlSettings = parseRegistryUrlSettings(params);
+  const canonicalUrlSettings = parseRegistryUrlSettings(params);
+  const urlSettings = [];
   const flip = finiteParam(params, "flip");
-  if (flip !== null) urlSettings.push(["physics.flip_blend", flip]);
+  if (flip !== null && !canonicalUrlSettings.some(([id]) => id === "physics.flip_blend")) {
+    urlSettings.push(["physics.flip_blend", flip]);
+  }
+  urlSettings.push(...canonicalUrlSettings);
   if (params.get("slice") === "1") app.set_slice_enabled(true);
   const sliceMode = finiteParam(params, "slicemode");
   if (sliceMode !== null) app.set_slice_mode(Math.trunc(sliceMode));
@@ -230,6 +285,7 @@ async function main() {
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   canvas.addEventListener("pointerdown", (e) => {
     e.preventDefault();
+    canvas.focus({ preventScroll: true });
     dragging = true;
     dragButton = e.button;
     lastX = e.clientX;
@@ -271,11 +327,43 @@ async function main() {
     e.preventDefault();
     app.camera_zoom(e.deltaY);
   }, { passive: false });
+  canvas.addEventListener("keydown", (e) => {
+    const keyDeltas = {
+      ArrowLeft: [-KEYBOARD_DRAG_STEP, 0],
+      ArrowRight: [KEYBOARD_DRAG_STEP, 0],
+      ArrowUp: [0, -KEYBOARD_DRAG_STEP],
+      ArrowDown: [0, KEYBOARD_DRAG_STEP],
+    };
+    if (e.key === "PageUp" || e.key === "+" || e.key === "=") {
+      e.preventDefault();
+      app.camera_zoom(-KEYBOARD_ZOOM_STEP);
+      return;
+    }
+    if (e.key === "PageDown" || e.key === "-" || e.key === "_") {
+      e.preventDefault();
+      app.camera_zoom(KEYBOARD_ZOOM_STEP);
+      return;
+    }
+    const delta = keyDeltas[e.key];
+    if (!delta) return;
+    e.preventDefault();
+    const [dx, dy] = delta;
+    if (controlTarget === "camera") {
+      if (e.shiftKey) app.camera_pan(dx, dy);
+      else if (e.altKey) app.camera_twist(dx, dy);
+      else app.camera_orbit(dx, dy);
+    } else if (controlTarget === "cube") {
+      if (e.shiftKey) app.move_box(dx, dy);
+      else if (e.altKey) app.rotate_box_roll(dx, dy);
+      else app.rotate_box(dx, dy);
+    }
+  });
 
   setControlTarget("camera");
   applyProductMode("autoRotate");
   let urlApplyResult = null;
   if (urlSettings.length) urlApplyResult = panelApi?.applySettings(urlSettings, "url") || null;
+  if (shouldApplyMobileInitialFit(urlSettings)) app.camera_zoom(320);
 
   const applyResize = () => {
     sizeCanvas(canvas);
@@ -305,8 +393,6 @@ async function main() {
     }
     requestAnimationFrame(loop);
   };
-  requestAnimationFrame(loop);
-
   window.__fluidShell = {
     openSettings(tab = "scenario") {
       panelApi?.openSettings(tab);
@@ -386,6 +472,8 @@ async function main() {
     },
   };
 
+  setShellReady(true, canvas);
+  requestAnimationFrame(loop);
   console.log("[fluid-lab] shell running (static).");
 }
 

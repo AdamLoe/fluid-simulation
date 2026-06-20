@@ -476,6 +476,7 @@ function entriesFromImportPayload(payload) {
 function buildShareUrl(app) {
   const url = new URL(window.location.href);
   url.searchParams.delete("set");
+  url.searchParams.delete("flip");
   for (const [id, value] of Object.entries(exportConfigPayload(app).settings)) {
     url.searchParams.append("set", `${id}:${value}`);
   }
@@ -1153,6 +1154,7 @@ export function initPanels(app) {
       btn.setAttribute("aria-selected", selected ? "true" : "false");
       btn.tabIndex = selected ? 0 : -1;
     }
+    settingsBody.setAttribute("aria-labelledby", `settings-tab-${activeTab}`);
     revealActiveTab();
   }
 
@@ -1182,9 +1184,15 @@ export function initPanels(app) {
     }
   }
 
-  function setActiveTab(tab) {
+  function focusTab(tab) {
+    const btn = [...tabsRoot.querySelectorAll(".tab-btn")].find((candidate) => candidate.dataset.tab === tab);
+    if (btn) btn.focus();
+  }
+
+  function setActiveTab(tab, options = {}) {
     activeTab = normalizeTab(tab);
     if (isOpen) renderActiveTab();
+    if (options.focus) focusTab(activeTab);
   }
 
   for (const tab of tabs) {
@@ -1193,6 +1201,7 @@ export function initPanels(app) {
     btn.className = "tab-btn";
     if (tab.variant === "experimental") btn.classList.add("tab-experimental");
     btn.dataset.tab = tab.id;
+    btn.id = `settings-tab-${tab.id}`;
     btn.textContent = tab.label;
     btn.title = tab.label;
     btn.setAttribute("role", "tab");
@@ -1200,6 +1209,33 @@ export function initPanels(app) {
     btn.addEventListener("click", () => setActiveTab(tab.id));
     tabsRoot.appendChild(btn);
   }
+
+  tabsRoot.addEventListener("keydown", (event) => {
+    const focused = event.target.closest?.(".tab-btn");
+    if (!focused || !tabsRoot.contains(focused)) return;
+    const currentIndex = tabs.findIndex((tab) => tab.id === focused.dataset.tab);
+    if (currentIndex < 0) return;
+
+    let nextIndex = null;
+    if (event.key === "ArrowRight") {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = tabs.length - 1;
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setActiveTab(focused.dataset.tab, { focus: true });
+      return;
+    }
+
+    if (nextIndex !== null) {
+      event.preventDefault();
+      setActiveTab(tabs[nextIndex].id, { focus: true });
+    }
+  });
 
   btnConfig.addEventListener("click", toggleSettings);
 

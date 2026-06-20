@@ -48,12 +48,12 @@ When the sim is paused, `FluidApp::frame` calls `timestep.reset()` each frame so
 
 `app/crates/fluid-lab/src/camera.rs → OrbitCamera` uses a quaternion orientation (yaw about world-Y, then pitch about local-X, then roll about local-Z) so pitch is unclamped — the camera can orbit fully over the top without a `look_at` pole degeneracy. `OrbitCamera::billboard_basis` returns the camera-facing right/up pair used by both particle billboards and all box-relative pointer operations. `OrbitCamera::set_distance` clamps to `[2, 40]`; `create()` and `reset()` restore pitch/yaw/roll/distance from the `camera.rot_x/rot_y/rot_z` and `camera.distance` registry settings (all Live-class), so the camera sliders define the default view.
 
-The web shell chooses Camera or Cube control, then dispatches by mouse button (see
-`web-shell.md`). `app/crates/fluid-lab/src/lib.rs` exports separate camera and cube
-operations: Camera mode maps primary/middle/secondary drag to
-`camera_orbit` / `camera_pan` / `camera_twist`; Cube mode maps them to
-`rotate_box` / `move_box` / `rotate_box_roll`. `slosh_box` remains exported for
-scripts, but the current bottom Control UI does not bind it.
+The web shell chooses Camera or Cube control, then dispatches pointer and keyboard
+viewport input (see `web-shell.md`). `app/crates/fluid-lab/src/lib.rs` exports separate
+camera and cube operations: Camera mode maps primary/middle/secondary drag, and the
+matching keyboard chords, to `camera_orbit` / `camera_pan` / `camera_twist`; Cube mode
+maps them to `rotate_box` / `move_box` / `rotate_box_roll`. `slosh_box` remains
+exported for scripts, but the current bottom Control UI does not bind it.
 
 ## Scene config
 

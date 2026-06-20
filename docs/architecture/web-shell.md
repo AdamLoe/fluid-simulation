@@ -28,7 +28,8 @@ index.html -> main.js -> panels.js
   segmented controls, keyboard shortcuts, pointer dispatch, and wheel zoom.
 - URL params `?set=id:value` (repeatable, registry-backed), plus legacy shell params
   `?pressure=off`, `?paused=1`, `?flip=N`, `?slice=1`, `?slicemode=N`, and
-  `?dev=true`.
+  `?dev=true`; `?flip=N` is only a fallback when no canonical
+  `set=physics.flip_blend:N` entry is present.
 - Exposing `window.__fluidShell` helpers for captures, including
   `openSettings`, `selectSettingsTab`, `selectProductMode`, `selectControlTarget`,
   `reset`, `applySettings`, `importConfigPayload`, `exportConfig`, `shareUrl`,
@@ -60,7 +61,9 @@ apply-class legend visible. There is no `#settings-nav-toggle`, no `nav-collapse
 class, and no navigator-collapse behavior. On desktop the navigator sits beside the
 body; on narrow screens the tabs become a single-row horizontal scroller above the
 body with a visible right-edge affordance. Opening or selecting a tab scrolls the
-active tab into view. The toolbar settings button remains the open/close control.
+active tab into view. The tab strip is an ARIA `tablist`: tabs use roving focus,
+ArrowLeft/ArrowRight/Home/End move and activate tabs, and Enter/Space activates the
+focused tab. The toolbar settings button remains the open/close control.
 
 Tabs are derived directly from registry metadata in `app.config_json()`, sorted by
 `tab_order`, and followed by Profiler. Whitewater and Smoothing are ordinary
@@ -88,7 +91,8 @@ Portable config actions are no longer visible buttons in the panel. The capture/
 helpers remain: `exportConfig()` emits `{schema:"fluidlab.config.v1",
 settings:{id:value}}` over visible non-default rows, `importConfigPayload()` applies
 entries through the same bridge-backed batch path as URL and localStorage restore, and
-`shareUrl()` returns a URL containing repeated `set` params.
+`shareUrl()` returns a URL containing repeated `set` params and strips the legacy
+`flip` param from the returned URL.
 
 Shareable registry settings use repeated `set` URL params:
 
@@ -97,13 +101,16 @@ Shareable registry settings use repeated `set` URL params:
 ```
 
 The shell parses all `set` entries once at boot, appends legacy `?flip=N` as
-`physics.flip_blend`, applies the batch after default product-mode initialization,
-and triggers one `app.reset()` if any accepted entry reports `needs_reset`. LocalStorage
+`physics.flip_blend` only when no canonical `set=physics.flip_blend:N` entry is
+present, applies the batch after default product-mode initialization, and triggers one
+`app.reset()` if any accepted entry reports `needs_reset`. LocalStorage
 restore happens inside `initPanels` before product-mode and URL settings, and the rAF
 loop starts only after those synchronous reset-class batches finish, so the first
 meaningful rendered frame uses the restored scenario, fill, density, grid, and derived
-particle count. Reload-class entries are stored and warned about; the shell does not
-auto-reload the page.
+particle count. On narrow first loads with no explicit or stored `camera.distance`,
+the shell applies a one-time live camera zoom-out before the first frame; it does not
+mutate the registry value and therefore is not exported or shared. Reload-class entries
+are stored and warned about; the shell does not auto-reload the page.
 The old `pressure`, `paused`, `slice`, and `slicemode` params remain ad hoc shell
 controls for this stage.
 
@@ -139,9 +146,16 @@ Current values are `ok`, `surface-lost`, `device-lost`, and
 `surface-validation-error`. `surface-lost` is transient: the Rust side recreates
 swapchain-sized targets and continues. `device-lost` and
 `surface-validation-error` stop the shell frame loop and show the existing WebGPU
-overlay with reload guidance; the app does not attempt in-place WebGPU device
-recovery. Generic WebGPU validation console messages remain capture-console evidence
-unless wgpu exposes them as surface validation or device loss.
+overlay with reload guidance. The unsupported/error overlay is an alert dialog, moves
+focus to itself, and makes the underlying app inert/hidden to assistive technology
+while shown; the app does not attempt in-place WebGPU device recovery. Generic WebGPU
+validation console messages remain capture-console evidence unless wgpu exposes them
+as surface validation or device loss.
+
+The toolbar, launcher, and canvas start busy/disabled before WASM creation and panel
+binding. The shell enables buttons and gives the canvas a focusable `tabindex` only
+after app creation, panel initialization, URL/localStorage replay, shell helper
+binding, and event-handler registration complete.
 
 ## Bottom controls and pointer dispatch
 
@@ -153,6 +167,12 @@ has two always-visible segmented controls:
 
 Mode writes hidden scheduler booleans. Control chooses what pointer drags manipulate.
 On narrow screens the launcher remains visible and wraps to full-width groups.
+
+The canvas itself is focusable after boot. Pointer drags and keyboard commands dispatch
+through the same bridge methods: arrows orbit/rotate, Shift+arrows pan/move,
+Alt+arrows twist/roll, and PageUp/PageDown or +/- zoom the camera. The selected
+Control target chooses whether arrow commands act on Camera or Cube, matching pointer
+drag mode.
 
 ## Capture harness
 
