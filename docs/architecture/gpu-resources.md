@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-16
+last_updated:  2026-06-20
 okay_to_delete: false
 long_lived:    true
 ---
@@ -28,7 +28,7 @@ render targets, sub-renderers, timers, caps, and `GpuFluid` simulation state.
 - Particle-scale preflight/status - requested, estimated, actual, dispatch shape,
   storage limits, and `scale_status`.
 - Device/surface status - `gpu_device_status` values reported as `ok`,
-  `surface-lost`, `device-lost`, or `validation-error`.
+  `surface-lost`, `device-lost`, or `surface-validation-error`.
 
 Removed render feature ownership lives in `rendering.md`; `GpuContext` only owns
 targets and passes for the current renderer set.
@@ -100,12 +100,15 @@ queries are available.
 swapchain-sized target views, rebinds composite/smoothing views, skips that frame,
 and lets the next frame continue. The next successful surface acquisition returns
 the status to `ok`. `Timeout` and `Occluded` skip the frame without changing status.
-`Validation` sets `validation-error` and returns an error to the caller.
+`Validation` sets `surface-validation-error` and returns an error to the caller. This
+is the surface-acquisition status wgpu exposes here; generic WebGPU validation errors
+are not converted into app state unless wgpu surfaces them through this API or device
+loss.
 
 wgpu's device-lost callback sets `gpu_device_status` to `device-lost`. This is not
 full WebGPU device-loss recovery: the app does not recreate the adapter/device/queue
 or rebuild every GPU owner after true device loss. The shell treats `device-lost` and
-`validation-error` as fatal statuses and asks the user to reload.
+`surface-validation-error` as fatal statuses and asks the user to reload.
 
 ## Readbacks and counters
 

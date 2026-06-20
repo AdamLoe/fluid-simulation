@@ -349,29 +349,36 @@ impl Profiler {
         ));
         if let Some(g) = self.gpu {
             let sim = g.prep_ms + g.pressure_ms + g.finish_ms;
-            let n = g.substeps.max(1);
+            let n = g.substeps;
+            let per_substep = |ms: f32| -> String {
+                if n > 0 {
+                    format!("{:>6.3}", ms / n as f32)
+                } else {
+                    "   n/a".to_string()
+                }
+            };
             out.push_str(&format!(
                 "│ GPU (real timestamps, ms/frame summed over {n} substeps; ms/substep in []):\n"
             ));
             out.push_str(&format!(
-                "│   sim total        {sim:>7.3} [{:>6.3}]   render {:>7.3}\n",
-                sim / n as f32,
+                "│   sim total        {sim:>7.3} [{}]   render {:>7.3}\n",
+                per_substep(sim),
                 g.render_ms
             ));
             out.push_str(&format!(
-                "│     prep (clear/mark/P2G/forces) {:>7.3} [{:>6.3}]\n",
+                "│     prep (clear/mark/P2G/forces) {:>7.3} [{}]\n",
                 g.prep_ms,
-                g.prep_ms / n as f32,
+                per_substep(g.prep_ms),
             ));
             out.push_str(&format!(
-                "│     pressure (divergence+CG)      {:>7.3} [{:>6.3}]\n",
+                "│     pressure (divergence+CG)      {:>7.3} [{}]\n",
                 g.pressure_ms,
-                g.pressure_ms / n as f32,
+                per_substep(g.pressure_ms),
             ));
             out.push_str(&format!(
-                "│     finish (gradient/G2P/advect)  {:>7.3} [{:>6.3}]\n",
+                "│     finish (gradient/G2P/advect)  {:>7.3} [{}]\n",
                 g.finish_ms,
-                g.finish_ms / n as f32,
+                per_substep(g.finish_ms),
             ));
             if g.detailed {
                 out.push_str(&format!(
@@ -415,6 +422,7 @@ impl Profiler {
         particles: u32,
         pressure_iterations: u32,
         render_mode: &str,
+        gpu_device_status: &str,
     ) -> String {
         let samples = &self.frame_window.samples;
         let count = samples.len().max(1);
@@ -440,18 +448,21 @@ impl Profiler {
                     }
                     secs.push('}');
                     let cg_total: f32 = g.cg_cats.iter().sum();
-                    let iters = g.cg_iters.max(1);
-                    let avg = cg_total / iters as f32;
+                    let avg = if g.cg_iters > 0 {
+                        fmt_ms((cg_total / g.cg_iters as f32) as f64)
+                    } else {
+                        "null".to_string()
+                    };
                     // cg_cats order: [spmv, reduce(both dots), update, scalars(alpha/beta/dir)].
                     let cg = format!(
                         ",\"cg\":{{\"total_ms\":{tot},\"avg_ms_per_iter\":{avg},\"spmv_ms\":{sp},\"reductions_ms\":{re},\"updates_ms\":{up},\"scalars_ms\":{sc},\"iters\":{it}}}",
                         tot = fmt_ms(cg_total as f64),
-                        avg = fmt_ms(avg as f64),
-                        sp  = fmt_ms(g.cg_cats[0] as f64),
-                        re  = fmt_ms(g.cg_cats[1] as f64),
-                        up  = fmt_ms(g.cg_cats[2] as f64),
-                        sc  = fmt_ms(g.cg_cats[3] as f64),
-                        it  = g.cg_iters,
+                        avg = avg,
+                        sp = fmt_ms(g.cg_cats[0] as f64),
+                        re = fmt_ms(g.cg_cats[1] as f64),
+                        up = fmt_ms(g.cg_cats[2] as f64),
+                        sc = fmt_ms(g.cg_cats[3] as f64),
+                        it = g.cg_iters,
                     );
                     format!("{secs}{cg}")
                 } else {
@@ -529,7 +540,7 @@ impl Profiler {
         };
 
         format!(
-            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"filled_volume":{fv},"liquid_fraction":{lf},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"particle_dispatch_groups_x":{pdgx},"particle_dispatch_groups_y":{pdgy},"particle_dispatch_capacity":{pdcap},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"sim_buffers_mb":{sim_mb},"render_targets_mb":{rt_mb},"timing_mb":{timing_mb},"total_tracked_mb":{total_mb},"substeps_this_frame":{stf},"fixed_dt_ms":{fdt},"max_substeps":{max_substeps},"natural_substeps":{natural_substeps},"substep_cap_hit":{cap_hit},"sim_advanced_ms":{sim_adv},"wall_raf_ms":{wall_raf},"real_time_factor":{rtf},"timestep_policy":"{policy}","accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
+            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"filled_volume":{fv},"liquid_fraction":{lf},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","gpu_device_status":"{gpu_device_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"particle_dispatch_groups_x":{pdgx},"particle_dispatch_groups_y":{pdgy},"particle_dispatch_capacity":{pdcap},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"sim_buffers_mb":{sim_mb},"render_targets_mb":{rt_mb},"timing_mb":{timing_mb},"total_tracked_mb":{total_mb},"substeps_this_frame":{stf},"fixed_dt_ms":{fdt},"max_substeps":{max_substeps},"natural_substeps":{natural_substeps},"substep_cap_hit":{cap_hit},"sim_advanced_ms":{sim_adv},"wall_raf_ms":{wall_raf},"real_time_factor":{rtf},"timestep_policy":"{policy}","accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
             timing = self.timing_source.label(),
             sample_count = samples.len(),
             avg = fmt_ms(avg),
@@ -547,6 +558,7 @@ impl Profiler {
             req = f.requested_particles,
             est = f.estimated_particles,
             scale_status = f.scale_status,
+            gpu_device_status = gpu_device_status,
             max_wg = f.max_compute_workgroups_per_dimension,
             max_dispatch = f.max_particle_dispatch_count,
             pdgx = f.particle_dispatch_groups_x,

@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-17
+last_updated:  2026-06-20
 okay_to_delete: false
 long_lived:    true
 ---
@@ -114,6 +114,11 @@ failed reset applied.
 **Accumulator must be zeroed on pause.** The frame loop calls `timestep.reset()` every paused frame. Forgetting this would let the accumulator silently fill during a pause and burst multiple substeps on resume.
 
 **`set_setting` is the legacy bool bridge.** `app/crates/fluid-lab/src/lib.rs → FluidApp::set_setting` returns `true` only for accepted `Live`-class settings whose change applied immediately. Accepted `Reset`- and `Reload`-class settings still return `false`, meaning the registry stored the value but the caller must reset/reload. Non-finite input is rejected before the registry changes and also returns `false`. The shell prefers `FluidApp::set_setting_result_json` for honest status/clamping/reset details and falls back to the bool wrapper only for compatibility.
+
+**Runtime status crosses the bridge as data, not console text.** `FluidApp::stats_json`
+includes the current `gpu_device_status` alongside profiler facts, and
+`FluidApp::gpu_device_status` remains the direct status method for the shell loop.
+Status meanings are owned by `gpu-resources.md` and displayed by `web-shell.md`.
 
 **`box_pos` is clamped.** `move_box` and `slosh_box` both clamp `box_pos` to `[-3, 3]^3` so the tank cannot escape the camera frustum entirely.
 

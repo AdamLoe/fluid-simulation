@@ -897,6 +897,12 @@ function buildProfilerPanel(container, app) {
   const timingColor = timing === "gpu-timestamp" ? "var(--success)" : "var(--warning)";
   const scaleOk = !stats.scale_status || stats.scale_status === "ok";
   const scaleColor = scaleOk ? "var(--success)" : "var(--danger)";
+  const gpuStatus = stats.gpu_device_status || "unknown";
+  const gpuStatusColor = gpuStatus === "ok"
+    ? "var(--success)"
+    : gpuStatus === "surface-lost"
+      ? "var(--warning)"
+      : "var(--danger)";
   const fps = stats.fps;
   const fpsColor = fps == null ? "var(--text-faint)" : fps >= 55 ? "var(--success)" : fps >= 30 ? "var(--warning)" : "var(--danger)";
   const rtf = stats.real_time_factor;
@@ -949,6 +955,10 @@ function buildProfilerPanel(container, app) {
     <div class="prof-row">
       <span class="prof-key">Scale preflight</span>
       <span class="prof-val" style="color:${scaleColor}">${stats.scale_status ?? "—"}</span>
+    </div>
+    <div class="prof-row">
+      <span class="prof-key">GPU status</span>
+      <span class="prof-val" style="color:${gpuStatusColor}">${gpuStatus}</span>
     </div>
     <div class="prof-row">
       <span class="prof-key">Seeded / dispatch cap</span>

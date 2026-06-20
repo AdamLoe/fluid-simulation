@@ -835,6 +835,7 @@ impl FluidApp {
             } else {
                 "particles+NOpressure"
             },
+            self.gpu.device_status_str(),
         )
     }
 

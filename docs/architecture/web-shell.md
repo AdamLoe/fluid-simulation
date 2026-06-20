@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-17
+last_updated:  2026-06-20
 okay_to_delete: false
 long_lived:    true
 ---
@@ -114,8 +114,8 @@ and share URL behavior without needing to click the panel.
 
 The Profiler tab polls `app.stats_json()` at 4 Hz while open. It starts with a compact
 summary of FPS, real-time factor, timing source, and scale status, then groups the
-remaining timing, memory, scale, and liveness rows. Persistent foam particle rows were
-removed with `DiffuseSystem`.
+remaining timing, memory, scale, GPU status, and liveness rows. Persistent foam
+particle rows were removed with `DiffuseSystem`.
 
 The Theme tab is shell-owned rather than registry-owned. The preset catalog lives in
 `web/panels.js → THEMES`, with matching CSS variable blocks in `web/index.html`; the
@@ -134,11 +134,14 @@ included in `window.__fluidShell.state().theme` and can be changed through
 `window.__fluidShell.setTheme(id)`.
 
 GPU platform status is exposed through `app.gpu_device_status()` and mirrored in
-`window.__fluidShell.state().gpuDeviceStatus`. Current values are `ok`,
-`surface-lost`, `device-lost`, and `validation-error`. `surface-lost` is transient:
-the Rust side recreates swapchain-sized targets and continues. `device-lost` and
-`validation-error` stop the shell frame loop and show the existing WebGPU overlay
-with reload guidance; the app does not attempt in-place WebGPU device recovery.
+`window.__fluidShell.state().gpuDeviceStatus` and `stats_json.gpu_device_status`.
+Current values are `ok`, `surface-lost`, `device-lost`, and
+`surface-validation-error`. `surface-lost` is transient: the Rust side recreates
+swapchain-sized targets and continues. `device-lost` and
+`surface-validation-error` stop the shell frame loop and show the existing WebGPU
+overlay with reload guidance; the app does not attempt in-place WebGPU device
+recovery. Generic WebGPU validation console messages remain capture-console evidence
+unless wgpu exposes them as surface validation or device loss.
 
 ## Bottom controls and pointer dispatch
 
@@ -170,9 +173,9 @@ and `SEQ_RESET`.
 The harness exits non-zero when WebGPU is unavailable, `stats_json` is missing, page
 errors/request failures occur, requested reset setup is rejected, console output
 reports WebGPU validation/device-loss failures, final shell `gpuDeviceStatus` is
-`device-lost` or `validation-error`, or the boot smoke test reports failure. If
-`navigator.gpu` is false, the screenshot is the unsupported overlay and is not valid
-visual evidence.
+`device-lost` or `surface-validation-error`, or the boot smoke test reports failure.
+If `navigator.gpu` is false, the screenshot is the unsupported overlay and is not
+valid visual evidence.
 
 Every run also writes `<out>.trace.ndjson` and `<out>.stats.json`, including the raw
 final `stats_json` and occupied-cell drift proxy. When `MEASURE_WAIT` is set, ordinary

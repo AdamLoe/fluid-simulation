@@ -458,7 +458,7 @@ try {
   if (webGpuDeviceLossConsoleLines.length > 0) {
     failures.push(`${webGpuDeviceLossConsoleLines.length} WebGPU device-loss warning(s)`);
   }
-  if (["device-lost", "validation-error"].includes(shellState?.gpuDeviceStatus)) {
+  if (["device-lost", "surface-validation-error"].includes(shellState?.gpuDeviceStatus)) {
     failures.push(`gpuDeviceStatus is ${shellState.gpuDeviceStatus}`);
   }
   if (smokeFailed) failures.push("WebGPU smoke test failed");

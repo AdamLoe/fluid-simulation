@@ -105,7 +105,7 @@ pub enum GpuDeviceStatus {
     Ok = 0,
     SurfaceLost = 1,
     DeviceLost = 2,
-    ValidationError = 3,
+    SurfaceValidationError = 3,
 }
 
 impl GpuDeviceStatus {
@@ -114,7 +114,7 @@ impl GpuDeviceStatus {
             GpuDeviceStatus::Ok => "ok",
             GpuDeviceStatus::SurfaceLost => "surface-lost",
             GpuDeviceStatus::DeviceLost => "device-lost",
-            GpuDeviceStatus::ValidationError => "validation-error",
+            GpuDeviceStatus::SurfaceValidationError => "surface-validation-error",
         }
     }
 
@@ -122,7 +122,7 @@ impl GpuDeviceStatus {
         match value {
             1 => GpuDeviceStatus::SurfaceLost,
             2 => GpuDeviceStatus::DeviceLost,
-            3 => GpuDeviceStatus::ValidationError,
+            3 => GpuDeviceStatus::SurfaceValidationError,
             _ => GpuDeviceStatus::Ok,
         }
     }
@@ -130,7 +130,7 @@ impl GpuDeviceStatus {
     fn fatal(self) -> bool {
         matches!(
             self,
-            GpuDeviceStatus::DeviceLost | GpuDeviceStatus::ValidationError
+            GpuDeviceStatus::DeviceLost | GpuDeviceStatus::SurfaceValidationError
         )
     }
 }
@@ -957,6 +957,19 @@ impl GpuContext {
             t.set_frame_substeps(substeps);
         }
         let detailed = self.timers.as_ref().map(|t| t.detailed()).unwrap_or(false);
+        if detailed {
+            if let Some(t) = &self.timers {
+                let live = if self.pressure_enabled {
+                    self.fluid.pressure_iters()
+                } else {
+                    0
+                };
+                let timed = t.clamp_cg_iters(live);
+                t.set_frame_cg_iters(timed);
+            }
+        } else if let Some(t) = &self.timers {
+            t.set_frame_cg_iters(0);
+        }
         for i in 0..substeps {
             let mut encoder = self
                 .device
@@ -1042,6 +1055,15 @@ impl GpuContext {
             }};
         }
 
+        macro_rules! empty_sec {
+            ($idx:expr, $label:expr) => {{
+                let _empty = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some($label),
+                    timestamp_writes: Some(timers.fine_section_writes(i, $idx)),
+                });
+            }};
+        }
+
         // 0..16 = prep sections (clear..bound_pre_w).
         sec!(0, "d.clear", |p: &mut wgpu::ComputePass| f
             .dispatch_clear(p));
@@ -1103,7 +1125,7 @@ impl GpuContext {
             // CG iterations — clamp the timed count to the allocated slots (extra
             // live iters still run, just outside a fresh timed pass).
             let live = f.pressure_iters();
-            let timed = timers.clamp_cg_iters(live);
+            let timed = timers.frame_cg_iters();
             // Six honest contiguous passes per iteration, in solver order. The CPU
             // buckets them (timing.rs CG_BUCKET): reductions = both dots, updates =
             // the vector update only, scalars = alpha + beta + dir.
@@ -1146,6 +1168,25 @@ impl GpuContext {
                     f.dispatch_cg_beta_dir(&mut p);
                 }
             }
+            for it in timed..timers.alloc_iters() {
+                for tpass in 0..timing::CG_TIMED_PER_ITER {
+                    let _empty = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("d.cg_unused"),
+                        timestamp_writes: Some(timers.fine_cg_writes(i, it, tpass)),
+                    });
+                }
+            }
+        } else {
+            empty_sec!(17, "d.divergence");
+            empty_sec!(18, "d.cg_init");
+            for it in 0..timers.alloc_iters() {
+                for tpass in 0..timing::CG_TIMED_PER_ITER {
+                    let _empty = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("d.cg_disabled"),
+                        timestamp_writes: Some(timers.fine_cg_writes(i, it, tpass)),
+                    });
+                }
+            }
         }
 
         // 19..26 = finish sections (gradient_*, bound_post_*, g2p).
@@ -1162,6 +1203,13 @@ impl GpuContext {
                 .dispatch_enforce(p, 1));
             sec!(24, "d.bound_post_w", |p: &mut wgpu::ComputePass| f
                 .dispatch_enforce(p, 2));
+        } else {
+            empty_sec!(19, "d.gradient_u");
+            empty_sec!(20, "d.gradient_v");
+            empty_sec!(21, "d.gradient_w");
+            empty_sec!(22, "d.bound_post_u");
+            empty_sec!(23, "d.bound_post_v");
+            empty_sec!(24, "d.bound_post_w");
         }
         sec!(25, "d.g2p", |p: &mut wgpu::ComputePass| f.dispatch_g2p(p));
     }
@@ -1296,7 +1344,7 @@ impl GpuContext {
             }
             Cur::Timeout | Cur::Occluded => return Ok(()),
             Cur::Validation => {
-                self.set_device_status(GpuDeviceStatus::ValidationError);
+                self.set_device_status(GpuDeviceStatus::SurfaceValidationError);
                 return Err("surface validation error".to_string());
             }
         };

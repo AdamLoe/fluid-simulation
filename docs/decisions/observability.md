@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-05
+last_updated:  2026-06-20
 ---
 
 # Decisions — Observability
@@ -132,7 +132,9 @@ substep, with frame totals summed correctly across all substeps that ran. Detail
 mode uses the fine-section and CG-category tables in
 `crates/fluid-lab/src/gpu/timing.rs`; it is off by default and toggled via
 `dev.detailed_gpu_profiling` (Reset-class), rendered as Diagnostics rather than
-user-facing dev chrome.
+user-facing dev chrome. Every timestamp slot read by detailed mode is either a real
+timed pass for the sampled frame or an intentionally empty pass, and reported CG
+iteration counts mean timed live iterations rather than allocated slots.
 
 **Why** — Detailed mode sizes the `QuerySet` from `max_substeps × pressure_iters`
 and adds GPU overhead from the extra timestamp writes. The coarse default gives
@@ -151,6 +153,23 @@ exceeded (logged, never silent).
 dev.detailed_gpu_profiling`.
 
 **Applies to** — `architecture/profiler.md`, `architecture/gpu-resources.md`.
+
+## Runtime GPU status reports only observable fatal states
+
+**Decision** — The app surfaces `device-lost` from wgpu's device-lost callback and
+`surface-validation-error` from `CurrentSurfaceTexture::Validation`; it does not
+invent a generic validation state from console output alone.
+
+**Why** — The browser console and capture harness can observe validation text, but the
+Rust app state can only report failures exposed through wgpu's API. Treating console
+scrapes as app state would make the bridge look more authoritative than it is.
+
+**Code anchors** — `crates/fluid-lab/src/gpu/mod.rs → GpuDeviceStatus`;
+`crates/fluid-lab/src/lib.rs → gpu_device_status`; `web/main.js → fatalGpuStatus`;
+`web/panels.js → buildProfilerPanel`.
+
+**Applies to** — `architecture/gpu-resources.md`, `architecture/web-shell.md`,
+`architecture/profiler.md`.
 
 ## Capture gates assert only source-honest observability fields
 

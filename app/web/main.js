@@ -42,7 +42,7 @@ function gpuDeviceStatus(app) {
 }
 
 function fatalGpuStatus(status) {
-  return status === "device-lost" || status === "validation-error";
+  return status === "device-lost" || status === "surface-validation-error";
 }
 
 function sizeCanvas(canvas) {

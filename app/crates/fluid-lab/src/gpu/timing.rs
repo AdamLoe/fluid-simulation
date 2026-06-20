@@ -111,7 +111,7 @@ const CG_CATS_LEN: usize = CG_CATS.len(); // 4
 ///   spmv · dot(d·q) · alpha · update · dot(r·r) · beta+dir
 /// so reductions = passes 1+4 and scalars = passes 2+5; the r·r reduction is
 /// honestly counted as a reduction rather than folded into the update.
-const CG_TIMED_PER_ITER: usize = 6;
+pub const CG_TIMED_PER_ITER: usize = 6;
 /// timed-pass index (0..6) → reported category index (0..4).
 const CG_BUCKET: [usize; CG_TIMED_PER_ITER] = [0, 1, 3, 2, 1, 3];
 
@@ -136,7 +136,7 @@ pub struct Readout {
     pub sections: [f32; N_FINE],
     /// CG category frame totals (ms): [spmv, reduce, update, scalars].
     pub cg_cats: [f32; CG_CATS_LEN],
-    /// CG iterations that were actually timed (== allocated iters, possibly clamped).
+    /// CG iterations that were actually timed for the sampled frame.
     pub cg_iters: u32,
 }
 
@@ -162,6 +162,8 @@ pub struct GpuTimers {
     liquid_offset: u64,
     /// substeps actually submitted this frame (set by step()).
     frame_substeps: Cell<u32>,
+    /// CG iterations with real timed solver passes in the submitted frame.
+    frame_cg_iters: Cell<u32>,
     /// one-shot guard so the "iters exceed allocation" truncation logs once.
     iter_warned: Cell<bool>,
 }
@@ -255,6 +257,7 @@ impl GpuTimers {
             slots,
             liquid_offset,
             frame_substeps: Cell::new(0),
+            frame_cg_iters: Cell::new(0),
             iter_warned: Cell::new(false),
         }
     }
@@ -277,7 +280,19 @@ impl GpuTimers {
     /// Record how many substeps were actually submitted this frame so readback
     /// only sums the valid range (slots beyond it are stale/zero).
     pub fn set_frame_substeps(&self, n: u32) {
-        self.frame_substeps.set(n.min(self.max_substeps));
+        let n = n.min(self.max_substeps);
+        self.frame_substeps.set(n);
+        if n == 0 {
+            self.frame_cg_iters.set(0);
+        }
+    }
+
+    pub fn set_frame_cg_iters(&self, n: u32) {
+        self.frame_cg_iters.set(n.min(self.alloc_iters));
+    }
+
+    pub fn frame_cg_iters(&self) -> u32 {
+        self.frame_cg_iters.get()
     }
 
     /// First slot index for substep `s` (each substep owns `pairs_per_substep`
@@ -393,6 +408,7 @@ impl GpuTimers {
         let detailed = self.detailed;
         let pairs_per_substep = self.pairs_per_substep;
         let n_substeps = self.frame_substeps.get();
+        let frame_cg_iters = self.frame_cg_iters.get();
         let alloc_iters = self.alloc_iters;
         let buf_for_cb = buf.clone();
         buf.slice(..).map_async(wgpu::MapMode::Read, move |res| {
@@ -434,7 +450,7 @@ impl GpuTimers {
                         out.finish_ms += span(ts(b + 4), ts(b + 5));
                     }
                 } else {
-                    out.cg_iters = alloc_iters;
+                    out.cg_iters = frame_cg_iters;
                     for s in 0..n_substeps {
                         let b = base(s);
                         // Fixed fine sections.

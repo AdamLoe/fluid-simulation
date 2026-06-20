@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-16
+last_updated:  2026-06-20
 okay_to_delete: false
 long_lived:    true
 ---
@@ -70,7 +70,10 @@ render pass and its end timestamp on the final render pass, so
 owns one section covering all three MAC components. Per CG iteration,
 `app/crates/fluid-lab/src/gpu/timing.rs → CG_BUCKET` rolls the timed passes into the
 reported `CG_CATS` groups. All values are frame totals summed across the sampled
-substeps.
+substeps. Detailed readback may sum every allocated slot only because the encoder
+writes empty timestamped passes for skipped pressure sections and unused allocated CG
+slots; `cg.iters` reports the live iterations that were actually timed for the sampled
+frame, not the reset-time allocation.
 
 **Query-set sizing.** The `QuerySet` is sized at construction from
 `max_substeps × pressure_iters` and bounded by
@@ -87,9 +90,9 @@ Current consumers live in `app/web/panels.js → buildProfilerPanel` and
 `app/tools/capture.mjs → collectAssertionFailures`.
 
 The top-level object carries frame timing, scale/dispatch facts, tracked-memory
-totals, timestep-audit fields, and render/simulation context in one place. The
-timestep fields stay flattened for panel compatibility, and `real_time_factor` uses
-submitted sim time over sanitized rAF wall time.
+totals, timestep-audit fields, `gpu_device_status`, and render/simulation context in
+one place. The timestep fields stay flattened for panel compatibility, and
+`real_time_factor` uses submitted sim time over sanitized rAF wall time.
 
 The GPU block stays source-honest: it is `null` until a real timestamp sample arrives,
 then exposes coarse totals plus sampled substep and liveness facts. Detailed-only data
@@ -100,6 +103,11 @@ text rows.
 ## Non-obvious invariants and gotchas
 
 **Timing-source honesty is non-negotiable.** Every logged sample declares its source (`timing: gpu-timestamp` or `timing: cpu-wallclock`). Per-pass GPU numbers (`prep / pressure / finish / render`) are emitted only when `GpuSample` is set — if it is `None`, the GPU block is absent from the log and `"gpu": null` in `stats_json`. The profiler never fabricates per-pass numbers when timestamps are missing.
+
+**Zero-substep GPU samples stay zero.** Paused frames can still render and produce a
+valid GPU timestamp sample with `gpu.substeps = 0`. Console logs report those as
+summed over zero substeps and mark per-substep values unavailable rather than dividing
+by or relabeling them as one substep.
 
 **`timestamp-query` is not universally available.** In-browser it is often gated behind a flag or quantized to ~100 µs. The fallback minimum-honest profile is: total frame time (CPU rAF delta, always available), substep count, dispatch/draw counts, optional coarse fence for sim-vs-render split. These are clearly labeled; a gate asking for "top-5 GPU costs" is satisfied by the labeled fallback when the platform cannot provide timestamps.
 
