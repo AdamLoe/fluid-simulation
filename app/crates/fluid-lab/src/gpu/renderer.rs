@@ -1,6 +1,5 @@
-//! Phase 0.1 renderer: a wireframe tank (line-list cube) drawn with the orbit
-//! camera's view-projection. No fluid content yet — this only proves the render
-//! path, surface, depth-free line drawing, and camera wiring.
+//! Wireframe tank renderer (line-list cube) drawn with the orbit camera's
+//! view-projection.
 
 use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;

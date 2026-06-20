@@ -1,11 +1,9 @@
-//! Scene configuration — Phase 1.3 scripted scenarios.
+//! Scene configuration and scripted scenarios.
 //!
-//! Per `decisions.md` (use a tiny scene config before the full scenario system):
-//! a `SceneConfig` is built from the settings registry instead of being hardcoded
-//! into solver code. 1.3 adds deterministic presets (a scene selector) on top of
-//! that shape: each preset is just a different set of initial liquid blocks, all
-//! released into the same closed tank. Static interior solids stay OUT
-//! (static-before-dynamic, see `decisions.md`).
+//! `SceneConfig` is built from the settings registry instead of being hardcoded
+//! into solver code. Each preset is a deterministic set of initial liquid blocks
+//! released into the same closed tank. Static interior solids stay out of the
+//! current scope; see `docs/decisions/scope.md`.
 
 use crate::settings::Registry;
 use glam::{UVec3, Vec3};

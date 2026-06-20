@@ -1,4 +1,4 @@
-//! Platform smoke test (Phase 0.1, work item 2).
+//! Platform smoke test.
 //!
 //! Validates the three platform capabilities the whole project depends on, before
 //! any architecture is built on top of them:

@@ -1,9 +1,8 @@
 //! Typed config-registry.
 //!
-//! Per `decisions.md` (configuration flows through a schema-driven registry) and
-//! the observability split, this file is the authoritative source for each setting's
-//! id, label, semantic category, functional tab, type, default, validation, optional
-//! help copy, and apply class.
+//! Configuration flows through this schema-driven registry. This file is the
+//! authoritative source for each setting's id, label, semantic category, functional
+//! tab, type, default, validation, optional help copy, and apply class.
 
 /// When a changed setting can take effect. The colored dot (🟢/🟡/🔴) is a 1.2
 /// panel concern; the class itself is part of the data model from the start.

@@ -315,7 +315,7 @@ impl FluidApp {
 
         let camera = camera::OrbitCamera::new();
 
-        log("[fluid-lab] FluidApp created — Phase 0.1 shell ready.");
+        log("[fluid-lab] FluidApp created; shell ready.");
 
         let timestep =
             timestep::TimestepController::new(settings.fixed_dt(), settings.max_substeps());

@@ -1,13 +1,8 @@
-//! Hierarchical profiler — Phase 0.1 skeleton.
+//! Hierarchical profiler.
 //!
-//! Per `decisions.md` (profiler is hierarchical and config-tagged from the start)
-//! and the observability split: the *data model + console logging* are early
-//! infrastructure (here), the *rendered panel* is 1.2.
-//!
-//! 0.1 populates only top-level CPU scopes (update/render) under Frame. The nested
-//! scope machinery and config-snapshot tagging exist now so 0.3 can grow child
-//! scopes (P2G → scatter/normalize, pressure, …) without restructuring. Timing is
-//! CPU wall-clock via `performance.now()`; the timing source is reported honestly.
+//! The profiler is hierarchical and config-tagged. The data model, timing-source
+//! policy, console logging, and rendered panel contract are documented in
+//! `docs/architecture/profiler.md` and `docs/decisions/observability.md`.
 
 use crate::log;
 
