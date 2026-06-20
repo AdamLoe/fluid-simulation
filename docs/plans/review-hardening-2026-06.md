@@ -38,6 +38,7 @@ frontmatter, so a fresh chat should not need this plan to understand the current
 - `1c5ae21` Remove obsolete source phase references
 - `94f3be8` Refresh release wasm package
 - `2c509b1` Fix stale COOP COEP config note
+- `bc90bb7` Remove stale source phase comments
 
 ## What shipped
 
@@ -71,7 +72,8 @@ needed for future work, read the owner doc rather than this retrospective.
 ## Verification
 
 - Confirmed clean starting state with `git status --short`.
-- Inspected the requested eight commits with `git log --oneline -8` and `git show`.
+- Inspected the requested eight commits plus the follow-up cleanup commit `bc90bb7`
+  with `git log --oneline` and `git show`.
 - Read the owning architecture, decision, procedural, overview, and roadmap docs listed
   in frontmatter.
 - Ran a targeted stale scan for package-path, timing-source, GPU-status, COOP/COEP, and
