@@ -11,7 +11,7 @@ not a prose table. It lives at [`_meta/ownership.json`](_meta/ownership.json)
   the concept.
 - **The rule itself** ("edit the owner; non-owners link, never redefine; move drift back
   to the owner") is generic and lives in the global authoring rules
-  (`~/agent-docs/v1/rules/authoring-rules.md`, rule 1), not here.
+  (`~/.agentdocs/rules/authoring-rules.md`, rule 1), not here.
 - **Adding/maintaining owners:** when a concept gets a new canonical owner or a
   cross-doc conflict appears, add/edit an entry in `_meta/ownership.json`.
 

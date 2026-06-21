@@ -4,8 +4,8 @@
 
 You're driving multi-step fluid-lab work, especially across sub-agents. The generic
 orchestration discipline is in the global kit
-([`~/agent-docs/v1/rules/orchestrator/lifecycle.md`](~/agent-docs/v1/rules/orchestrator/lifecycle.md)
-and [`~/agent-docs/v1/rules/orchestrator/dispatch.md`](~/agent-docs/v1/rules/orchestrator/dispatch.md));
+([`~/.agentdocs/rules/orchestrator/lifecycle.md`](~/.agentdocs/rules/orchestrator/lifecycle.md)
+and [`~/.agentdocs/rules/orchestrator/dispatch.md`](~/.agentdocs/rules/orchestrator/dispatch.md));
 this doc holds what's specific to this app.
 
 ## Canonical truth
@@ -49,7 +49,7 @@ docs bookkeeping.
 
 ## See also
 
-- [`~/agent-docs/v1/rules/orchestrator/lifecycle.md`](~/agent-docs/v1/rules/orchestrator/lifecycle.md) and
-  [`~/agent-docs/v1/rules/orchestrator/dispatch.md`](~/agent-docs/v1/rules/orchestrator/dispatch.md) — the generic rules.
+- [`~/.agentdocs/rules/orchestrator/lifecycle.md`](~/.agentdocs/rules/orchestrator/lifecycle.md) and
+  [`~/.agentdocs/rules/orchestrator/dispatch.md`](~/.agentdocs/rules/orchestrator/dispatch.md) — the generic rules.
 - [`../decisions/index.md`](../decisions/index.md) · [`../architecture/index.md`](../architecture/index.md)
 - [`../plans/index.md`](../plans/index.md) — staging in-flight work.

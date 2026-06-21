@@ -146,4 +146,4 @@ Status meanings are owned by `gpu-resources.md` and displayed by `web-shell.md`.
 - [`../decisions/scope.md`](../decisions/scope.md) — the typed scene config / scenarios-are-later rationale
 - [`../decisions/performance.md`](../decisions/performance.md) — fixed-dt and substep-cap rationale
 - [`../agent-context/maintaining-docs.md`](../agent-context/maintaining-docs.md)
-- [`~/agent-docs/v1/rules/authoring-rules.md`](~/agent-docs/v1/rules/authoring-rules.md)
+- [`~/.agentdocs/rules/authoring-rules.md`](~/.agentdocs/rules/authoring-rules.md)

@@ -60,7 +60,7 @@ doc Y." Code paths are relative to `code_root` (`app/`).
 | A new/removed/re-routed decisions domain | `decisions/index.md`, and `_meta/ownership.json` |
 | A new procedural workflow doc, or a changed "when it applies" | `agent-context/index.md` and `docs/index.md` |
 | A concept gets a new canonical owner, or a cross-doc ownership conflict appears | `_meta/ownership.json` (+ `ownership.md` if the prose pointer changes) |
-| Plan lifecycle / status-metadata shape | `~/agent-docs/v1/plan-lifecycle.md` + `plan-template.md` (generic); `plans/index.md` only if app routing changes |
+| Plan lifecycle / status-metadata shape | `~/.agentdocs/plan-lifecycle.md` + `plan-template.md` (generic); `plans/index.md` only if app routing changes |
 
 ## Slot: drift-verification (high-risk surfaces for fix-docs-drift-all)
 
@@ -89,7 +89,7 @@ high-risk invariants against code:
 ## Notes
 
 - The generic agent-docs kit (authoring rules, coding-style, repo-rules, orchestrating
-  rules) lives at `~/agent-docs/v1/rules/`. The workflow commands are global
+  rules) lives at `~/.agentdocs/rules/`. The workflow commands are global
   skills in `~/.claude/skills/`. This manifest is the only app-specific binding the kit
   reads.
 - `agent-context/maintaining-docs.md` and `ownership.md` are thin in-repo stubs kept so

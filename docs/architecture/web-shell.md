@@ -227,4 +227,4 @@ provided stats and exits before launching Chrome.
 - [`profiler.md`](profiler.md)
 - [`../decisions/platform.md`](../decisions/platform.md)
 - [`../agent-context/build-run.md`](../agent-context/build-run.md)
-- [`~/agent-docs/v1/rules/authoring-rules.md`](~/agent-docs/v1/rules/authoring-rules.md)
+- [`~/.agentdocs/rules/authoring-rules.md`](~/.agentdocs/rules/authoring-rules.md)
