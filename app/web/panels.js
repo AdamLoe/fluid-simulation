@@ -21,6 +21,7 @@ const HIDDEN_SETTING_IDS = new Set([
 ]);
 const DEV_ONLY_TABS = new Set(["environment", "theme"]);
 const DEFAULT_TAB = "scenario";
+const QUALITY_TAB = { id: "quality", label: "Quality", order: 15, shell: true };
 const PROFILER_TAB = { id: "profiler", label: "Profiler", order: 1000, profiler: true };
 const THEME_TAB = { id: "theme", label: "Theme", order: 1100, shell: true };
 const THEME_SWATCH_TOKENS = [
@@ -146,6 +147,8 @@ const THEMES = [
 const TAB_ALIASES = {
   general: "scenario",
   modes: "scenario",
+  preset: "quality",
+  presets: "quality",
   render: "camera",
   "camera-view": "camera",
   water: "surface",
@@ -156,6 +159,66 @@ const TAB_ALIASES = {
   "sun-reflection": "reflection",
   physics: "simulation",
 };
+const QUALITY_PRESETS = {
+  performance: {
+    label: "Performance",
+    entries: [
+      ["grid.res_x", 48],
+      ["grid.res_y", 24],
+      ["grid.res_z", 48],
+      ["particles.density", 5],
+      ["solver.pressure_iterations", 18],
+      ["render.hero.smooth_iterations", 0],
+      ["render.hero.smooth_radius", 3],
+      ["render.hero.smooth_thickness_splat_scale", 1.55],
+      ["render.hero.feature_preservation", 0.35],
+    ],
+  },
+  balanced: {
+    label: "Balanced",
+    entries: [
+      ["grid.res_x", 64],
+      ["grid.res_y", 32],
+      ["grid.res_z", 64],
+      ["particles.density", 7],
+      ["solver.pressure_iterations", 24],
+      ["render.hero.smooth_iterations", 1],
+      ["render.hero.smooth_radius", 3],
+      ["render.hero.smooth_thickness_splat_scale", 1.85],
+      ["render.hero.feature_preservation", 0.48],
+    ],
+  },
+  quality: {
+    label: "Quality",
+    entries: [
+      ["grid.res_x", 80],
+      ["grid.res_y", 40],
+      ["grid.res_z", 80],
+      ["particles.density", 10],
+      ["solver.pressure_iterations", 30],
+      ["render.hero.smooth_iterations", 1],
+      ["render.hero.smooth_radius", 3],
+      ["render.hero.smooth_thickness_splat_scale", 2.075],
+      ["render.hero.feature_preservation", 0.565],
+    ],
+  },
+  ultra: {
+    label: "Ultra",
+    entries: [
+      ["grid.res_x", 104],
+      ["grid.res_y", 52],
+      ["grid.res_z", 104],
+      ["particles.density", 12],
+      ["solver.pressure_iterations", 45],
+      ["render.hero.smooth_iterations", 2],
+      ["render.hero.smooth_radius", 4],
+      ["render.hero.smooth_thickness_splat_scale", 2.25],
+      ["render.hero.feature_preservation", 0.68],
+    ],
+  },
+};
+const QUALITY_PRESET_ORDER = ["performance", "balanced", "quality", "ultra"];
+
 function isDevMode() {
   return new URLSearchParams(window.location.search).get("dev") === "true";
 }
@@ -242,7 +305,7 @@ function deriveTabs(settings) {
       });
     }
   }
-  const tabs = [...byId.values()].sort((a, b) => a.order - b.order).concat(PROFILER_TAB);
+  const tabs = [...byId.values(), QUALITY_TAB].sort((a, b) => a.order - b.order).concat(PROFILER_TAB);
   if (devMode) tabs.push(THEME_TAB);
   return tabs;
 }
@@ -342,6 +405,25 @@ function applySettingEntries(app, entries, source = "settings") {
   };
   console.info(`[panels] ${source} settings import summary`, summary);
   return summary;
+}
+
+function storedSettingsEntries(stored) {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return [];
+  if (stored.schema === LS_KEY && stored.settings && typeof stored.settings === "object" && !Array.isArray(stored.settings)) {
+    return Object.entries(stored.settings);
+  }
+  return Object.entries(stored).filter(([, value]) => typeof value === "number");
+}
+
+function chooseStartupQualityPreset() {
+  const dpr = window.devicePixelRatio || 1;
+  const pixels = window.innerWidth * window.innerHeight * dpr * dpr;
+  const cores = navigator.hardwareConcurrency || 4;
+  const memory = navigator.deviceMemory || 4;
+
+  if (pixels > 2_800_000 || cores <= 4 || memory <= 4) return "performance";
+  if (cores >= 12 && memory >= 8 && pixels <= 1_800_000) return "quality";
+  return "balanced";
 }
 
 function fmt(n, decimals) {
@@ -593,6 +675,46 @@ function buildThemePanel(container) {
       buildThemePanel(container);
     });
     grid.appendChild(button);
+  }
+
+  container.appendChild(grid);
+}
+
+function buildQualityPanel(container, applyPreset, activePreset, autoPreset) {
+  hideTip();
+  container.innerHTML = "";
+  const grid = document.createElement("div");
+  grid.className = "quality-grid";
+
+  for (const id of QUALITY_PRESET_ORDER) {
+    const preset = QUALITY_PRESETS[id];
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "quality-option";
+    button.classList.toggle("quality-active", id === activePreset);
+    button.setAttribute("aria-pressed", id === activePreset ? "true" : "false");
+    button.dataset.qualityPreset = id;
+
+    const name = document.createElement("span");
+    name.className = "quality-name";
+    name.textContent = preset.label;
+
+    const detail = document.createElement("span");
+    detail.className = "quality-detail";
+    const map = Object.fromEntries(preset.entries);
+    detail.textContent = `${map["grid.res_x"]}x${map["grid.res_y"]}x${map["grid.res_z"]} · ${map["particles.density"]}/cell`;
+
+    button.appendChild(name);
+    button.appendChild(detail);
+    button.addEventListener("click", () => applyPreset(id, "quality preset", true));
+    grid.appendChild(button);
+  }
+
+  if (autoPreset && QUALITY_PRESETS[autoPreset]) {
+    const note = document.createElement("div");
+    note.className = "quality-note";
+    note.textContent = `Startup: ${QUALITY_PRESETS[autoPreset].label}`;
+    grid.appendChild(note);
   }
 
   container.appendChild(grid);
@@ -996,6 +1118,10 @@ function buildProfilerPanel(container, app) {
       <span class="prof-val">${stats.timestep_policy ?? "—"} &nbsp;<span class="prof-fps">(fixed ${fmt(stats.fixed_dt_ms, 3)} ms)</span></span>
     </div>
     <div class="prof-row">
+      <span class="prof-key">Simulation speed</span>
+      <span class="prof-val">${fmt(stats.sim_time_scale, 2)}x &nbsp;<span class="prof-fps">(advanced ${fmt(stats.sim_advanced_ms, 2)} / wall ${fmt(stats.wall_raf_ms, 2)} ms)</span></span>
+    </div>
+    <div class="prof-row">
       <span class="prof-key">Dropped sim time</span>
       <span class="prof-val">${fmt(stats.dropped_sim_time_ms, 2)} ms &nbsp;<span class="prof-fps">(total ${fmt(stats.total_dropped_sim_time_ms, 1)} ms)</span></span>
     </div>
@@ -1099,6 +1225,7 @@ export function initPanels(app) {
   const settingsHeader = document.getElementById("settings-header");
   const tabsRoot = document.getElementById("settings-tabs");
   const settingsResizer = document.getElementById("settings-resizer");
+  const settingsResizerThumb = settingsResizer?.querySelector(".settings-resizer-thumb") || null;
   const btnConfig = document.getElementById("btn-config");
   const toolbarReset = document.getElementById("btn-reset");
 
@@ -1108,17 +1235,21 @@ export function initPanels(app) {
   }
 
   const stored = loadStoredConfig();
+  const storedEntries = storedSettingsEntries(stored);
+  const hasStoredConfig = storedEntries.length > 0;
   applyTheme(loadStoredTheme(), false);
   const storedPanelWidth = loadStoredPanelWidth();
   if (storedPanelWidth != null) applyPanelWidth(storedPanelWidth, false);
-  if (Object.keys(stored).length > 0) {
-    applySettingEntries(app, Object.entries(stored), "localStorage");
+  if (hasStoredConfig) {
+    applySettingEntries(app, storedEntries, "localStorage");
   }
 
   const tabs = deriveTabs(safeConfigJson(app));
   const tabMeta = new Map(tabs.map((tab) => [tab.id, tab]));
   let isOpen = false;
   let activeTab = tabMeta.has(DEFAULT_TAB) ? DEFAULT_TAB : tabs[0]?.id ?? "profiler";
+  let activeQualityPreset = null;
+  let autoQualityPreset = null;
 
   function normalizeTab(tab) {
     const normalized = TAB_ALIASES[tab] || tab;
@@ -1145,6 +1276,8 @@ export function initPanels(app) {
       buildProfilerPanel(settingsBody, app);
     } else if (activeTab === "theme") {
       buildThemePanel(settingsBody);
+    } else if (activeTab === "quality") {
+      buildQualityPanel(settingsBody, applyQualityPreset, activeQualityPreset, autoQualityPreset);
     } else {
       buildConfigPanel(settingsBody, app, activeTab, currentSettings);
     }
@@ -1193,6 +1326,23 @@ export function initPanels(app) {
     activeTab = normalizeTab(tab);
     if (isOpen) renderActiveTab();
     if (options.focus) focusTab(activeTab);
+  }
+
+  function applyQualityPreset(id, source = "quality preset", persist = true) {
+    const preset = QUALITY_PRESETS[id];
+    if (!preset) return null;
+    const result = applySettingEntries(app, preset.entries, source);
+    activeQualityPreset = id;
+    if (persist) persistCurrentSettings(app);
+    if (isOpen) renderActiveTab();
+    return result;
+  }
+
+  function autoSelectQualityPreset() {
+    if (hasStoredConfig) return null;
+    const id = chooseStartupQualityPreset();
+    autoQualityPreset = id;
+    return applyQualityPreset(id, "startup quality auto", false);
   }
 
   for (const tab of tabs) {
@@ -1255,23 +1405,24 @@ export function initPanels(app) {
       document.body.classList.remove("settings-resizing");
     }
 
-    settingsResizer.addEventListener("pointerdown", (event) => {
+    const pointerTarget = settingsResizerThumb || settingsResizer;
+    pointerTarget.addEventListener("pointerdown", (event) => {
       if (!desktopQuery.matches || !isOpen) return;
       event.preventDefault();
       resizing = true;
       settingsResizer.classList.add("resizing");
       document.body.classList.add("settings-resizing");
-      settingsResizer.setPointerCapture(event.pointerId);
+      pointerTarget.setPointerCapture(event.pointerId);
       applyPanelWidth(widthFromClientX(event.clientX));
     });
-    settingsResizer.addEventListener("pointermove", (event) => {
+    pointerTarget.addEventListener("pointermove", (event) => {
       if (!resizing) return;
       event.preventDefault();
       applyPanelWidth(widthFromClientX(event.clientX));
     });
-    settingsResizer.addEventListener("pointerup", finishResize);
-    settingsResizer.addEventListener("pointercancel", finishResize);
-    settingsResizer.addEventListener("dblclick", () => {
+    pointerTarget.addEventListener("pointerup", finishResize);
+    pointerTarget.addEventListener("pointercancel", finishResize);
+    pointerTarget.addEventListener("dblclick", () => {
       document.documentElement.style.removeProperty("--panel-width");
       try {
         localStorage.removeItem(PANEL_WIDTH_STORAGE_KEY);
@@ -1331,15 +1482,19 @@ export function initPanels(app) {
     },
     applySettings(entries, source = "import") {
       const result = applySettingEntries(app, entries, source);
+      activeQualityPreset = null;
       if (isOpen) renderActiveTab();
       return result;
     },
     importConfigPayload(payload, source = "import") {
       const result = applySettingEntries(app, entriesFromImportPayload(payload), source);
+      activeQualityPreset = null;
       persistCurrentSettings(app);
       if (isOpen) renderActiveTab();
       return result;
     },
+    applyQualityPreset,
+    autoSelectQualityPreset,
     exportConfig() {
       return exportConfigPayload(app);
     },
@@ -1356,6 +1511,15 @@ export function initPanels(app) {
     },
     activeTheme() {
       return activeThemeId();
+    },
+    activeQualityPreset() {
+      return activeQualityPreset;
+    },
+    autoQualityPreset() {
+      return autoQualityPreset;
+    },
+    hasStoredConfig() {
+      return hasStoredConfig;
     },
     isOpen() {
       return isOpen;

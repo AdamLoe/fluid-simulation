@@ -178,9 +178,7 @@ async function main() {
     versionEl.textContent = await loadVersionLabel();
   }
 
-  const panelApi = initPanels(app);
   const params = new URLSearchParams(location.search);
-  if (params.get("pressure") === "off") app.set_pressure_enabled(false);
   const canonicalUrlSettings = parseRegistryUrlSettings(params);
   const urlSettings = [];
   const flip = finiteParam(params, "flip");
@@ -188,6 +186,10 @@ async function main() {
     urlSettings.push(["physics.flip_blend", flip]);
   }
   urlSettings.push(...canonicalUrlSettings);
+
+  const panelApi = initPanels(app);
+  panelApi?.autoSelectQualityPreset();
+  if (params.get("pressure") === "off") app.set_pressure_enabled(false);
   if (params.get("slice") === "1") app.set_slice_enabled(true);
   const sliceMode = finiteParam(params, "slicemode");
   if (sliceMode !== null) app.set_slice_mode(Math.trunc(sliceMode));
@@ -195,6 +197,7 @@ async function main() {
   let productMode = "autoRotate";
   let controlTarget = "camera";
   let stoppedForGpuStatus = false;
+  let exportMode = false;
   let dragging = false;
   let dragButton = 0;
   let lastX = 0;
@@ -375,6 +378,10 @@ async function main() {
   let last = performance.now();
   const loop = (now) => {
     if (stoppedForGpuStatus) return;
+    if (exportMode) {
+      requestAnimationFrame(loop);
+      return;
+    }
     const target = app.fps_target();
     const minMs = target > 0 ? 1000 / target : 0;
     const dt = now - last;
@@ -433,6 +440,35 @@ async function main() {
     reset() {
       return resetSimulation();
     },
+    resetForExport() {
+      const ok = app.reset();
+      if (ok) panelApi?.rerender();
+      return ok;
+    },
+    beginExportMode() {
+      exportMode = true;
+      app.set_paused(true);
+      setPauseButtonState(pauseBtn, true);
+      return this.state();
+    },
+    endExportMode() {
+      exportMode = false;
+      last = performance.now();
+      return this.state();
+    },
+    exportFrame(substeps, simSeconds) {
+      if (!exportMode) this.beginExportMode();
+      const result = JSON.parse(app.export_frame(Number(substeps), Number(simSeconds)));
+      const status = gpuDeviceStatus(app);
+      if (fatalGpuStatus(status)) {
+        stoppedForGpuStatus = true;
+        showUnsupported(
+          `GPU status: ${status}. Rendering has stopped; reload the page to request a new WebGPU device.`,
+          "GPU rendering stopped",
+        );
+      }
+      return result;
+    },
     applySettings(entries, source = "shell") {
       return panelApi?.applySettings(entries, source) || null;
     },
@@ -464,7 +500,11 @@ async function main() {
         controlTarget,
         manualPointerMode: controlTarget,
         theme: panelApi?.activeTheme() ?? "default",
+        qualityPreset: panelApi?.activeQualityPreset() ?? null,
+        autoQualityPreset: panelApi?.autoQualityPreset() ?? null,
+        hasStoredConfig: panelApi?.hasStoredConfig() ?? false,
         paused: app.is_paused(),
+        exportMode,
         gpuDeviceStatus: gpuDeviceStatus(app),
         gpuStopped: stoppedForGpuStatus,
         urlApplyResult,

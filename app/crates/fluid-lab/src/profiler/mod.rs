@@ -102,6 +102,7 @@ struct TimestepStats {
     total_dropped_ms: f32,
     sim_advanced_ms: f32,
     wall_raf_ms: f32,
+    sim_time_scale: f32,
     real_time_factor: f32,
     policy_label: &'static str,
 }
@@ -185,6 +186,7 @@ impl Profiler {
             total_dropped_ms: total_dropped * 1000.0,
             sim_advanced_ms: stats.sim_advanced * 1000.0,
             wall_raf_ms: stats.wall_dt * 1000.0,
+            sim_time_scale: stats.sim_time_scale,
             real_time_factor: stats.real_time_factor,
             policy_label: stats.policy_label,
         };
@@ -535,7 +537,7 @@ impl Profiler {
         };
 
         format!(
-            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"filled_volume":{fv},"liquid_fraction":{lf},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","gpu_device_status":"{gpu_device_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"particle_dispatch_groups_x":{pdgx},"particle_dispatch_groups_y":{pdgy},"particle_dispatch_capacity":{pdcap},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"sim_buffers_mb":{sim_mb},"render_targets_mb":{rt_mb},"timing_mb":{timing_mb},"total_tracked_mb":{total_mb},"substeps_this_frame":{stf},"fixed_dt_ms":{fdt},"max_substeps":{max_substeps},"natural_substeps":{natural_substeps},"substep_cap_hit":{cap_hit},"sim_advanced_ms":{sim_adv},"wall_raf_ms":{wall_raf},"real_time_factor":{rtf},"timestep_policy":"{policy}","accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
+            r#"{{"timing":"{timing}","frame_samples":{sample_count},"frame_avg_ms":{avg},"fps":{fps},"p50":{p50},"p95":{p95},"p99":{p99},"substeps":{subs},"grid_n":{gn},"grid_res":"{gres}","total_cells":{tc},"filled_volume":{fv},"liquid_fraction":{lf},"requested_particles":{req},"estimated_particles":{est},"particles":{par},"scale_status":"{scale_status}","gpu_device_status":"{gpu_device_status}","max_compute_workgroups_per_dimension":{max_wg},"max_particle_dispatch_count":{max_dispatch},"particle_dispatch_groups_x":{pdgx},"particle_dispatch_groups_y":{pdgy},"particle_dispatch_capacity":{pdcap},"max_particle_storage_count":{max_storage},"pressure_iterations":{pressure_iterations},"render_mode":"{render_mode}","gpu_buffer_mb":{gmb},"sim_buffers_mb":{sim_mb},"render_targets_mb":{rt_mb},"timing_mb":{timing_mb},"total_tracked_mb":{total_mb},"substeps_this_frame":{stf},"fixed_dt_ms":{fdt},"max_substeps":{max_substeps},"natural_substeps":{natural_substeps},"substep_cap_hit":{cap_hit},"sim_advanced_ms":{sim_adv},"wall_raf_ms":{wall_raf},"sim_time_scale":{sim_scale},"real_time_factor":{rtf},"timestep_policy":"{policy}","accumulated_before_ms":{ab},"accumulated_after_ms":{aa},"dropped_sim_time_ms":{drop},"total_dropped_sim_time_ms":{tdrop},"dispatches_per_substep":{dps},"dispatches_this_frame":{dtf},"gpu":{gpu}}}"#,
             timing = self.timing_source.label(),
             sample_count = samples.len(),
             avg = fmt_ms(avg),
@@ -574,6 +576,7 @@ impl Profiler {
             cap_hit = ts.substep_cap_hit,
             sim_adv = fmt_ms(ts.sim_advanced_ms as f64),
             wall_raf = fmt_ms(ts.wall_raf_ms as f64),
+            sim_scale = fmt_ratio(ts.sim_time_scale as f64),
             rtf = fmt_ratio(ts.real_time_factor as f64),
             policy = ts.policy_label,
             ab = fmt_ms(ts.accumulated_before_ms as f64),

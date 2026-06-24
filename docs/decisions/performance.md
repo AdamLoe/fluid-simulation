@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-20
+last_updated:  2026-06-24
 ---
 
 # Decisions — Performance
@@ -49,16 +49,26 @@ active particle count and profiler output rather than a cube-resolution shorthan
 
 **Applies to** — `architecture/simulation.md`, `architecture/gpu-resources.md`.
 
-## Keep tiers as measurement output, not a runtime system
+## Quality presets are startup/runtime configuration, not performance claims
 
-**Decision** — Scene presets may exist as authored Reset-class scenarios, but
-low/default/high tier labels remain measurement outputs, not a runtime system.
+**Decision** — The web shell exposes Performance, Balanced, Quality, and Ultra as
+runtime quality presets over existing registry settings, and may auto-select a
+non-Ultra preset before the first frame with a conservative device/viewport heuristic.
 
-**Why** — Tiers are only meaningful once measurements exist and a human is choosing.
-Building a tier system earlier serves no consumer; authored scene presets are a
-separate product affordance, not a performance-tier architecture.
+**Why** — Demo startup needs a bounded weak-laptop default and manual capture needs a
+fast way to raise fidelity. Presets are useful as configuration batches, but they are
+not benchmarks and must not claim 30 FPS/TPS without profiler or capture evidence.
 
-**Applies to** — `architecture/settings.md`, `architecture/gpu-resources.md`.
+**Tradeoffs** — Startup auto-selection is deliberately heuristic: saved localStorage
+config skips it, URL/imported settings override it through normal registry replay, and
+Ultra remains manual until profiler/capture evidence justifies using it automatically.
+Preset buttons persist only when the user explicitly chooses them.
+
+**Code anchors** — `web/panels.js → QUALITY_PRESETS`;
+`web/panels.js → chooseStartupQualityPreset`;
+`web/main.js → main`.
+
+**Applies to** — `architecture/settings.md`, `architecture/web-shell.md`.
 
 ## Respect the per-stage storage-buffer limit — split passes, don't combine
 
@@ -185,6 +195,30 @@ over directly. Per-axis tuning of the timestep is deferred until extreme ratios 
 `crates/fluid-lab/src/settings/mod.rs → Registry` (`physics.max_substeps`).
 
 **Applies to** — `architecture/app-shell.md`, `architecture/settings.md`.
+
+## PNG export uses explicit fixed substeps, not rAF cadence
+
+**Decision** — The first export workflow advances simulation through
+`FluidApp::export_frame(substeps, sim_dt_s)`, with the tool requiring
+`sim_seconds_per_frame` to be an integer multiple of the active `physics.fixed_dt`.
+It bypasses the normal rAF accumulator while export mode is active.
+
+**Why** — A headless sequence generator needs frame count and simulation duration to be
+owned by the export job, not by wall-clock browser cadence or `render.fps_target`.
+Keeping export stepping explicit makes the output deterministic within one run and
+environment, and keeps dropped-time/catch-up policy out of generated frames.
+
+**Tradeoffs** — The first slice does not support fractional-frame accumulation,
+motion blur, subframe sampling, audio timing, or timeline/camera paths. Users choose
+output FPS and simulation seconds per frame; the tool fails if that duration cannot be
+represented by whole fixed substeps.
+
+**Code anchors** — `crates/fluid-lab/src/lib.rs → FluidApp::export_frame`;
+`crates/fluid-lab/src/timestep.rs → TimestepController::record_export_steps`;
+`tools/export_sequence.mjs`.
+
+**Applies to** — `architecture/app-shell.md`, `architecture/web-shell.md`,
+`architecture/profiler.md`.
 
 ## Optimize only after profiling; 1M particles is a stretch benchmark
 

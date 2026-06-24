@@ -362,9 +362,10 @@ impl FluidApp {
         self.profiler.scope_begin("update");
         let n_substeps: u32 = match self.run_state {
             RunState::Running => {
-                let interaction_dt_s = render_dt_s.clamp(0.0, INTERACTION_MAX_DT_S);
+                let sim_speed = self.settings.sim_speed();
+                let interaction_dt_s = (render_dt_s * sim_speed).clamp(0.0, INTERACTION_MAX_DT_S);
                 self.update_interactions(interaction_dt_s);
-                let n = self.timestep.steps_for_frame(render_dt_s);
+                let n = self.timestep.steps_for_frame_scaled(render_dt_s, sim_speed);
                 if n > 0 {
                     self.profiler.scope_begin("simulation");
                     self.gpu.step(n);
@@ -382,18 +383,25 @@ impl FluidApp {
                     self.gpu.step(1);
                     self.profiler.scope_end("simulation");
                     self.tick += 1;
-                    self.timestep.record_manual_steps(render_dt_s, 1);
+                    self.timestep
+                        .record_manual_steps(render_dt_s, 1, self.settings.sim_speed());
                     1
                 } else {
-                    self.timestep.record_idle_frame(render_dt_s);
+                    self.timestep
+                        .record_idle_frame(render_dt_s, self.settings.sim_speed());
                     0
                 }
             }
         };
         self.profiler.scope_end("update");
+        self.render_and_finish_frame(n_substeps);
+    }
+
+    fn render_and_finish_frame(&mut self, n_substeps: u32) -> bool {
         self.gpu.set_frame_substeps(n_substeps);
 
         // --- render ---
+        let mut render_ok = true;
         self.profiler.scope_begin("render");
         let aspect = self.gpu.aspect();
         let model =
@@ -431,6 +439,7 @@ impl FluidApp {
         ) {
             // Recoverable surface errors (resize/lost); log and continue.
             warn(&format!("[fluid-lab] render error: {e}"));
+            render_ok = false;
         }
         self.profiler.scope_end("render");
 
@@ -463,17 +472,19 @@ impl FluidApp {
         );
         self.profiler
             .end_frame_and_maybe_log(&self.config_snapshot());
+        render_ok
     }
 
     /// Build the active config snapshot string used to tag profiler output.
     fn config_snapshot(&self) -> String {
         format!(
-            "grid={gx}x{gy}x{gz} particles={p} dt={dt} press_iters={pi} mode={mode} tick={tick} run={run:?}",
+            "grid={gx}x{gy}x{gz} particles={p} dt={dt} sim_speed={sim_speed} press_iters={pi} mode={mode} tick={tick} run={run:?}",
             gx = self.settings.grid_res_x(),
             gy = self.settings.grid_res_y(),
             gz = self.settings.grid_res_z(),
             p = self.gpu.particle_count(),
             dt = self.settings.fixed_dt(),
+            sim_speed = self.settings.sim_speed(),
             pi = self.settings.pressure_iterations(),
             mode = if self.pressure_enabled { "particles+pressure" } else { "particles+NOpressure" },
             tick = self.tick,
@@ -551,6 +562,42 @@ impl FluidApp {
     #[wasm_bindgen]
     pub fn reset_count(&self) -> u32 {
         self.reset_count
+    }
+
+    /// Explicit export frame entry point. The caller owns output cadence and
+    /// converts the requested simulation duration to a fixed substep count.
+    #[wasm_bindgen]
+    pub fn export_frame(&mut self, substeps: u32, sim_dt_s: f64) -> String {
+        if self.gpu.device_status_is_fatal() {
+            return format!(
+                r#"{{"ok":false,"error":"fatal_gpu_status","substeps":{substeps},"sim_dt_s":0,"tick":{tick},"gpu_device_status":"{status}"}}"#,
+                tick = self.tick,
+                status = self.gpu.device_status_str(),
+            );
+        }
+
+        let sim_dt_s = finite_or_zero_f64(sim_dt_s).max(0.0);
+        self.profiler.begin_frame(sim_dt_s * 1000.0);
+
+        self.profiler.scope_begin("update");
+        self.update_interactions(sim_dt_s as f32);
+        if substeps > 0 {
+            self.profiler.scope_begin("simulation");
+            self.gpu.step(substeps);
+            self.profiler.scope_end("simulation");
+            self.tick += substeps as u64;
+        }
+        self.timestep
+            .record_export_steps(sim_dt_s as f32, substeps);
+        self.profiler.scope_end("update");
+
+        let render_ok = self.render_and_finish_frame(substeps);
+        let status = self.gpu.device_status_str();
+        format!(
+            r#"{{"ok":{ok},"render_ok":{render_ok},"substeps":{substeps},"sim_dt_s":{sim_dt_s},"tick":{tick},"gpu_device_status":"{status}"}}"#,
+            ok = render_ok && !self.gpu.device_status_is_fatal(),
+            tick = self.tick,
+        )
     }
 
     /// Toggle pressure projection (for the pressure on/off comparison capture).
@@ -702,6 +749,9 @@ impl FluidApp {
             "physics.cfl" => {
                 self.gpu.set_cfl(value as f32);
                 log(&format!("[fluid-lab] live cfl = {value}"));
+            }
+            "physics.sim_speed" => {
+                log(&format!("[fluid-lab] live sim_speed = {value}"));
             }
             "classify.liquid_threshold" => {
                 self.gpu.set_liquid_threshold(value as u32);

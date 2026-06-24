@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-16
+last_updated:  2026-06-24
 ---
 
 # Decisions - Rendering
@@ -66,6 +66,27 @@ reports one `gpu.render_ms` total for the whole render path rather than per-pass
 timing.
 
 **Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`.
+
+## Exported sequences reuse the active viewport renderer
+
+**Decision** - The first generated-output workflow emits PNG sequences from the real
+browser viewport after explicit simulation stepping. It reuses the existing Water /
+particle / slice render paths and existing quality settings; it does not add
+supersampling, accumulation, offscreen export targets, or a separate high-quality
+renderer.
+
+**Why** - The immediate product need is a reliable, honest sequence export path. A
+new renderer or supersampled target would expand resource ownership, acceptance gates,
+and memory risk before the stepping/workflow boundary is proven.
+
+**Tradeoffs** - Output quality is bounded by viewport resolution and the current render
+settings. Higher-quality offline rendering remains a future plan with its own resource
+and metadata contract.
+
+**Code anchors** - `crates/fluid-lab/src/lib.rs -> FluidApp::export_frame`;
+`tools/export_sequence.mjs`.
+
+**Applies to** - `architecture/rendering.md`, `architecture/web-shell.md`.
 
 ## Surface fidelity uses a curvature-adaptive screen-space filter, not an extracted surface
 
@@ -219,20 +240,25 @@ rebuild deleted systems by accident.
 **Applies to** - `architecture/rendering.md`, `architecture/gpu-resources.md`,
 `architecture/settings.md`.
 
-## The tank has an open viewing corner
+## The tank has an open viewing corner and optional matte back-wall fill
 
 **Decision** - The environment prepass omits the right (+x) and front (+z) walls,
 leaving adjacent clear faces that form an open vertical corner aimed at the default
-camera; the back and left walls stay matte. The wireframe still outlines the whole
-tank.
+camera; the back and left wall fill is optional through `render.hero.wall_visibility`.
+The wireframe still outlines the whole tank.
 
 **Why** - Two opposing-pair open faces let the viewer look straight down the corner into
-the liquid without matte glass occluding the hero shot, while the remaining two walls still
-give refraction/reflection a backdrop and the floor checker reads through the water.
+the liquid without matte glass occluding the hero shot. Hiding the remaining matte wall
+fill is useful for capture and background inspection, but it must not imply physical
+wall transparency or change collision behavior.
+
+**Tradeoffs** - Midrange values are an opaque brightness fade only. At `0`, the shader
+discards the matte wall fragments; the floor, wireframe, simulation boundary, and world
+background stay separate.
 
 **Code anchors** - `crates/fluid-lab/src/gpu/environment.rs -> environment_mesh`.
 
-**Applies to** - `architecture/rendering.md`.
+**Applies to** - `architecture/rendering.md`, `architecture/settings.md`.
 
 ## Particle and grid representations stay separate
 

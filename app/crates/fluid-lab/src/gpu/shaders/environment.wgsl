@@ -76,6 +76,9 @@ fn fs(in: VsOut) -> FsOut {
         let grid = smoothstep(0.0, 0.04, line);
         color = mix(color, vec3<f32>(0.55, 0.62, 0.72), (1.0 - grid) * floor_strength * 0.6);
     } else if in.kind < 1.5 {
+        if wall_visibility <= 0.0001 {
+            discard;
+        }
         color = vec3<f32>(0.10, 0.12, 0.16) * (0.4 + wall_visibility);
     } else {
         let view_dir_box = normalize(in.pos - env.eye_world.xyz);

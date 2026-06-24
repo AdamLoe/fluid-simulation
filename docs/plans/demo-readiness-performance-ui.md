@@ -1,8 +1,8 @@
 ---
-status:        draft
+status:        shipped
 owner:         adamg
 last_updated:  2026-06-24
-okay_to_delete: false
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/app-shell.md
@@ -242,7 +242,7 @@ the polish work expands into structural redesign.
 
 ## Migration notes (filled in at ship time)
 
-Before shipping, migrate final current-state facts into:
+Current implementation facts have been migrated into:
 
 - `architecture/app-shell.md` for timestep/time-scale frame-loop behavior.
 - `architecture/settings.md` for new/changed registry rows, presets, and tab exposure.
@@ -253,6 +253,11 @@ Before shipping, migrate final current-state facts into:
 - `decisions/performance.md` if runtime quality presets supersede the current
   "measurement output, not runtime system" decision.
 - `decisions/rendering.md` if wall opacity introduces a render-policy trade-off.
+
+Browser evidence was captured for startup auto-selection, URL override behavior,
+wall-visibility endpoints, desktop Quality panel/splitter presentation, and narrow
+panel fit. Automated Rust/wasm checks passed, and the durable facts above were
+migrated into the owning docs.
 
 ## See also
 

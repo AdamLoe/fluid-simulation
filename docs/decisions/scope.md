@@ -203,6 +203,28 @@ state-capture, and UI complexity that should not be paid before the core is stab
 
 **Applies to** — `architecture/rendering.md`.
 
+## First generated-output workflow is PNG sequence only
+
+**Decision** — Generated output starts as an app-adjacent headless PNG-sequence tool.
+The first shipped slice does not add browser UI, WebM/MP4 encoding, supersampling,
+camera paths, audio, cloud rendering, replay/scrub, or a timeline editor.
+
+**Why** — The load-bearing boundary is explicit non-realtime stepping plus honest
+metadata. Encoding, timeline authoring, and higher-quality render targets are separate
+product surfaces with different failure modes and acceptance gates.
+
+**Tradeoffs** — Users get deterministic-within-run PNG frames and metadata now, but
+must use external tools for video encoding. Future video generation can build on the
+same explicit stepping bridge once format, quality, and timeline requirements are
+chosen.
+
+**Code anchors** — `app/tools/export_sequence.mjs`;
+`app/crates/fluid-lab/src/lib.rs → FluidApp::export_frame`;
+`app/web/main.js → window.__fluidShell.beginExportMode`.
+
+**Applies to** — `architecture/app-shell.md`, `architecture/web-shell.md`,
+`architecture/rendering.md`.
+
 ## Config shareability stays portable before preset management
 
 **Decision** — Shareable configuration is limited to portable, registry-backed

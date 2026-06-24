@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-17
+last_updated:  2026-06-24
 okay_to_delete: false
 long_lived:    true
 ---
@@ -45,6 +45,10 @@ id was accepted as Live-class, not that every possible outcome was distinguishab
 2, which lets a 60 Hz frame execute two 1/120 s physics substeps when the frame budget
 allows; the timestep controller still drops excess accumulated time when the natural
 substep count exceeds the cap.
+
+`physics.sim_speed` is a Live wall-time scale for capture slow motion. It scales
+interaction scheduling and timestep accumulation, but it does not change
+`physics.fixed_dt`, gravity, CFL, pressure iterations, or solver behavior.
 
 ### Particle density and derived count
 
@@ -126,6 +130,11 @@ while this doc owns registry and legacy-id behavior.
 Scenario contains the scene, grid, particle-density, Auto Roll, and Wave sections.
 The product-mode launcher owns the hidden scheduler enable toggles; the panel exposes
 only the strength/cadence/frequency rows users can tune.
+
+The web shell adds a shell-owned Quality tab. Its preset buttons apply batches over
+registry settings such as `grid.res_x/y/z`, `particles.density`,
+`solver.pressure_iterations`, and screen-space smoothing controls; the registry still
+owns validation, clamping, reset classification, and persistence.
 
 The Camera tab default pitch is `camera.rot_x = -0.3` so the initial view sees more of
 the floor and water surface. The old tab ids `modes`, `camera-view`, `water-surface`,

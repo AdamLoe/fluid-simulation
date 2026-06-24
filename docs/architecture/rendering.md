@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-17
+last_updated:  2026-06-24
 okay_to_delete: false
 long_lived:    true
 ---
@@ -36,6 +36,11 @@ The optional grid slice is recorded after the selected mode as an overlay.
 The current runtime does not schedule, allocate, rebind, or draw caustics, temporal
 stabilization, wet walls, dense wall fill, flat-water wall-contact correction,
 micronormals, or persistent surface foam.
+
+The PNG-sequence exporter captures the normal viewport render after an explicit
+advance-and-render call. It does not allocate offscreen export targets, supersample,
+accumulate samples, change camera paths, or use a separate render pass order. Export
+quality comes only from the existing registry settings and viewport size.
 
 ## View anchors
 
@@ -83,6 +88,10 @@ The environment prepass writes:
 - a textured tank floor and matte back + left walls,
 - the wireframe tank outline.
 
+`render.hero.wall_visibility` controls only the matte back/left wall fill. At `0` the
+environment shader discards those wall fragments so the procedural background remains
+visible; nonzero values draw opaque matte wall fill with a brightness fade. The floor,
+wireframe, simulation boundary walls, and procedural world background stay separate.
 There is no wet-wall material path. The environment shader has one bind group: the
 camera/material uniform. The right and front tank faces remain open viewing faces.
 

@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-20
+last_updated:  2026-06-24
 okay_to_delete: false
 long_lived:    true
 ---
@@ -33,8 +33,9 @@ index.html -> main.js -> panels.js
 - Exposing `window.__fluidShell` helpers for captures, including
   `openSettings`, `selectSettingsTab`, `selectProductMode`, `selectControlTarget`,
   `reset`, `applySettings`, `importConfigPayload`, `exportConfig`, `shareUrl`,
-  `setting`, `setTheme`, `activeTheme`, and `state`; close/workspace/manual-pointer
-  aliases remain available for compatibility. `reset` returns the underlying
+  `setting`, `setTheme`, `activeTheme`, `beginExportMode`, `endExportMode`,
+  `resetForExport`, `exportFrame`, and `state`; close/workspace/manual-pointer aliases
+  remain available for compatibility. `reset` returns the underlying
   `FluidApp::reset` boolean.
 
 ## Canonical shell
@@ -49,10 +50,12 @@ Release packaging uses the tracked `web/pkg/{fluid_lab.js,fluid_lab_bg.wasm}` pa
 
 `web/panels.js -> initPanels` drives one right-side settings panel. It starts closed
 and opens from the toolbar settings icon. On desktop it is a layout column beside the
-canvas with a visible splitter grip between canvas and panel; dragging the grip updates
-`--panel-width`, persists the width in localStorage, and lets the existing canvas
-`ResizeObserver` drive `FluidApp::resize`. On narrow screens the panel still overlays
-to preserve viewport space and the splitter is hidden.
+canvas with a visible splitter thumb centered on the canvas/panel boundary; pointer
+dragging starts only from that thumb, while the separator remains keyboard-focusable for
+Arrow/Home/End resizing. Dragging updates `--panel-width`, persists the width in
+localStorage, and lets the existing canvas `ResizeObserver` drive `FluidApp::resize`.
+On narrow screens the panel still overlays to preserve viewport space and the splitter
+is hidden.
 
 The panel uses `.settings-content` with a tab navigator plus `.settings-main`, which
 contains a compact header and the active scroll body. The header names the active tab,
@@ -66,7 +69,8 @@ ArrowLeft/ArrowRight/Home/End move and activate tabs, and Enter/Space activates 
 focused tab. The toolbar settings button remains the open/close control.
 
 Tabs are derived directly from registry metadata in `app.config_json()`, sorted by
-`tab_order`, and followed by Profiler. Whitewater and Smoothing are ordinary
+`tab_order`, with a shell-owned Quality tab inserted after Scenario and Profiler
+appended after the settings tabs. Whitewater and Smoothing are ordinary
 registry-owned tabs. The shell does not render registry tab groups.
 `Environment` is hidden unless `?dev=true`; `Theme` is a shell-owned dev-only tab
 that also appears only with `?dev=true`. Rows support slider+number controls,
@@ -94,6 +98,14 @@ entries through the same bridge-backed batch path as URL and localStorage restor
 `shareUrl()` returns a URL containing repeated `set` params and strips the legacy
 `flip` param from the returned URL.
 
+The Quality tab exposes four shell-owned presets: Performance, Balanced, Quality, and
+Ultra. Presets are not separate Rust settings; each applies a batch over registry ids
+such as grid resolution, particle density, pressure iterations, and smoothing controls.
+The startup auto preset is a conservative viewport/device heuristic, not a benchmark;
+it currently chooses among Performance/Balanced/Quality, leaving Ultra as an explicit
+manual capture choice. Auto-selection runs before the first rAF frame only when no
+saved config exists.
+
 Shareable registry settings use repeated `set` URL params:
 
 ```
@@ -103,11 +115,13 @@ Shareable registry settings use repeated `set` URL params:
 The shell parses all `set` entries once at boot, appends legacy `?flip=N` as
 `physics.flip_blend` only when no canonical `set=physics.flip_blend:N` entry is
 present, applies the batch after default product-mode initialization, and triggers one
-`app.reset()` if any accepted entry reports `needs_reset`. LocalStorage
-restore happens inside `initPanels` before product-mode and URL settings, and the rAF
-loop starts only after those synchronous reset-class batches finish, so the first
-meaningful rendered frame uses the restored scenario, fill, density, grid, and derived
-particle count. On narrow first loads with no explicit or stored `camera.distance`,
+`app.reset()` if any accepted entry reports `needs_reset`. LocalStorage restore happens
+inside `initPanels` before startup quality auto-selection; saved config skips the auto
+preset entirely, while URL settings apply afterward and override matching preset ids.
+The rAF loop starts only after those synchronous reset-class batches finish, so the
+first meaningful rendered frame uses the restored or selected scenario, fill, density,
+grid, and derived particle count. On narrow first loads with no explicit or stored
+`camera.distance`,
 the shell applies a one-time live camera zoom-out before the first frame; it does not
 mutate the registry value and therefore is not exported or shared. Reload-class entries
 are stored and warned about; the shell does not auto-reload the page.
@@ -115,9 +129,11 @@ The old `pressure`, `paused`, `slice`, and `slicemode` params remain ad hoc shel
 controls for this stage.
 
 `window.__fluidShell.state().urlApplyResult` retains the boot `set` batch summary for
-browser smoke checks. `window.__fluidShell.setting(id)` returns the current registry
-row from `config_json()`, and the shell methods above expose the same import/export
-and share URL behavior without needing to click the panel.
+browser smoke checks and `state()` also reports `qualityPreset`, `autoQualityPreset`,
+`hasStoredConfig`, and `exportMode`. `window.__fluidShell.setting(id)` returns the
+current registry row from `config_json()`, and the shell methods above expose the same
+import/export, quality preset, share URL, and export-frame behavior without needing to
+click the panel.
 
 The Profiler tab polls `app.stats_json()` at 4 Hz while open. It starts with a compact
 summary of FPS, real-time factor, timing source, and scale status, then groups the
@@ -206,6 +222,26 @@ GPU stats; GPU sim/render budget assertions are valid only when the final sample
 `gpu-timestamp`. `FLUID_ASSERT_TEST_STATS='<json>'` runs those assertion checks against
 provided stats and exits before launching Chrome.
 
+## PNG sequence exporter
+
+`tools/export_sequence.mjs` is an app-adjacent headless exporter, not a browser UI. It
+runs real-GPU Chrome like `capture.mjs`, applies optional registry config/settings,
+enters `window.__fluidShell.beginExportMode()` so the normal rAF loop no longer
+advances simulation, resets through `resetForExport()` without replaying UI product
+mode, and then calls
+`window.__fluidShell.exportFrame(substeps, simSeconds)` once per output PNG. The tool
+requires `sim_seconds_per_frame` to be an integer multiple of the active
+`physics.fixed_dt`; with defaults, `1/60` s becomes two `1/120` fixed substeps.
+
+Output is a PNG directory plus `metadata.json`, `console.txt`, and `trace.ndjson`.
+Metadata records frame count, output FPS, simulation seconds per frame, viewport,
+config/settings snapshot, final `stats_json`, final shell state, timing source, GPU
+status, and explicit tool decisions. The exporter fails on the same honesty categories
+as the capture harness: missing WebGPU, page errors/request failures, WebGPU
+validation or device-loss console output, rejected reset, missing stats, fatal GPU
+status, or smoke-test failure. It does not encode video, supersample, add camera
+paths, add audio, or cloud-render.
+
 ## Gotchas
 
 - Static release serving depends on fresh `web/pkg/fluid_lab.js` and
@@ -219,7 +255,7 @@ provided stats and exits before launching Chrome.
 ## Update when
 
 - The WASM bridge, shell helper API, settings-tab contract, bottom controls, pointer
-  mapping, capture harness hooks, or static serving path changes.
+  mapping, capture/export harness hooks, or static serving path changes.
 
 ## See also
 

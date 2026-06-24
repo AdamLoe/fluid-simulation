@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-20
+last_updated:  2026-06-24
 okay_to_delete: false
 long_lived:    true
 ---
@@ -14,11 +14,12 @@ The app shell owns the WASM/JS boundary, the per-frame dispatch loop, the fixed-
 
 - **WASM entry struct** — `app/crates/fluid-lab/src/lib.rs → FluidApp` (wasm-bindgen exported). One instance per canvas; the web shell constructs it async and drives it via `rAF`.
 - **Frame entry point** — `app/crates/fluid-lab/src/lib.rs → FluidApp::frame`. Receives browser rAF delta (ms), sanitizes non-finite/negative input to a non-negative finite value, hands it to the timestep controller, calls `gpu.step(n)`, then renders.
+- **Export frame entry point** — `app/crates/fluid-lab/src/lib.rs → FluidApp::export_frame`. Receives an explicit fixed-substep count plus simulation seconds for metadata/timing, advances exactly that many substeps, renders once, and returns JSON status for headless PNG-sequence export.
 - **Fixed-timestep accumulator** — `app/crates/fluid-lab/src/timestep.rs → TimestepController`. Pure Rust, unit-tested natively.
 - **Orbit camera** — `app/crates/fluid-lab/src/camera.rs → OrbitCamera`. Quaternion-based yaw/pitch; no up-vector clamp.
 - **Tank transform** — `box_orient: glam::Quat` + `box_pos: glam::Vec3` fields on `FluidApp`; mutated by cube pointer methods.
 - **Interaction scheduler** — `app/crates/fluid-lab/src/lib.rs → InteractionState`; deterministic app-side auto-roll and wave-maker timing owned by `FluidApp`, not by JavaScript.
-- **JS↔WASM bridge** — `app/crates/fluid-lab/src/lib.rs → FluidApp::config_json`, `FluidApp::set_setting`, `FluidApp::set_setting_result_json`, `FluidApp::stats_json`, `FluidApp::gpu_device_status`.
+- **JS↔WASM bridge** — `app/crates/fluid-lab/src/lib.rs → FluidApp::config_json`, `FluidApp::set_setting`, `FluidApp::set_setting_result_json`, `FluidApp::stats_json`, `FluidApp::gpu_device_status`, `FluidApp::export_frame`.
 - **Scene config** — `app/crates/fluid-lab/src/scene/mod.rs → SceneConfig`, `InitialLiquidConfig`, `LiquidBlock`, `ScenePreset`.
 - **Run state** — `app/crates/fluid-lab/src/lib.rs → RunState` (Running / Paused); `pending_steps` counter for single-step-while-paused.
 
@@ -26,23 +27,40 @@ The app shell owns the WASM/JS boundary, the per-frame dispatch loop, the fixed-
 
 The web shell owns `requestAnimationFrame`; Rust owns the fixed sequence inside
 `app/crates/fluid-lab/src/lib.rs → FluidApp::frame`. Each frame sanitizes the browser
-delta, updates scheduled interactions while Running, asks
-`app/crates/fluid-lab/src/timestep.rs → TimestepController::steps_for_frame` for the
-substep count, runs
+delta, applies the Live `physics.sim_speed` scale only to scheduled interaction time
+and timestep accumulation while keeping profiler frame timing on raw rAF wall time,
+asks `app/crates/fluid-lab/src/timestep.rs → TimestepController::steps_for_frame_scaled`
+for the substep count, runs
 `gpu.step(n)`, renders, and then closes the profiler/timing frame. JavaScript never
 drives sim steps independently.
 
+The PNG-sequence exporter uses a separate explicit path:
+`FluidApp::export_frame(substeps, sim_dt_s)`. The shell first enters export mode so
+the normal rAF loop no longer advances the simulation, then the tool calls
+`export_frame` once per output PNG. Export stepping does not use the rAF accumulator or
+`physics.sim_speed`; the tool converts `sim_seconds_per_frame` to an integer multiple
+of the active `physics.fixed_dt` and Rust advances exactly that substep count before
+rendering once. Scheduled interactions still update from the explicit export
+simulation duration, so any enabled auto-roll/wave settings are deterministic within
+the run rather than tied to browser cadence.
+
 ## Timestep accumulator
 
-`app/crates/fluid-lab/src/timestep.rs → TimestepController::steps_for_frame` receives only finite, non-negative seconds from `FluidApp::frame`:
+`app/crates/fluid-lab/src/timestep.rs → TimestepController::steps_for_frame_scaled` receives only finite, non-negative seconds from `FluidApp::frame`:
 
-1. Clamps incoming render dt to `MAX_RENDER_DT_S` = 1/30 s before accumulation — a single browser hitch cannot produce unbounded sim work.
+1. Scales incoming render dt by `physics.sim_speed`, then clamps the scaled value to `MAX_RENDER_DT_S` = 1/30 s before accumulation — a single browser hitch cannot produce unbounded sim work, and slow-motion capture does not change `physics.fixed_dt`.
 2. Drains the accumulator in `fixed_dt` (default 1/120 s) chunks.
 3. Runs `n = min(n_natural, max_substeps)` substeps. `max_substeps` defaults to 2 (see `decisions/performance.md`), so an ordinary 60 Hz frame can execute the two 1/120 s physics steps it naturally wants when frame budget allows. If `n_natural > max_substeps` (behind), the entire remaining accumulator is zeroed this frame and the dropped seconds are added to cumulative `dropped_time`. The browser catches up by rendering the next frame, not by making one frame longer.
 
-Each call records a `TimestepFrameStats` snapshot: executed `substeps`, `fixed_dt`, `max_substeps`, `natural_substeps`, whether the cap hit, accumulator before/after, per-frame dropped time, actually advanced sim time, raw sanitized rAF wall time, real-time factor, and the policy label. The real-time factor is `sim_advanced / raw_rAF_wall_dt`; dropped time is not counted as advanced simulation time. Accessors: `last_stats()` returns the per-frame snapshot; `total_dropped()` (and legacy `dropped_time()`) returns the cumulative total. `FluidApp::frame` pushes both into the profiler via `set_timestep_stats(...)`.
+Each call records a `TimestepFrameStats` snapshot: executed `substeps`, `fixed_dt`, `max_substeps`, `natural_substeps`, whether the cap hit, accumulator before/after, per-frame dropped time, actually advanced sim time, raw sanitized rAF wall time, active sim time scale, real-time factor, and the policy label. The real-time factor is `sim_advanced / raw_rAF_wall_dt`; dropped time is not counted as advanced simulation time. Accessors: `last_stats()` returns the per-frame snapshot; `total_dropped()` (and legacy `dropped_time()`) returns the cumulative total. `FluidApp::frame` pushes both into the profiler via `set_timestep_stats(...)`.
 
 When the sim is paused, `FluidApp::frame` calls `timestep.reset()` each frame so no stale time bursts on resume. Scheduled interaction time does not advance while paused; single-step while paused advances the sim tick but does not run auto-roll or wave-maker scheduling. Paused idle frames record zero executed substeps with the raw rAF wall time; paused single-step records one manual substep so profiler stats match the actual `gpu.step(1)` call. `reset()` zeroes both the accumulator and `last` (so paused frames report 0 substeps / 0 dropped until the frame records idle/manual stats; cumulative `dropped_time` is preserved). On hard reset (`FluidApp::reset`) the controller is fully reconstructed from the registry.
+
+Explicit export frames are recorded through
+`TimestepController::record_export_steps`, which reports the policy label
+`fixed-explicit-export`, zero accumulator carry/drop, and the caller-owned simulation
+duration. This keeps exported PNG metadata honest without changing the normal
+`fixed-drop-cap` browser-frame policy.
 
 ## Camera and pointer methods
 
@@ -91,10 +109,13 @@ Particle placement within each block uses deterministic seeded jitter
 (`app/crates/fluid-lab/src/gpu/fluid.rs → generate_particles`), so `reset()` is
 bit-reproducible.
 
-The web shell applies localStorage and URL `set` batches before starting the rAF
-frame loop. Reset-class changes in those batches call `FluidApp::reset` synchronously,
-so the first meaningful rendered frame uses the selected preset, fill level, density,
-grid resolution, and derived particle count rather than a default-scene intermediate.
+The web shell applies localStorage, startup quality auto-selection, and URL `set`
+batches before starting the rAF frame loop. Reset-class changes in those batches call
+`FluidApp::reset` synchronously, so the first meaningful rendered frame uses the
+selected preset, fill level, density, grid resolution, and derived particle count
+rather than a default-scene intermediate. Saved localStorage config skips startup
+quality auto-selection; URL settings apply after the auto preset and override matching
+registry ids.
 
 ## Non-obvious invariants and gotchas
 
@@ -119,6 +140,12 @@ failed reset applied.
 includes the current `gpu_device_status` alongside profiler facts, and
 `FluidApp::gpu_device_status` remains the direct status method for the shell loop.
 Status meanings are owned by `gpu-resources.md` and displayed by `web-shell.md`.
+
+**Export stepping is not a video encoder.** The app shell only exposes explicit
+advance-and-render bridge methods. PNG file writing, sequence metadata, and real-GPU
+browser launch belong to `app/tools/export_sequence.mjs`; video encoding,
+supersampling, camera paths, audio, and cloud rendering are outside the current app
+shell contract.
 
 **`box_pos` is clamped.** `move_box` and `slosh_box` both clamp `box_pos` to `[-3, 3]^3` so the tank cannot escape the camera frustum entirely.
 

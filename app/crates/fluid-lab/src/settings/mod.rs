@@ -523,6 +523,17 @@ impl Default for Registry {
                 apply: ApplyClass::Reset,
             },
             Setting {
+                id: "physics.sim_speed",
+                label: "Simulation speed",
+                category: Category::Physics,
+                default: Value::F32(1.0),
+                value: Value::F32(1.0),
+                validation: Validation::F32Range { min: 0.05, max: 1.0 },
+                tooltip: Some("Slows simulation time for capture while each physics substep still uses the fixed timestep."),
+                technical_tooltip: Some("Live wall-time scale. The frame loop applies this to interaction scheduling and timestep accumulation only; profiler frame timing keeps raw rAF wall time."),
+                apply: ApplyClass::Live,
+            },
+            Setting {
                 id: "physics.flip_blend",
                 label: "FLIP blend",
                 category: Category::Physics,
@@ -1092,8 +1103,8 @@ impl Default for Registry {
                 default: Value::F32(0.3),
                 value: Value::F32(0.3),
                 validation: Validation::F32Range { min: 0.0, max: 1.0 },
-                tooltip: Some("How visible the matte tank walls are."),
-                technical_tooltip: Some("Live. Opacity/brightness of the matte side walls in the environment prepass."),
+                tooltip: Some("Controls the matte back and left tank-wall fill. 0 hides those wall fills; the floor and wireframe remain visible."),
+                technical_tooltip: Some("Live environment-prepass control. 0 discards the matte back/left wall fragments; nonzero values draw opaque walls with a brightness fade, not physical transparent depth."),
                 apply: ApplyClass::Live,
             },
             // --- Environment reflection (v1.15). The water reflects a procedural
@@ -1454,6 +1465,11 @@ impl Registry {
         self.get("physics.fixed_dt")
             .map(|s| s.as_f32())
             .unwrap_or(1.0 / 120.0)
+    }
+    pub fn sim_speed(&self) -> f32 {
+        self.get("physics.sim_speed")
+            .map(|s| s.as_f32())
+            .unwrap_or(1.0)
     }
     #[allow(dead_code)]
     pub fn gravity(&self) -> f32 {
@@ -2199,6 +2215,7 @@ mod tests {
             ("grid.res_y", 40.0),
             ("grid.res_z", 80.0),
             ("particles.density", 10.0),
+            ("physics.sim_speed", 1.0),
             ("interaction.auto_roll_strength", 0.222),
             ("interaction.auto_roll_cadence", 0.8375),
             ("interaction.wave_strength", 2.145),
@@ -2381,6 +2398,31 @@ mod tests {
             Validation::U32Range { min: 1, max: 16 }
         ));
         assert_eq!(setting.apply, ApplyClass::Reset);
+    }
+
+    #[test]
+    fn sim_speed_is_live_and_visible_in_simulation_tab() {
+        let mut registry = Registry::default();
+        let setting = registry
+            .get("physics.sim_speed")
+            .expect("missing physics.sim_speed");
+        let json = registry.config_json();
+
+        assert_eq!(registry.sim_speed(), 1.0);
+        assert_eq!(setting.category, Category::Physics);
+        assert_eq!(setting.apply, ApplyClass::Live);
+        assert!(matches!(
+            setting.validation,
+            Validation::F32Range { min: 0.05, max: 1.0 }
+        ));
+        assert!(json.contains(r#""id":"physics.sim_speed""#));
+        assert!(json.contains(r#""tab":"simulation""#));
+
+        let result = registry.set_value_f64_result("physics.sim_speed", 0.25);
+        assert!(result.accepted());
+        assert_eq!(result.status, MutationStatus::Applied);
+        assert_eq!(result.apply, Some(ApplyClass::Live));
+        assert!((registry.sim_speed() - 0.25).abs() < f32::EPSILON);
     }
 
     #[test]

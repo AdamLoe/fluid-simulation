@@ -1,7 +1,7 @@
 ---
 status:        active
 owner:         adamg
-last_updated:  2026-06-20
+last_updated:  2026-06-24
 okay_to_delete: false
 long_lived:    true
 ---
@@ -91,8 +91,16 @@ Current consumers live in `app/web/panels.js → buildProfilerPanel` and
 
 The top-level object carries frame timing, scale/dispatch facts, tracked-memory
 totals, timestep-audit fields, `gpu_device_status`, and render/simulation context in
-one place. The timestep fields stay flattened for panel compatibility, and
-`real_time_factor` uses submitted sim time over sanitized rAF wall time.
+one place. The timestep fields stay flattened for panel compatibility, include the
+active `sim_time_scale`, and `real_time_factor` uses submitted sim time over sanitized
+rAF wall time.
+
+PNG-sequence export frames use the same `stats_json` surface after each explicit
+advance-and-render call. Their timestep policy is `fixed-explicit-export`, with
+substeps and simulation duration supplied by the exporter instead of the browser rAF
+accumulator. Timing source honesty is unchanged: `timing` remains `cpu-wallclock`
+until a real GPU timestamp sample arrives, and the exporter records that label in
+`metadata.json`.
 
 The GPU block stays source-honest: it is `null` until a real timestamp sample arrives,
 then exposes coarse totals plus sampled substep and liveness facts. Detailed-only data
@@ -168,6 +176,8 @@ frame count.
 - A new CPU scope is added → call `scope_begin` / `scope_end` with a unique `&'static str`; depth is inferred from `open_stack`
 - The logging interval or rolling-window cap change → `Profiler::new` in `app/crates/fluid-lab/src/profiler/mod.rs`
 - The JS bridge schema for `stats_json` changes → update `Profiler::stats_json` and the panel consumer in `web/panels.js`
+- Explicit export timing/timestep labels change → update `app-shell.md`,
+  `web-shell.md`, and any exporter metadata consumers.
 - The `GpuTimers` construction parameters change (mode, substeps, iters) → `gpu-resources.md` owns the rebuild path; note here if the `stats_json` shape changes
 - Scale-status or particle-dispatch fact fields change → update both `stats_json` and
   the panel consumer wording.

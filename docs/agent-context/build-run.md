@@ -161,7 +161,30 @@ Canonical npm entry points in `app/tools/`:
 ```
 npm run verify:assertions   # cheap assertion self-test, no browser/GPU launch
 npm run verify:boot         # real-GPU boot capture; requires local_dev.sh + Windows Chrome
+npm run export:sequence -- http://localhost:5184/ export-smoke 2 60
+                             # real-GPU PNG sequence export; requires local_dev.sh + Windows Chrome
 ```
+
+The sequence exporter writes a directory under `captures/` for bare output names,
+containing `frame_00000.png...`, `metadata.json`, `console.txt`, and `trace.ndjson`.
+Direct Windows invocation:
+
+```
+node app/tools/export_sequence.mjs http://localhost:5184/ export-smoke [frameCount] [outputFps] [simSecondsPerFrame] [viewportWidth] [viewportHeight] [chromePath] [configPath]
+```
+
+From a WSL shell, invoke Windows node over the WSL share:
+
+```
+cd /home/adamg/fluid-simulation/app/tools && cmd.exe /c 'pushd \\wsl.localhost\Ubuntu-24.04\home\adamg\fluid-simulation\app\tools && node export_sequence.mjs http://localhost:5184/ export-smoke 2 60 & popd'
+```
+
+The exporter applies optional settings/config, enters shell export mode to bypass the
+normal rAF simulation loop, resets, advances an explicit integer number of fixed
+substeps per PNG, and screenshots after each render. It fails on the same honesty
+categories as `capture.mjs`: missing WebGPU, page errors/request failures, WebGPU
+validation/device-loss console output, rejected reset, missing stats, fatal GPU
+status, or smoke-test failure. It does not encode video.
 
 ## Toolchain (pinned)
 

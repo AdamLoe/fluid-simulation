@@ -1,8 +1,8 @@
 ---
-status:        draft
+status:        shipped
 owner:         adamg
 last_updated:  2026-06-24
-okay_to_delete: false
+okay_to_delete: true
 long_lived:    false
 owning_docs:
   - architecture/app-shell.md
@@ -18,10 +18,10 @@ owning_docs:
 
 ## Mission
 
-Add an in-app or app-adjacent way to generate extremely high-quality renders or videos
-from the fluid simulation. This is separate from real-time demo readiness because it
-may need deterministic stepping, frame export, supersampling, non-realtime render
-loops, and different acceptance gates than the live interactive app.
+Add an in-app or app-adjacent way to generate high-quality output from the fluid
+simulation. This is separate from real-time demo readiness because it needs
+deterministic stepping, frame export, non-realtime render loops, and different
+acceptance gates than the live interactive app.
 
 Done means the product can generate a high-quality output sequence or video through a
 clear workflow, with honest progress/status reporting and without weakening the normal
@@ -92,27 +92,32 @@ The exit gate depends on the chosen workflow, but should include:
 - Do not hide long-running generation behind the normal interactive rAF loop without
   progress, cancellation, and clear output state.
 
-## Open decisions
+## Shipped decisions
 
-- Output type: PNG sequence, WebM/MP4, or both.
-- Workflow owner: browser UI, headless tool, or explicit offline mode.
-- Whether output should supersample/accumulate frames or only use higher render
-  settings.
-- Whether generation must be deterministic across machines or only reproducible within
-  one run/environment.
-- Whether audio, camera paths, scripted tank motion, or timeline editing are part of
-  the first version.
+- Output type: PNG sequence only.
+- Workflow owner: app-adjacent headless tool (`app/tools/export_sequence.mjs`) driving
+  real-GPU Chrome against the static shell.
+- Quality source: existing registry settings and viewport size only; no supersampling
+  or accumulation.
+- Reproducibility target: deterministic within one run/environment by bypassing rAF
+  simulation cadence and using explicit whole fixed substeps per output frame.
+- Out of scope for this shipped slice: browser UI, WebM/MP4 encoding, supersampling,
+  camera paths, audio, cloud rendering, and timeline editing.
 
-## Migration notes (filled in at ship time)
+## Migration notes
 
-Before shipping, migrate final facts into:
+Durable facts were migrated into:
 
-- `architecture/app-shell.md` for explicit stepping or export-loop behavior.
-- `architecture/rendering.md` for offscreen/high-quality render behavior.
-- `architecture/profiler.md` for export metadata and timing-source reporting.
-- `architecture/web-shell.md` for any browser or tool workflow.
-- `decisions/performance.md`, `decisions/rendering.md`, or `decisions/scope.md` for
-  durable trade-offs.
+- `architecture/app-shell.md` for `FluidApp::export_frame`, export-mode stepping, and
+  the non-goals around encoding/supersampling/timelines.
+- `architecture/web-shell.md` for `window.__fluidShell` export helpers and
+  `tools/export_sequence.mjs` workflow/failure categories.
+- `architecture/rendering.md` for the viewport-render-only export boundary.
+- `architecture/profiler.md` for `fixed-explicit-export` timing/timestep metadata.
+- `agent-context/build-run.md` for the real-GPU exporter command.
+- `decisions/performance.md`, `decisions/rendering.md`, and `decisions/scope.md` for
+  explicit fixed-substep export, existing-renderer output, and PNG-sequence-only first
+  scope.
 
 ## See also
 

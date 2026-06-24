@@ -40,6 +40,8 @@ pub struct TimestepFrameStats {
     pub sim_advanced: f32,
     /// Raw sanitized browser rAF wall time in seconds, before the hitch clamp.
     pub wall_dt: f32,
+    /// Simulation time scale applied to the raw wall time before accumulation.
+    pub sim_time_scale: f32,
     /// Executed sim time divided by raw sanitized rAF wall time.
     pub real_time_factor: f32,
     /// Human-readable label for the active policy.
@@ -47,11 +49,12 @@ pub struct TimestepFrameStats {
 }
 
 impl TimestepFrameStats {
-    fn idle(fixed_dt: f32, max_substeps: u32, wall_dt: f32) -> Self {
+    fn idle(fixed_dt: f32, max_substeps: u32, wall_dt: f32, sim_time_scale: f32) -> Self {
         Self {
             fixed_dt,
             max_substeps,
             wall_dt,
+            sim_time_scale,
             policy_label: TIMESTEP_POLICY_LABEL,
             ..Self::default()
         }
@@ -89,8 +92,16 @@ impl TimestepController {
     /// interactivity: a slow frame stays cheap and the browser catches up by
     /// rendering the next frame rather than by making one frame longer.
     pub fn steps_for_frame(&mut self, render_dt_s: f32) -> u32 {
+        self.steps_for_frame_scaled(render_dt_s, 1.0)
+    }
+
+    /// Advance the accumulator by scaled wall time and return how many fixed-dt
+    /// substeps should be executed this frame. The raw wall time is retained for
+    /// real-time-factor accounting.
+    pub fn steps_for_frame_scaled(&mut self, render_dt_s: f32, sim_time_scale: f32) -> u32 {
         let wall_dt_s = finite_nonnegative(render_dt_s);
-        let clamped = wall_dt_s.min(MAX_RENDER_DT_S);
+        let time_scale = finite_nonnegative(sim_time_scale);
+        let clamped = (wall_dt_s * time_scale).min(MAX_RENDER_DT_S);
         self.accumulator += clamped;
 
         let accumulated_before = self.accumulator;
@@ -130,6 +141,7 @@ impl TimestepController {
             dropped_this_frame,
             sim_advanced,
             wall_dt: wall_dt_s,
+            sim_time_scale: time_scale,
             real_time_factor: real_time_factor(sim_advanced, wall_dt_s),
             policy_label: TIMESTEP_POLICY_LABEL,
         };
@@ -139,8 +151,9 @@ impl TimestepController {
 
     /// Record substeps that were executed outside the accumulator policy, such
     /// as a single manual step while paused.
-    pub fn record_manual_steps(&mut self, render_dt_s: f32, substeps: u32) {
+    pub fn record_manual_steps(&mut self, render_dt_s: f32, substeps: u32, sim_time_scale: f32) {
         let wall_dt_s = finite_nonnegative(render_dt_s);
+        let time_scale = finite_nonnegative(sim_time_scale);
         let sim_advanced = substeps as f32 * self.fixed_dt;
         self.last = TimestepFrameStats {
             substeps,
@@ -153,18 +166,42 @@ impl TimestepController {
             dropped_this_frame: 0.0,
             sim_advanced,
             wall_dt: wall_dt_s,
+            sim_time_scale: time_scale,
             real_time_factor: real_time_factor(sim_advanced, wall_dt_s),
             policy_label: TIMESTEP_POLICY_LABEL,
         };
     }
 
+    /// Record explicit export steps. Export owns simulation duration directly,
+    /// so it does not use the rAF accumulator or the live sim-speed scale.
+    pub fn record_export_steps(&mut self, sim_dt_s: f32, substeps: u32) {
+        let wall_dt_s = finite_nonnegative(sim_dt_s);
+        let sim_advanced = substeps as f32 * self.fixed_dt;
+        self.last = TimestepFrameStats {
+            substeps,
+            fixed_dt: self.fixed_dt,
+            max_substeps: substeps,
+            natural_substeps: substeps,
+            substep_cap_hit: false,
+            accumulated_before: 0.0,
+            accumulated_after: 0.0,
+            dropped_this_frame: 0.0,
+            sim_advanced,
+            wall_dt: wall_dt_s,
+            sim_time_scale: 1.0,
+            real_time_factor: real_time_factor(sim_advanced, wall_dt_s),
+            policy_label: "fixed-explicit-export",
+        };
+    }
+
     /// Record a no-op frame outside the accumulator, preserving the rAF wall dt
     /// so stats still show the display cadence while paused.
-    pub fn record_idle_frame(&mut self, render_dt_s: f32) {
+    pub fn record_idle_frame(&mut self, render_dt_s: f32, sim_time_scale: f32) {
         self.last = TimestepFrameStats::idle(
             self.fixed_dt,
             self.max_substeps,
             finite_nonnegative(render_dt_s),
+            finite_nonnegative(sim_time_scale),
         );
     }
 
@@ -192,7 +229,7 @@ impl TimestepController {
         // Zero the per-frame stats too so a paused frame reports 0 substeps / 0
         // dropped rather than echoing the last running frame. Cumulative
         // `dropped_time` is intentionally preserved.
-        self.last = TimestepFrameStats::idle(self.fixed_dt, self.max_substeps, 0.0);
+        self.last = TimestepFrameStats::idle(self.fixed_dt, self.max_substeps, 0.0, 1.0);
     }
 }
 
@@ -283,6 +320,32 @@ mod tests {
         assert_close(stats.real_time_factor, fixed_dt);
         assert_close(stats.dropped_this_frame, 3.0 * fixed_dt);
         assert_close(tc.total_dropped(), 3.0 * fixed_dt);
+        assert!(stats.accumulated_after.abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn scaled_time_advances_fractional_wall_time() {
+        let fixed_dt = 1.0 / 120.0;
+        let mut tc = TimestepController::new(fixed_dt, 4);
+
+        let n = tc.steps_for_frame_scaled(1.0 / 60.0, 0.25);
+        let stats = tc.last_stats();
+
+        assert_eq!(n, 0);
+        assert_close(stats.wall_dt, 1.0 / 60.0);
+        assert_close(stats.sim_time_scale, 0.25);
+        assert_close(stats.accumulated_before, 1.0 / 240.0);
+        assert_close(stats.sim_advanced, 0.0);
+        assert_close(stats.real_time_factor, 0.0);
+
+        let n = tc.steps_for_frame_scaled(1.0 / 60.0, 0.25);
+        let stats = tc.last_stats();
+
+        assert_eq!(n, 1);
+        assert_close(stats.wall_dt, 1.0 / 60.0);
+        assert_close(stats.sim_time_scale, 0.25);
+        assert_close(stats.sim_advanced, fixed_dt);
+        assert_close(stats.real_time_factor, 0.5);
         assert!(stats.accumulated_after.abs() < 1.0e-6);
     }
 
