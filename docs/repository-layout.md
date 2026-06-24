@@ -11,6 +11,7 @@ The repository root contains:
 <repo>/
   app/       The whole stack (Rust workspace + WGSL shaders + web shell + capture harness).
   docs/      This documentation tree (agent-docs v1). See index.md.
+  media/     Durable README/demo media tracked with the repository.
   captures/  Capture-harness screenshot and console output (generated).
 ```
 
